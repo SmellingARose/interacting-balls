@@ -177,7 +177,7 @@ $('bTune').onclick=async()=>{
       Object.assign(S,{backend:b.backend,wg:b.wg,chunkMs:b.chunkMs,pop:b.pop,scen:b.scen,islands:b.islands,nIsl:b.nIsl}); save();
       for(const [id,k] of [['sPop','pop'],['sScen','scen'],['sIsl','nIsl']]){ $(id).value=S[k]; $(id).dispatchEvent(new Event('input')); }
       $('cIsl').checked=!!S.islands; syncDis(); $('selBackend').value=S.backend;
-      $('tuneNote').textContent=`Fastest: ${b.label} at ${fmt(b.stepsPerS/1e6,1)} M steps/s. Applied: population ${b.pop}${b.islands?` in ${b.nIsl} islands`:''}, ${b.scen} scenarios, work-group ${b.wg}, ${b.chunkMs} ms dispatches. ${TUNE.note}`;
+      $('tuneNote').textContent=`Best: ${b.label} at ${fmt(1/b.secPerGen,1)} generations/s. Applied: population ${b.pop}${b.islands?` in ${b.nIsl} islands`:''}, ${b.scen} scenarios, work-group ${b.wg}, ${b.chunkMs} ms dispatches. ${TUNE.note}`;
       openDlg('results'); }
     else $('tuneNote').textContent='Auto-tune could not measure any compute option.';
   };
@@ -236,11 +236,11 @@ function openDlg(which){
   if(which==='results'){ $('dlgTitle').textContent='Auto-tune results';
     if(!TUNE||!TUNE.ok){ b.innerHTML='<p>Run “Auto-tune for this computer” first.</p>'; return; }
     const best=TUNE.best;
-    b.innerHTML=`<p>Measured on this machine with your current network (${arch().join(' → ')}). Speed is physics steps per second, the fair measure: better pilots fly longer flights.</p>
-      <table><tr><th>Compute option</th><th>Best speed</th><th>Batch (networks)</th><th>Work-group</th><th>Dispatch</th></tr>
-      ${TUNE.options.map(o=>`<tr class="${o.backend===best.backend?'best':''}"><td>${o.label}</td><td>${fmt(o.stepsPerS/1e6,1)} M/s</td><td>${o.batchNetworks}</td><td>${o.backend==='cpu'?'—':o.wg}</td><td>${o.backend==='cpu'?'—':o.chunkMs+' ms'}</td></tr>`).join('')}</table>
+    b.innerHTML=`<p>Measured on this machine with your current network (${arch().join(' → ')}). Options are ranked by generations per second at a population the optimizer can use well; peak speed is physics steps per second at the best batch size.</p>
+      <table><tr><th>Compute option</th><th>Generations/s</th><th>Peak speed</th><th>Batch (networks)</th><th>Work-group</th><th>Dispatch</th></tr>
+      ${TUNE.options.map(o=>`<tr class="${o.backend===best.backend?'best':''}"><td>${o.label}</td><td>${fmt(1/o.secPerGen,1)}</td><td>${fmt(o.stepsPerS/1e6,1)} M/s</td><td>${o.batchNetworks}</td><td>${o.backend==='cpu'?'—':o.wg}</td><td>${o.backend==='cpu'?'—':o.chunkMs+' ms'}</td></tr>`).join('')}</table>
       <p><b style="color:var(--ok)">Applied:</b> ${best.label}, population ${best.pop}${best.islands?` in ${best.nIsl} islands`:''}, ${best.scen} scenarios per network. ${TUNE.note}</p>
-      <p>The batch is the smallest one within 8% of the fastest: the same speed with more generations per minute. Islands spread a big batch over many small populations so GPU capacity turns into more learning instead of one oversized population.</p>
+      <p>A bigger population makes each generation only slightly better while making it slower, so the population stays near 512 (CMA-ES) or 256 (GA). Spare capacity that costs at most 25% more time per generation goes into more scenarios per network, or into more islands when islands are on.</p>
       <details><summary class="note">Every measurement</summary><table><tr><th>Option</th><th>Networks</th><th>Flights</th><th>Work-group</th><th>Dispatch</th><th>Speed</th><th>Batch time</th></tr>
       ${TUNE.rows.map(r=>`<tr><td>${r.label}</td><td>${r.networks}</td><td>${r.flights}</td><td>${r.backend==='cpu'?'—':r.wg}</td><td>${r.backend==='cpu'?'—':r.chunkMs+' ms'}</td><td>${fmt(r.stepsPerS/1e6,1)} M/s</td><td>${fmt(r.sec,3)} s</td></tr>`).join('')}</table></details>`;
   }

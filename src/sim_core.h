@@ -198,7 +198,9 @@ FN void br_step(BR_PP BrState* s, BR_PP const BrParams* P, BR_PP const BrScen* s
   fx += ax0 * T; fy += ax1 * T; fz += ax2 * T;
   if (V > 0.5f) {
     float hx = vrx / V, hy = vry / V, hz = vrz / V, ca = ax0 * hx + ax1 * hy + ax2 * hz;
-    float sin2 = 1 - ca * ca, mm = (mach - 1) / 0.18f, wave = 1 + 0.9f * EXP(-mm * mm);
+    // wave drag: rises through the transonic band (half way at Mach 0.95), peaks ~2.1× near Mach 1 and stays high
+    // supersonic, easing off as 1/√M (≈1.8× at Mach 2, 1.6× at Mach 3) like a projectile's drag curve
+    float sin2 = 1 - ca * ca, rise = 1 / (1 + EXP(-(mach - 0.95f) / 0.05f)), wave = 1 + rise * 1.1f / SQRT(FMAX(mach, 1.0f));
     float D = qd * P->A * (P->Cd * wave + 1.4f * sin2);
     fx -= hx * D; fy -= hy * D; fz -= hz * D;
     float L = qd * P->A * P->CNa * FABS(ca);

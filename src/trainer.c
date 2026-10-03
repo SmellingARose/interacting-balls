@@ -517,6 +517,7 @@ static void tune_thread(void* arg) {
 #ifdef BR_HAVE_OPENCL
   { char nm[32][160]; int g[32]; int k = opencl_devices(nm, g, 32); for (int i = 0; i < k && nOpt < 40; i++) if (g[i]) { snprintf(ids[nOpt], 32, "opencl:%d", i); snprintf(labels[nOpt++], 160, "OpenCL, %s", nm[i]); } }
 #endif
+  int useN = c.cma ? 512 : 256;   // one CMA-ES gains little beyond ~512 networks per generation (GA: ~256)
   BrScen* sc = (BrScen*)malloc(sizeof(BrScen) * P.S); for (int i = 0; i < P.S; i++) gen_scen(&sc[i], &r, 0);
   Meas rows[200]; int nRows = 0; Meas bestOpt[40]; int nBest = 0;
   for (int oi = 0; oi < nOpt; oi++) {
@@ -552,53 +553,58 @@ static void tune_thread(void* arg) {
         if (sps > top * 1.02) { top = sps; bestChunk = chunks[q]; } }
       b->chunkMs = bestChunk;
     }
-    // 3) batch size: grow until throughput stops improving, a batch takes > 2.5 s, or memory runs out
-    double topS = 0; int topN = n0, flat = 0; Meas sweep[24]; int ns = 0;
-    for (int n = gpu ? (n0 / 4 > 16 ? n0 / 4 : 16) : 32; n <= nMaxMem && ns < 24; n *= 2) {
+    // 3) batch size: always reach the useful population, then grow until throughput stops improving, a batch takes
+    //    > 2.5 s, or memory runs out
+    double topS = 0, useSec = 0; int flat = 0; Meas sweep[24]; int ns = 0;
+    for (int n = gpu ? 64 : 32; n <= nMaxMem && ns < 24; n *= 2) {
       FILL(n);
       tlog("%s: testing %d networks × %d scenarios = %d flights per batch…", b->info, n, P.S, n * P.S);
       sps = measure(b, G, n, sc, &P, out, &sec);
       sweep[ns] = (Meas){ "", "", n, b->wg, b->chunkMs, sps, sec }; strcpy(sweep[ns].id, ids[oi]); strcpy(sweep[ns].label, b->info); ns++;
       if (nRows < 190) rows[nRows++] = sweep[ns - 1];
-      if (sps > topS * 1.03) { topS = sps; topN = n; flat = 0; } else if (++flat >= 2) break;
-      if (sec > 2.5) break;
+      if (n == useN) useSec = sec;
+      if (sps > topS * 1.03) { topS = sps; flat = 0; } else flat++;
+      if (n >= useN && (flat >= 2 || sec > 2.5)) break;
     }
-    // smallest batch within 8% of the best: same speed, more generations per minute
-    int pickN = topN; for (int i = 0; i < ns; i++) if (sweep[i].sps >= 0.92 * topS) { pickN = sweep[i].n; break; }
-    bestOpt[nBest] = (Meas){ "", "", pickN, b->wg, b->chunkMs, topS, 0 }; strcpy(bestOpt[nBest].id, ids[oi]); strcpy(bestOpt[nBest].label, b->info); nBest++;
-    tlog("%s: best %.1f M steps/s, from %d networks per batch", b->info, topS / 1e6, pickN);
+    if (useSec <= 0) { tlog("%s: could not run %d networks per batch", b->info, useN); free(G); free(out); b->destroy(b); continue; }
+    // headroom: the biggest batch that costs at most 25% more time than the useful population (GPUs often run
+    // several times more flights in nearly the same time; CPUs scale linearly and get none)
+    int fillN = useN; for (int i = 0; i < ns; i++) if (sweep[i].n > fillN && sweep[i].sec <= 1.25 * useSec) fillN = sweep[i].n;
+    bestOpt[nBest] = (Meas){ "", "", fillN, b->wg, b->chunkMs, topS, useSec }; strcpy(bestOpt[nBest].id, ids[oi]); strcpy(bestOpt[nBest].label, b->info); nBest++;
+    tlog("%s: %.3f s per generation at %d networks (%.1f gens/s); peak %.1f M steps/s", b->info, useSec, useN, 1 / useSec, topS / 1e6);
     free(G); free(out); b->destroy(b);
     #undef FILL
   }
-  // choose the fastest option and turn its batch size into population / islands / scenarios
+  // choose the option with the most generations per second at the useful population, then spend its free headroom
+  // on more scenarios (steadier scores) or, with islands on, on more islands. Raw steps/s is not the goal: a GPU that
+  // is slightly faster only at 8000+ networks per batch trains slower than a CPU running many small generations.
   Sb res = {0};
   if (!nBest) sb_printf(&res, "{\"ok\":false}");
   else {
-    int w = 0; for (int i = 1; i < nBest; i++) if (bestOpt[i].sps > bestOpt[w].sps) w = i;
+    int w = 0; for (int i = 1; i < nBest; i++) if (bestOpt[i].sec < bestOpt[w].sec) w = i;
     Meas* m = &bestOpt[w];
-    int pop = m->n, scen = c.scen, isl = c.islands, nIsl = c.nIsl; char note[400] = "";
+    int pop = useN, scen = c.scen, isl = c.islands, nIsl = c.nIsl; double extra = (double)m->n / useN; char note[400] = "";
     if (c.islands) {
       int per = c.cma ? 48 : 32;   // CMA-ES groups of ~48, GA groups of ~32: big enough to learn, small enough to keep many going
-      nIsl = (int)lround((double)pop / per); if (nIsl < 2) nIsl = 2; if (nIsl > 256) nIsl = 256;
+      pop = m->n; nIsl = (int)lround((double)pop / per); if (nIsl < 2) nIsl = 2; if (nIsl > 256) nIsl = 256;
       pop = nIsl * (pop / nIsl > 4 ? pop / nIsl : 4);
-      snprintf(note, sizeof note, "Islands on: %d islands of about %d networks fill each batch.", nIsl, pop / nIsl);
-    } else if (c.cma && pop > 512) {
-      // one CMA-ES gains little beyond ~512 networks; fill the hardware with more scenarios per network instead
-      int flights = pop * c.scen; pop = 512; scen = (int)fmin(256, fmax(c.scen, lround((double)flights / pop)));
-      snprintf(note, sizeof note, "One CMA-ES gains little beyond ~512 networks, so the batch is filled with %d scenarios per network instead (steadier scores). Turn on islands to use the extra capacity for more networks.", scen);
-    } else snprintf(note, sizeof note, "Population sized to fill one batch.");
-    if (pop < 16) pop = 16;
+      snprintf(note, sizeof note, "Islands on: %d islands of about %d networks fill the spare capacity.", nIsl, pop / nIsl);
+    } else {
+      scen = (int)fmin(256, lround(c.scen * extra));
+      snprintf(note, sizeof note, "Picked for generations per second: %d networks at %.1f generations/s%s.", pop, 1 / m->sec,
+        extra > 1 ? ", with spare capacity used for more scenarios per network (steadier scores)" : "");
+    }
     sb_printf(&res, "{\"ok\":true,\"best\":{\"backend\":\"%s\",\"label\":", m->id); sb_jstr(&res, m->label);
-    sb_printf(&res, ",\"wg\":%d,\"chunkMs\":%g,\"stepsPerS\":%.0f,\"batchNetworks\":%d,\"pop\":%d,\"scen\":%d,\"islands\":%d,\"nIsl\":%d},\"note\":",
-      m->wg, m->chunk, m->sps, m->n, pop, scen, isl, nIsl);
+    sb_printf(&res, ",\"wg\":%d,\"chunkMs\":%g,\"stepsPerS\":%.0f,\"secPerGen\":%.4f,\"batchNetworks\":%d,\"pop\":%d,\"scen\":%d,\"islands\":%d,\"nIsl\":%d},\"note\":",
+      m->wg, m->chunk, m->sps, m->sec, m->n, pop, scen, isl, nIsl);
     sb_jstr(&res, note); sb_printf(&res, ",\"options\":[");
     for (int i = 0; i < nBest; i++) { sb_printf(&res, "%s{\"backend\":\"%s\",\"label\":", i ? "," : "", bestOpt[i].id); sb_jstr(&res, bestOpt[i].label);
-      sb_printf(&res, ",\"stepsPerS\":%.0f,\"batchNetworks\":%d,\"wg\":%d,\"chunkMs\":%g}", bestOpt[i].sps, bestOpt[i].n, bestOpt[i].wg, bestOpt[i].chunk); }
+      sb_printf(&res, ",\"stepsPerS\":%.0f,\"secPerGen\":%.4f,\"batchNetworks\":%d,\"wg\":%d,\"chunkMs\":%g}", bestOpt[i].sps, bestOpt[i].sec, bestOpt[i].n, bestOpt[i].wg, bestOpt[i].chunk); }
     sb_printf(&res, "],\"rows\":[");
     for (int i = 0; i < nRows; i++) { sb_printf(&res, "%s{\"backend\":\"%s\",\"label\":", i ? "," : "", rows[i].id); sb_jstr(&res, rows[i].label);
       sb_printf(&res, ",\"networks\":%d,\"flights\":%d,\"wg\":%d,\"chunkMs\":%g,\"stepsPerS\":%.0f,\"sec\":%.3f}", rows[i].n, rows[i].n * P.S, rows[i].wg, rows[i].chunk, rows[i].sps, rows[i].sec); }
     sb_printf(&res, "]}");
-    tlog("Done: %s is fastest at %.1f M steps/s.", m->label, m->sps / 1e6);
+    tlog("Done: %s runs the most generations per second (%.1f).", m->label, 1 / m->sec);
   }
   br_lock(&T.mx); free(T.tuneResult.s); T.tuneResult = res; br_unlock(&T.mx);
   free(base); free(sc);

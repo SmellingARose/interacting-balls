@@ -2,9 +2,11 @@
 
 ## Auto-tune
 Measures every compute option on the machine: GPU work-group size (32–512), dispatch length (20/40/80 ms) and batch
-size until throughput plateaus. Picks the fastest; uses the smallest batch within 8% of peak. Then:
-- Islands on: ~48 networks per CMA-ES island (~32 for GA) fill the batch.
-- Islands off: CMA-ES capped at 512 networks; extra capacity becomes more scenarios per network.
+size until throughput plateaus. Picks the option with the most **generations per second** at a useful population
+(512 networks for CMA-ES, 256 for GA), not the highest raw steps/s: a bigger population improves each generation only
+slightly while making it slower. Spare capacity (bigger batches costing ≤25% more time per generation) then goes to:
+- Islands on: more islands of ~48 networks (CMA-ES) or ~32 (GA).
+- Islands off: more scenarios per network (steadier scores).
 
 Speed is measured; population/island sizing is rule-based.
 
