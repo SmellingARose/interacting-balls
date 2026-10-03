@@ -23,6 +23,9 @@ cmake -S . -B build && cmake --build build -j
 ```
 Windows cross-build: see [docs/BUILD.md](docs/BUILD.md).
 
+## Browser version
+[browser/ballistic-range.html](browser/ballistic-range.html): the original single-page sandbox with Reach target and Intercept modes, in-browser training (CPU workers, WebAssembly, WebGL). Open it in a browser.
+
 ## Docs
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): code layout and data flow
 - [docs/TRAINING.md](docs/TRAINING.md): settings, auto-tune, tips
