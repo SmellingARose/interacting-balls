@@ -6,6 +6,7 @@ kernel void br_kernel(device float* state [[buffer(0)]],
                       device atomic_uint* alive [[buffer(4)]],
                       device const int* idx [[buffer(5)]],
                       device int* flags [[buffer(6)]],
+                      device const float* traj [[buffer(7)]],
                       uint gid [[thread_position_in_grid]]) {
   BrParams P = pp;
   if ((int)gid >= P.nActive) return;
@@ -13,7 +14,7 @@ kernel void br_kernel(device float* state [[buffer(0)]],
   device float* g = state + (ulong)r * (ulong)P.stride;
   int gi = r / P.S, si = r % P.S;
   BrScen sc = scen[si];
-  br_run(g, &P, &sc, weights + (ulong)gi * (ulong)P.nw, P.chunk);
+  br_run(g, &P, &sc, weights + (ulong)gi * (ulong)P.nw, traj, P.chunk);
   int a = g[S_ALIVE] != 0.0f;
   flags[r] = a;
   if (a) atomic_fetch_add_explicit(alive, 1u, memory_order_relaxed);

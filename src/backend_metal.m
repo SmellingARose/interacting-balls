@@ -9,7 +9,7 @@
 typedef struct {
   id<MTLDevice> dev; id<MTLCommandQueue> q;
   id<MTLComputePipelineState> pipe; int pipeMaxW;
-  id<MTLBuffer> state, weights, scen, params, alive, idx, flags;
+  id<MTLBuffer> state, weights, scen, params, alive, idx, flags, traj;
   double chunkMs;   // target GPU time per dispatch
   int chunk;
 } MetalImpl;
@@ -36,7 +36,7 @@ static int build_pipeline(MetalImpl* m, int maxW, char* err, int errLen) {
   return 0;
 }
 
-static int metal_eval(Backend* b, const float* weights, int nGenomes, const BrScen* scen, BrParams* P, float* out) {
+static int metal_eval(Backend* b, const float* weights, int nGenomes, const BrScen* scen, const float* traj, size_t trajFloats, BrParams* P, float* out) {
   @autoreleasepool {
     MetalImpl* m = (MetalImpl*)b->impl; char err[512];
     if (build_pipeline(m, br_max_width(P), err, sizeof err)) { fprintf(stderr, "%s\n", err); return -1; }
@@ -48,6 +48,8 @@ static int metal_eval(Backend* b, const float* weights, int nGenomes, const BrSc
     m->alive   = ensure(m, m->alive,   sizeof(uint32_t));
     m->idx     = ensure(m, m->idx,     sizeof(int) * (size_t)P->nRoll);
     m->flags   = ensure(m, m->flags,   sizeof(int) * (size_t)P->nRoll);
+    m->traj    = ensure(m, m->traj,    sizeof(float) * (traj ? trajFloats : 4));
+    if (traj && trajFloats) memcpy(m->traj.contents, traj, sizeof(float) * trajFloats);
     int* idx = (int*)m->idx.contents; const int* flags = (const int*)m->flags.contents;
     for (int r = 0; r < P->nRoll; r++) idx[r] = r;
     P->nActive = P->nRoll;
@@ -67,7 +69,7 @@ static int metal_eval(Backend* b, const float* weights, int nGenomes, const BrSc
       [enc setComputePipelineState:m->pipe];
       [enc setBuffer:m->state offset:0 atIndex:0]; [enc setBuffer:m->weights offset:0 atIndex:1];
       [enc setBuffer:m->scen offset:0 atIndex:2]; [enc setBuffer:m->params offset:0 atIndex:3]; [enc setBuffer:m->alive offset:0 atIndex:4];
-      [enc setBuffer:m->idx offset:0 atIndex:5]; [enc setBuffer:m->flags offset:0 atIndex:6];
+      [enc setBuffer:m->idx offset:0 atIndex:5]; [enc setBuffer:m->flags offset:0 atIndex:6]; [enc setBuffer:m->traj offset:0 atIndex:7];
       [enc dispatchThreads:MTLSizeMake((NSUInteger)P->nActive, 1, 1) threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
       [enc endEncoding];
       NSDate* t0 = [NSDate date];
@@ -92,7 +94,7 @@ static int metal_eval(Backend* b, const float* weights, int nGenomes, const BrSc
 }
 
 static void metal_destroy(Backend* b) { MetalImpl* m = (MetalImpl*)b->impl;
-  m->dev = nil; m->q = nil; m->pipe = nil; m->state = m->weights = m->scen = m->params = m->alive = m->idx = m->flags = nil; free(m); free(b); }
+  m->dev = nil; m->q = nil; m->pipe = nil; m->state = m->weights = m->scen = m->params = m->alive = m->idx = m->flags = m->traj = nil; free(m); free(b); }
 
 Backend* metal_backend_create(char* err, int errLen) {
   @autoreleasepool {

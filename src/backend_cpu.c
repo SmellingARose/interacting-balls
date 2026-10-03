@@ -7,7 +7,7 @@
 
 typedef struct { int threads; } CpuImpl;
 typedef struct {
-  const float* w; const BrScen* scen; const BrParams* P; float* out; br_atomic_int next;
+  const float* w; const BrScen* scen; const float* traj; const BrParams* P; float* out; br_atomic_int next;
 } CpuJob;
 
 // Repack one genome per layer from [W out×in | b] to [b | Wᵀ in×out] for the CPU network loop.
@@ -29,17 +29,18 @@ static void cpu_worker(void* arg) {
     int gi = r / P->S, si = r % P->S;
     if (gi != have) { br_transpose_genome(j->w + (size_t)gi * P->nw, wt, P); have = gi; }
     br_init(st, P, &j->scen[si]);
-    br_run(st, P, &j->scen[si], wt, 1 << 30);
+    br_run(st, P, &j->scen[si], wt, j->traj, 1 << 30);
     float* o = j->out + (size_t)r * 4;
     o[0] = st[S_MIND]; o[1] = st[S_HIT]; o[2] = st[S_T]; o[3] = st[S_K];
   }
   free(st); free(wt);
 }
 
-static int cpu_eval(Backend* b, const float* weights, int nGenomes, const BrScen* scen, BrParams* P, float* out) {
+static int cpu_eval(Backend* b, const float* weights, int nGenomes, const BrScen* scen, const float* traj, size_t trajFloats, BrParams* P, float* out) {
+  (void)trajFloats;
   CpuImpl* c = (CpuImpl*)b->impl;
   P->nRoll = nGenomes * P->S;
-  CpuJob job = { weights, scen, P, out, 0 };
+  CpuJob job = { weights, scen, traj, P, out, 0 };
   br_run_threads(c->threads, cpu_worker, &job);
   return 0;
 }

@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ballistic Range Trainer</title>
+<title>Ball Arena Trainer</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
 /* Layout: full-bleed 3D range; controls on the left, live training on the right, like a flight-test console. Single dark look. */
@@ -61,8 +61,23 @@ button.warn{color:var(--bad);border-color:rgba(255,107,107,.5)}
 <div id="offline" hidden>THE TRAINER APP IS NOT RUNNING · START IT AGAIN TO CONTINUE</div>
 
 <div class="panel" id="left">
-  <h1>BALLISTIC RANGE TRAINER</h1>
+  <h1>BALL ARENA TRAINER</h1>
   <div class="sub">Everything runs natively on this computer. This window only shows it. Closing it keeps training running; open the app again to come back. The app quits by itself after 2 idle minutes.</div>
+
+  <h2>Mode</h2>
+  <div class="seg" role="group" aria-label="Mode"><button id="mReach" class="on">Reach target</button><button id="mInt">Intercept</button></div>
+  <div class="note" id="modeText"></div>
+  <div id="tagOpts" hidden>
+    <h2>Intercept</h2>
+    <label class="chk"><input type="checkbox" id="cFair" checked> Only reachable tags</label>
+    <div class="note">Keeps a setup only if the guidance algorithm, with perfect sensors, passes within 20 m of the runner.</div>
+    <label>Runner launch range <b id="vRange"></b><input id="sRange" type="range" min="4000" max="100000" step="500" value="7000"></label>
+    <label>Runner weaving <b id="vEvade"></b><input id="sEvade" type="range" min="0" max="1" step="0.1" value="0"></label>
+    <label>Sensor noise <b id="vNoise"></b><input id="sNoise" type="range" min="0" max="50" step="1" value="0"></label>
+    <label>Sensor delay <b id="vDelay"></b><input id="sDelay" type="range" min="0" max="400" step="20" value="0"></label>
+    <label>Launch on detection <b id="vDetect"></b><input id="sDetect" type="range" min="0" max="8000" step="250" value="0"></label>
+    <label>Runner thrust-to-weight <b id="vTwR"></b><input id="sTwR" type="range" min="1.2" max="5" step="0.1" value="2.5"></label>
+  </div>
 
   <h2>Compute</h2>
   <select id="selBackend" aria-label="Compute"></select>
@@ -93,9 +108,9 @@ button.warn{color:var(--bad);border-color:rgba(255,107,107,.5)}
 
   <h2>Physics</h2>
   <label>Physics step <b id="vDt"></b><input id="sDt" type="range" min="5" max="40" step="1" value="20"></label>
-  <label class="chk"><input type="checkbox" id="cEvery"> Pilot decides every physics step</label>
+  <label class="chk"><input type="checkbox" id="cEvery"> Brain decides every physics step</label>
   <label>Thrust-to-weight <b id="vTw"></b><input id="sTw" type="range" min="1.2" max="5" step="0.1" value="2.5"></label>
-  <div class="note">The ball starts 10 m above the pad, pointing straight up. Targets are 1.5–7 km away with up to 15 m/s of wind.</div>
+  <div class="note" id="physNote">The ball starts 10 m above the pad, pointing straight up. Targets are 1.5–7 km away with up to 15 m/s of wind.</div>
 </div>
 
 <div class="panel" id="right">
@@ -104,7 +119,7 @@ button.warn{color:var(--bad);border-color:rgba(255,107,107,.5)}
   <div class="stats">
     <div><small>Generation</small><b id="sGen">0</b></div>
     <div><small>Best fitness</small><b id="sBest">—</b></div>
-    <div><small>Champ hits</small><b id="sHit">—</b></div>
+    <div><small>Star hits</small><b id="sHit">—</b></div>
     <div><small>Validation</small><b id="sVal">—</b></div>
     <div><small>M steps/s</small><b id="sSps">—</b></div>
     <div><small>Flights/s</small><b id="sFps">—</b></div>
@@ -113,15 +128,15 @@ button.warn{color:var(--bad);border-color:rgba(255,107,107,.5)}
   </div>
   <div class="status" id="status">Connecting…</div>
   <canvas id="chart"></canvas>
-  <div class="note">Validation = the champion flown on 64 fresh scenarios every 10 generations: the honest hit rate. The champion is saved automatically and restored next time.</div>
+  <div class="note">Validation = the star ball flown on 64 fresh scenarios every 10 generations: the honest hit rate. The star ball is saved automatically and restored next time.</div>
   <div class="row"><button id="bSave">Save network…</button><button id="bLoad">Load network…</button><input type="file" id="fLoad" accept=".json" hidden></div>
   <div class="row"><button id="bResults">Auto-tune results</button><button id="bMath">Network math</button><button id="bGuide">Training guide</button></div>
   <div class="row"><button class="warn" id="bQuit">Quit app</button></div>
 </div>
 
 <div class="panel" id="flyp">
-  <div class="row" style="align-items:center"><h2 style="margin:0;flex:1">Watch the champion</h2><button id="b3d" class="on" title="Turn the 3D view off to stop all drawing">3D on</button><button id="bFly1">Fly 1</button><button id="bFly5">Fly 5</button><button id="bClear">Clear</button></div>
-  <label>Target distance <b id="vDist"></b><input id="sDist" type="range" min="0" max="100000" step="1000" value="0"></label>
+  <div class="row" style="align-items:center"><h2 style="margin:0;flex:1">Watch the star ball</h2><button id="b3d" class="on" title="Turn the 3D view off to stop all drawing">3D on</button><button id="bFly1">Fly 1</button><button id="bFly5">Fly 5</button><button id="bClear">Clear</button></div>
+  <label id="distRow">Goal distance <b id="vDist"></b><input id="sDist" type="range" min="0" max="100000" step="1000" value="0"></label>
   <label>Playback speed <b id="vTs"></b><input id="sTs" type="range" min="0.5" max="8" step="0.5" value="2"></label>
   <div id="log"><div class="sub">Flights are computed by the app and drawn here.</div></div>
 </div>
@@ -144,7 +159,8 @@ const fmt=(v,d=0)=>Number(v).toLocaleString(undefined,{maximumFractionDigits:d,m
 
 /* ---------------- settings (remembered in this window) ---------------- */
 const S={ backend:'auto', layers:1, width:32, K:0, mem:0, cma:1, pop:256, scen:16, reuse:5, islands:0, nIsl:8, migrate:10,
-  decayOn:1, decay:0.995, lrMin:1e-4, speedOn:0, speedW:3, dt:0.02, everyStep:0, tw:2.5, wg:64, chunkMs:40 };
+  decayOn:1, decay:0.995, lrMin:1e-4, speedOn:0, speedW:3, dt:0.02, everyStep:0, tw:2.5, wg:64, chunkMs:40,
+  mode:0, fair:1, range:7000, evade:0, noise:0, delayMs:0, detect:0, twRunner:2.5 };   // mode 0 = reach target, 1 = intercept
 try{ Object.assign(S, JSON.parse(localStorage.getItem('brt-settings')||'{}')); }catch(e){}
 const save=()=>{ try{ localStorage.setItem('brt-settings',JSON.stringify(S)); }catch(e){} };
 const cfg=()=>({ ...S, speedW:S.speedOn?S.speedW:0 });
@@ -161,6 +177,22 @@ check('cDecay','decayOn',syncDis); bind('sDecay','vDecay','decay',v=>'×'+v.toFi
 bind('sLrMin','vLrMin','lrMin',v=>{ const x=10**v; return x>=0.01?x.toFixed(2):x.toExponential(0); },v=>10**v,v=>Math.log10(v));
 check('cSpeed','speedOn',syncDis); bind('sSpw','vSpw','speedW',v=>v);
 bind('sDt','vDt','dt',v=>v+' ms',v=>v/1000,v=>Math.round(v*1000)); check('cEvery','everyStep'); bind('sTw','vTw','tw',v=>v.toFixed(1)+'×');
+bind('sRange','vRange','range',v=>fmt(v/1000,v>=20000?0:1)+' km'); bind('sEvade','vEvade','evade',v=>v?'×'+v.toFixed(1):'off');
+bind('sNoise','vNoise','noise',v=>v?'±'+v+' m':'off'); bind('sDelay','vDelay','delayMs',v=>v?v+' ms':'off');
+bind('sDetect','vDetect','detect',v=>v?fmt(v/1000,2)+' km':'off'); bind('sTwR','vTwR','twRunner',v=>v.toFixed(1)+'×'); check('cFair','fair');
+const MODE_TEXT=['Fly the ball from the pad to a goal 1.5–7 km away.',
+  'A red runner ball, flown by the guidance algorithm, launches far out and heads for a defended point. Your ball launches from a nearby site and must touch it (2 m) first.'];
+function syncMode(){ const on=!!S.mode;
+  $('mReach').classList.toggle('on',!on); $('mInt').classList.toggle('on',on); $('modeText').textContent=MODE_TEXT[S.mode];
+  $('tagOpts').hidden=!on; $('distRow').hidden=on;
+  $('physNote').textContent=on?'Your ball launches from the ground 0.5–3 km from the defended point, with up to 15 m/s of wind. Each mode keeps its own trained network.'
+    :'The ball starts 10 m above the pad, pointing straight up. Targets are 1.5–7 km away with up to 15 m/s of wind.'; }
+async function setMode(m){
+  if(m===S.mode) return;
+  S.mode=m; save(); syncMode(); clearFlights(); HIST=[]; since=0; drawChart();
+  if(running) changed(); else await api('/api/mode',{mode:m}).catch(()=>{});   // loads that mode's saved network
+}
+$('mReach').onclick=()=>setMode(0); $('mInt').onclick=()=>setMode(1);
 function syncDis(){ $('sIsl').disabled=$('sMig').disabled=!S.islands; $('sDecay').disabled=!S.decayOn; $('sSpw').disabled=!S.speedOn; }
 function seg(){ $('opCMA').classList.toggle('on',!!S.cma); $('opGA').classList.toggle('on',!S.cma); }
 $('opCMA').onclick=()=>{ S.cma=1; seg(); changed(); }; $('opGA').onclick=()=>{ S.cma=0; seg(); changed(); };
@@ -197,7 +229,7 @@ $('bTune').onclick=async()=>{
 };
 
 /* ---------------- training ---------------- */
-let HIST=[], since=0, champVersion=-1;
+let HIST=[], since=0, starVersion=-1;
 function setTrainBtn(on){ running=on; $('bTrain').classList.toggle('on',on); $('bTrain').textContent=on?'Pause':'Train'; }
 $('bTrain').onclick=async()=>{ if(running){ await api('/api/pause',{}); setTrainBtn(false); } else { await api('/api/start',cfg()); setTrainBtn(true); } };
 let resetArm=0;
@@ -212,7 +244,7 @@ async function poll(){
     for(const h of st.hist){ HIST.push(h); since=h[0]; } if(HIST.length>2000) HIST=HIST.slice(-2000);
     if(running!==st.running && !st.tuning) setTrainBtn(st.running);
     $('sGen').textContent=st.gen; $('sBest').textContent=st.gen?st.best.toFixed(2):'—';
-    $('sHit').textContent=st.gen?Math.round(st.champHits*100)+'%':'—'; $('sVal').textContent=st.valGen?Math.round(st.valHit*100)+'%':'—';
+    $('sHit').textContent=st.gen?Math.round(st.starHits*100)+'%':'—'; $('sVal').textContent=st.valGen?Math.round(st.valHit*100)+'%':'—';
     $('sSps').textContent=st.stepsPerS?fmt(st.stepsPerS/1e6,1):'—'; $('sFps').textContent=st.flightsPerS?fmt(st.flightsPerS):'—';
     $('sGt').textContent=st.genTime?fmt(st.genTime,3)+' s':'—'; $('sSig').textContent=st.gen?Number(st.sigma).toPrecision(2):'—';
     $('status').textContent=(st.tuning?'auto-tuning · ':'')+(st.backend?st.backend+' · ':'')+(st.message||'')+(st.islands>1?` · ${st.islands} islands`:'');
@@ -238,9 +270,9 @@ function drawChart(){
 addEventListener('resize',drawChart);
 
 /* ---------------- save / load / quit ---------------- */
-$('bSave').onclick=async()=>{ const j=await api('/api/champion'); if(!j.weights){ $('status').textContent='No trained network to save yet.'; return; }
+$('bSave').onclick=async()=>{ const j=await api('/api/star'); if(!j.weights){ $('status').textContent='No trained network to save yet.'; return; }
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([JSON.stringify(j)],{type:'application/json'}));
-  a.download=`ballistic-range-${j.arch.join('-')}-gen${j.generation}.json`; a.click(); };
+  a.download=`ball-arena-${j.arch.join('-')}-gen${j.generation}.json`; a.click(); };
 $('bLoad').onclick=()=>$('fLoad').click();
 $('fLoad').onchange=async e=>{ const f=e.target.files[0]; if(!f) return; const r=await api('/api/load',await f.text()); $('status').textContent=r.message; e.target.value=''; };
 $('bQuit').onclick=async()=>{ stopped=true; await api('/api/quit',{}).catch(()=>{}); document.body.innerHTML='<div id="offline">THE TRAINER HAS STOPPED · YOU CAN CLOSE THIS WINDOW</div>'; };
@@ -263,12 +295,12 @@ function openDlg(which){
     b.innerHTML=`<table><tr><th>Network input</th><th>Numbers</th></tr><tr><td>Sensors now</td><td>29</td></tr>${S.K?`<tr><td>Past frames (K = ${S.K})</td><td>${29*S.K}</td></tr>`:''}${mem?`<tr><td>Memory from last decision</td><td>${mem}</td></tr>`:''}<tr><td><b>Total</b></td><td><b>${a[0]}</b></td></tr></table>
       <div class="eq">h¹ = tanh( W·[x<sub>t</sub>${S.K?', past frames':''}]${mem?' + U·h<sub>t−1</sub>':''} + b )<br>${H.slice(1).map((_,i)=>`h${i+2} = tanh( W${i+2}·h${i+1} + b )`).join('<br>')}${H.length>1?'<br>':''}u = tanh( V·h + c ) → throttle, pitch, yaw</div>
       <table><tr><th>Weights</th><th>Count</th></tr><tr><td>Input layer</td><td>${fmt(a[0]*a[1]+a[1])}</td></tr>${H.length>1?`<tr><td>Deeper hidden layers</td><td>${fmt(H.slice(1).reduce((s,n,i)=>s+n*H[i]+n,0))}</td></tr>`:''}<tr><td>Output layer</td><td>${fmt(H.at(-1)*3+3)}</td></tr><tr><td><b>Total</b></td><td><b>${fmt(nWeights(a))}</b></td></tr></table>
-      <p>The pilot decides every ${S.dt*1000*(S.everyStep?1:2)} ms (physics every ${S.dt*1000} ms).</p>`;
+      <p>The brain decides every ${S.dt*1000*(S.everyStep?1:2)} ms (physics every ${S.dt*1000} ms).</p>`;
   }
   if(which==='guide'){ $('dlgTitle').textContent='Training guide';
     b.innerHTML=`<ul>
       <li><b>Start with Auto-tune.</b> It measures this computer and sets compute, population, scenarios and islands for the fastest training.</li>
-      <li><b>Watch Validation, not Champ hits.</b> Champ hits is the best of many networks on this generation's tests, so it is often lucky. Validation flies the champion on 64 fresh scenarios.</li>
+      <li><b>Watch Validation, not Star hits.</b> Star hits is the best of many networks on this generation's tests, so it is often lucky. Validation flies the star ball on 64 fresh scenarios.</li>
       <li><b>CMA-ES</b> learns a step size per weight: the best default, especially for memory neurons. The genetic algorithm needs decay to fine-tune.</li>
       <li><b>Islands</b> run many small populations side by side and swap their best every few generations. On a GPU that needs huge batches, islands turn the capacity into more learning.</li>
       <li><b>Scenarios per network:</b> 16–32 once it hits; keep scenarios 5–10 generations so networks are compared on the same tests.</li>
@@ -373,7 +405,20 @@ function addFlight(f,i){
   ring.rotation.x=-Math.PI/2; ring.position.set(f.target[0],1.2,f.target[2]); scene.add(ring);
   const beam=new THREE.Mesh(new THREE.CylinderGeometry(3,3,2400,12,1,true),new THREE.MeshBasicMaterial({color:0x6fe39a,transparent:true,opacity:0.16,blending:THREE.AdditiveBlending,depthWrite:false}));
   beam.position.set(f.target[0],1200,f.target[2]); scene.add(beam);
-  flights.push({f,g,glow,trail,shadow,drop,ring,beam,t:0,done:false,color,dt:FLY_DT,phase:Math.random()*6});
+  const fl={f,g,glow,trail,shadow,drop,ring,beam,t:0,done:false,color,dt:FLY_DT,phase:Math.random()*6};
+  if(f.runner) addRunner(fl);
+  flights.push(fl);
+}
+// Intercept: the runner (red) and launch sites (red: runner, blue: yours); played in lockstep with your ball.
+const siteMat=c=>new THREE.MeshStandardMaterial({color:c,roughness:0.7});
+function addSite(p,color){ const m=new THREE.Mesh(new THREE.CylinderGeometry(6,7,0.6,24),siteMat(color)); m.position.set(p[0],0.3,p[2]); scene.add(m); return m; }
+function addRunner(fl){
+  const f=fl.f, color=new THREE.Color(0xff5a4e);
+  const g=new THREE.Group(); g.add(new THREE.Mesh(ballGeo,new THREE.MeshStandardMaterial({color,emissive:color,emissiveIntensity:0.5,roughness:0.25,metalness:0.2}))); scene.add(g);
+  const lg=new LineGeometry(); lg.setPositions(f.runner.flat()); lg.instanceCount=0;
+  const lm=new LineMaterial({linewidth:2.2,color:0xff5a4e,transparent:true,opacity:0.9}); lm.resolution=res;
+  const trail=new Line2(lg,lm); trail.frustumCulled=false; scene.add(trail);
+  fl.run={g,trail,done:false}; fl.sites=[addSite(f.runnerStart,0x8a3a32),addSite(f.start,0x2f5d73)];
 }
 function burst(pos,hit){   // hit: green shock ring + white flash; miss: grey dust puff
   const ring=new THREE.Mesh(new THREE.RingGeometry(0.85,1,64),new THREE.MeshBasicMaterial({color:hit?0x9dffc0:0xc8bca8,side:THREE.DoubleSide,transparent:true,depthWrite:false,blending:hit?THREE.AdditiveBlending:THREE.NormalBlending}));
@@ -388,18 +433,24 @@ async function fly(n){
   try{ const r=await api('/api/fly',{...cfg(),count:n,dist:+$('sDist').value});
     if(r.error){ $('log').innerHTML=`<div class="sub">${r.error}: press Train first.</div>`; return; }
     FLY_DT=r.dt; const base=flights.length; r.flights.forEach((f,i)=>addFlight(f,base+i));
-    if(!view3d){ for(const fl of flights.slice(base)){ fl.done=true; fl.trail.geometry.instanceCount=fl.f.points.length-1; fl.glow.material.opacity=0; logFlight(fl); } return; }
+    if(!view3d){ for(const fl of flights.slice(base)){ fl.done=true; fl.trail.geometry.instanceCount=fl.f.points.length-1; fl.glow.material.opacity=0;
+      if(fl.run){ fl.run.done=true; fl.run.trail.geometry.instanceCount=fl.f.runner.length-1; fl.run.g.visible=false; } logFlight(fl); } return; }
     let mx=0; for(const f of r.flights) mx=Math.max(mx,Math.hypot(f.target[0],f.target[2]));
     const tgt=r.flights[0].target;
-    camGoal={ target:new THREE.Vector3(tgt[0]*0.5,300,tgt[2]*0.5), pos:new THREE.Vector3(tgt[0]*0.5-tgt[2]*0.9,900+mx*0.25,tgt[2]*0.5+tgt[0]*0.9) };
+    if(r.mode==='tag'){ const rr=7000, t=new THREE.Vector3(tgt[0],500,tgt[2]), side=new THREE.Vector3(1,0,0.6).normalize().multiplyScalar(rr*1.2);
+      camGoal={ target:t, pos:t.clone().add(side).setY(rr*0.5) }; }
+    else camGoal={ target:new THREE.Vector3(tgt[0]*0.5,300,tgt[2]*0.5), pos:new THREE.Vector3(tgt[0]*0.5-tgt[2]*0.9,900+mx*0.25,tgt[2]*0.5+tgt[0]*0.9) };
   } finally { $('bFly1').disabled=$('bFly5').disabled=false; }
 }
 function logFlight(fl){ const f=fl.f, el=document.createElement('div');
-  el.innerHTML=`<span style="color:#${fl.color.getHexString()}">● ${fmt(Math.hypot(f.target[0],f.target[2])/1000,1)} km</span><span>${f.hit?fmt(f.t,1)+' s':fmt(f.closest)+' m off'}</span><span class="chip" style="color:${f.hit?'var(--ok)':'var(--bad)'}">${f.hit?'HIT':'MISS'}</span>`;
+  if(f.runner) el.innerHTML=`<span style="color:#${fl.color.getHexString()}">● tag</span><span>${f.hit?fmt(f.t,1)+' s':fmt(f.closest)+' m off'+(f.escaped?' · runner got through':'')}</span><span class="chip" style="color:${f.hit?'var(--ok)':'var(--bad)'}">${f.hit?'TAGGED':'MISS'}</span>`;
+  else el.innerHTML=`<span style="color:#${fl.color.getHexString()}">● ${fmt(Math.hypot(f.target[0],f.target[2])/1000,1)} km</span><span>${f.hit?fmt(f.t,1)+' s':fmt(f.closest)+' m off'}</span><span class="chip" style="color:${f.hit?'var(--ok)':'var(--bad)'}">${f.hit?'HIT':'MISS'}</span>`;
   const log=$('log'); if(log.firstChild&&log.firstChild.classList?.contains('sub')) log.innerHTML=''; log.prepend(el); while(log.children.length>8) log.lastChild.remove(); }
 $('bFly1').onclick=()=>fly(1); $('bFly5').onclick=()=>fly(5);
-$('bClear').onclick=()=>{ for(const fl of flights){ scene.remove(fl.g,fl.trail,fl.shadow,fl.drop,fl.ring,fl.beam); fl.trail.geometry.dispose(); fl.trail.material.dispose(); fl.shadow.geometry.dispose(); }
-  for(const e of fx) scene.remove(e.ring,e.flash); fx.length=0; flights.length=0; $('log').innerHTML='<div class="sub">Flights are computed by the app and drawn here.</div>'; };
+function clearFlights(){ for(const fl of flights){ scene.remove(fl.g,fl.trail,fl.shadow,fl.drop,fl.ring,fl.beam); fl.trail.geometry.dispose(); fl.trail.material.dispose(); fl.shadow.geometry.dispose();
+    if(fl.run){ scene.remove(fl.run.g,fl.run.trail,...fl.sites); fl.run.trail.geometry.dispose(); fl.run.trail.material.dispose(); } }
+  for(const e of fx) scene.remove(e.ring,e.flash); fx.length=0; flights.length=0; $('log').innerHTML='<div class="sub">Flights are computed by the app and drawn here.</div>'; }
+$('bClear').onclick=clearFlights;
 { const d=$('sDist'), ts=$('sTs'); const u=()=>{ $('vDist').textContent=+d.value?fmt(+d.value/1000,0)+' km':'random'; $('vTs').textContent=ts.value+'×'; timeScale=+ts.value; };
   d.oninput=u; ts.oninput=u; u(); }
 function resize(){ renderer.setSize(innerWidth,innerHeight,false); camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
@@ -414,12 +465,22 @@ function frame(){
   for(const c of clouds){ c.position.x+=dt*6; if(c.position.x>120000) c.position.x-=240000; }
   for(const fl of flights){
     const P=fl.f.points, N=P.length;
+    if(fl.run&&!fl.run.done){ const RP=fl.f.runner, RN=RP.length, rk=Math.min(RN-1,(fl.t+(fl.done?dt*timeScale:0))/fl.dt), ri=Math.floor(rk), ra=rk-ri, p=RP[ri], q=RP[Math.min(RN-1,ri+1)];
+      if(fl.done) fl.t+=dt*timeScale;   // your ball has ended; the runner flies on
+      fl.run.g.position.set(p[0]+(q[0]-p[0])*ra,p[1]+(q[1]-p[1])*ra,p[2]+(q[2]-p[2])*ra); fl.run.trail.geometry.instanceCount=ri;
+      fl.run.g.scale.setScalar(easy?Math.max(1,camera.position.distanceTo(fl.run.g.position)*px*14/2):1);
+      if(ri>=RN-1){ fl.run.done=true; fl.run.g.visible=false; if(!fl.f.hit) burst(fl.run.g.position.clone(),false); } }
     if(!fl.done){ fl.t+=dt*timeScale; const k=Math.min(N-1,fl.t/fl.dt), i=Math.floor(k), a=k-i, p=P[i], q=P[Math.min(N-1,i+1)];
       fl.g.position.set(p[0]+(q[0]-p[0])*a,p[1]+(q[1]-p[1])*a,p[2]+(q[2]-p[2])*a);
       const th=p[3]||0; fl.glow.material.opacity=0.1+0.85*th; fl.glow.scale.setScalar(3+5*th*(0.85+0.15*Math.sin(now*40+fl.phase)));
       fl.trail.geometry.instanceCount=i; fl.shadow.geometry.setDrawRange(0,i+1);
       const dp=fl.drop.geometry.attributes.position; dp.setXYZ(0,fl.g.position.x,fl.g.position.y,fl.g.position.z); dp.setXYZ(1,fl.g.position.x,1.5,fl.g.position.z); dp.needsUpdate=true;
-      if(i>=N-1){ fl.done=true; fl.glow.material.opacity=0; fl.drop.visible=false; logFlight(fl); burst(fl.g.position.clone(),fl.f.hit); if(fl.f.hit) fl.ring.material.color.set(0xffffff); } }
+      if(i>=N-1){ fl.done=true; fl.glow.material.opacity=0; fl.drop.visible=false; logFlight(fl);
+        if(fl.run){   // hit: both end in one explosion; runner got through: your ball just disappears; otherwise it crashes or passed
+          fl.g.visible=false; if(fl.f.hit){ fl.run.done=true; fl.run.g.visible=false; fl.run.trail.geometry.instanceCount=fl.f.runner.length-1; }
+          if(!fl.f.escaped) burst(fl.g.position.clone(),fl.f.hit); }
+        else burst(fl.g.position.clone(),fl.f.hit);
+        if(fl.f.hit) fl.ring.material.color.set(0xffffff); } }
     const d=camera.position.distanceTo(fl.g.getWorldPosition(_v)); fl.g.scale.setScalar(easy?Math.max(1,d*px*14/2):1);
     const dr=camera.position.distanceTo(fl.ring.position), tk=Math.max(1,dr*px*26/60); fl.ring.scale.setScalar(tk);
     if(!fl.done){ fl.beam.material.opacity=0.12+0.08*Math.sin(now*3+fl.phase); fl.beam.scale.set(tk,1,tk); }
@@ -438,6 +499,6 @@ function set3d(on){ view3d=on; try{ localStorage.setItem('brt-3d',on?'1':'0'); }
   if(on){ clock.getDelta(); renderer.setAnimationLoop(frame); } else renderer.setAnimationLoop(null); }
 $('b3d').onclick=()=>set3d(!view3d); set3d(view3d);
 
-loadHardware().catch(()=>{}); poll();
+syncMode(); api('/api/mode',{mode:S.mode}).catch(()=>{}).finally(()=>{ loadHardware().catch(()=>{}); poll(); });
 </script>
 </body></html>

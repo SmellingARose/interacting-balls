@@ -2,11 +2,13 @@
 // [closest approach, hit, flight time, physics steps].
 #ifndef BR_BACKEND_H
 #define BR_BACKEND_H
+#include <stddef.h>
 #include "sim_core.h"
 
 typedef struct Backend {
   const char* name;
-  int  (*eval)(struct Backend* b, const float* weights, int nGenomes, const BrScen* scen, BrParams* P, float* out);
+  // traj: tag-mode runner paths (6 floats per step, scenarios point into it); NULL / 0 in reach mode
+  int  (*eval)(struct Backend* b, const float* weights, int nGenomes, const BrScen* scen, const float* traj, size_t trajFloats, BrParams* P, float* out);
   void (*destroy)(struct Backend* b);
   void* impl;
   char info[256];

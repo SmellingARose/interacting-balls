@@ -41,7 +41,7 @@ int br_cl_load(void) {
 typedef struct {
   cl_context ctx; cl_command_queue q; cl_device_id dev;
   cl_program prog; cl_kernel k; int progMaxW;
-  cl_mem state, weights, scen, params, alive, idx, flags; size_t capState, capW, capScen, capIdx, capFlags;
+  cl_mem state, weights, scen, params, alive, idx, flags, traj; size_t capState, capW, capScen, capIdx, capFlags, capTraj;
   int chunk;
 } ClImpl;
 
@@ -101,7 +101,7 @@ static cl_mem grow(ClImpl* c, cl_mem m, size_t* cap, size_t bytes) {
   return CL.CreateBuffer(c->ctx, CL_MEM_READ_WRITE, *cap, NULL, &e);
 }
 
-static int opencl_eval(Backend* b, const float* weights, int nGenomes, const BrScen* scen, BrParams* P, float* out) {
+static int opencl_eval(Backend* b, const float* weights, int nGenomes, const BrScen* scen, const float* traj, size_t trajFloats, BrParams* P, float* out) {
   ClImpl* c = (ClImpl*)b->impl;
   if (build_program(c, br_max_width(P))) return -1;
   P->nRoll = nGenomes * P->S;
@@ -111,7 +111,8 @@ static int opencl_eval(Backend* b, const float* weights, int nGenomes, const BrS
   c->scen = grow(c, c->scen, &c->capScen, sizeof(BrScen) * (size_t)P->S);
   c->idx = grow(c, c->idx, &c->capIdx, sizeof(int) * (size_t)P->nRoll);
   c->flags = grow(c, c->flags, &c->capFlags, sizeof(int) * (size_t)P->nRoll);
-  if (!c->state || !c->weights || !c->idx || !c->flags) { fprintf(stderr, "OpenCL: out of GPU memory\n"); return -1; }
+  c->traj = grow(c, c->traj, &c->capTraj, sizeof(float) * (traj ? trajFloats : 4));
+  if (!c->state || !c->weights || !c->idx || !c->flags || !c->traj) { fprintf(stderr, "OpenCL: out of GPU memory\n"); return -1; }
   int* idx = (int*)malloc(sizeof(int) * (size_t)P->nRoll); int* flags = (int*)malloc(sizeof(int) * (size_t)P->nRoll);
   for (int r = 0; r < P->nRoll; r++) idx[r] = r;
   P->nActive = P->nRoll;
@@ -121,6 +122,7 @@ static int opencl_eval(Backend* b, const float* weights, int nGenomes, const BrS
   CL.EnqueueWriteBuffer(c->q, c->state, CL_FALSE, 0, sBytes, host, 0, NULL, NULL);
   CL.EnqueueWriteBuffer(c->q, c->weights, CL_FALSE, 0, wBytes, weights, 0, NULL, NULL);
   CL.EnqueueWriteBuffer(c->q, c->scen, CL_FALSE, 0, sizeof(BrScen) * (size_t)P->S, scen, 0, NULL, NULL);
+  if (traj && trajFloats) CL.EnqueueWriteBuffer(c->q, c->traj, CL_FALSE, 0, sizeof(float) * trajFloats, traj, 0, NULL, NULL);
   size_t local = (size_t)(b->wg > 0 ? b->wg : 64); if ((int)local > b->maxWg) local = (size_t)b->maxWg;
   double target = b->chunkMs > 0 ? b->chunkMs : 40;
   int maxSteps = (int)(P->maxT / P->dt) + 8, done = 0; cl_uint alive = 0, zero = 0;
@@ -131,6 +133,7 @@ static int opencl_eval(Backend* b, const float* weights, int nGenomes, const BrS
     CL.SetKernelArg(c->k, 0, sizeof(cl_mem), &c->state); CL.SetKernelArg(c->k, 1, sizeof(cl_mem), &c->weights);
     CL.SetKernelArg(c->k, 2, sizeof(cl_mem), &c->scen); CL.SetKernelArg(c->k, 3, sizeof(cl_mem), &c->params);
     CL.SetKernelArg(c->k, 4, sizeof(cl_mem), &c->alive); CL.SetKernelArg(c->k, 5, sizeof(cl_mem), &c->idx); CL.SetKernelArg(c->k, 6, sizeof(cl_mem), &c->flags);
+    CL.SetKernelArg(c->k, 7, sizeof(cl_mem), &c->traj);
     size_t global = ((size_t)P->nActive + local - 1) / local * local;
     double t0 = br_now();
     cl_int e = CL.EnqueueNDRangeKernel(c->q, c->k, 1, NULL, &global, &local, 0, NULL, NULL);
@@ -157,8 +160,8 @@ static int opencl_eval(Backend* b, const float* weights, int nGenomes, const BrS
 }
 
 static void opencl_destroy(Backend* b) { ClImpl* c = (ClImpl*)b->impl;
-  cl_mem ms[7] = { c->state, c->weights, c->scen, c->params, c->alive, c->idx, c->flags };
-  for (int i = 0; i < 7; i++) if (ms[i]) CL.ReleaseMemObject(ms[i]);
+  cl_mem ms[8] = { c->state, c->weights, c->scen, c->params, c->alive, c->idx, c->flags, c->traj };
+  for (int i = 0; i < 8; i++) if (ms[i]) CL.ReleaseMemObject(ms[i]);
   if (c->k) CL.ReleaseKernel(c->k);
   if (c->prog) CL.ReleaseProgram(c->prog);
   CL.ReleaseCommandQueue(c->q); CL.ReleaseContext(c->ctx); free(c); free(b); }

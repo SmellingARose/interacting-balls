@@ -1,4 +1,4 @@
-// Training service: background training with islands (CMA-ES or GA), hardware auto-tune, champion persistence and
+// Training service: background training with islands (CMA-ES or GA), hardware auto-tune, star persistence and
 // flight playback for the UI. All simulation runs here, natively; the UI only displays.
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,7 +39,8 @@ static const char* jfind(const char* j, const char* key) {
 }
 static double jnum(const char* j, const char* key, double def) {
   const char* p = jfind(j, key); if (!p) return def;
-  if (!strncmp(p, "true", 4)) return 1; if (!strncmp(p, "false", 5)) return 0;
+  if (!strncmp(p, "true", 4)) return 1;
+  if (!strncmp(p, "false", 5)) return 0;
   char* e; double v = strtod(p, &e); return e == p ? def : v;
 }
 static void jstr(const char* j, const char* key, char* out, int len) {
@@ -61,6 +62,7 @@ void cfg_defaults(TrainCfg* c) {
   c->layers = 1; c->width = 32; c->pop = 256; c->scen = 16; c->reuse = 5; c->nIsl = 4; c->migrate = 10;
   c->cma = 1; c->decayOn = 1; c->decay = 0.995; c->lrMin = 1e-4;
   c->dt = 0.02; c->tw = 2.5; c->valEvery = 10; c->valScen = 64;
+  c->mode = 0; c->fair = 1; c->range = 7000; c->twRunner = 2.5;
 }
 static int clampi(int v, int a, int b) { return v < a ? a : v > b ? b : v; }
 void cfg_from_json(TrainCfg* c, const char* j) {
@@ -74,13 +76,19 @@ void cfg_from_json(TrainCfg* c, const char* j) {
   c->cma = jnum(j, "cma", c->cma) != 0; c->decayOn = jnum(j, "decayOn", c->decayOn) != 0; c->decay = jnum(j, "decay", c->decay); c->lrMin = jnum(j, "lrMin", c->lrMin);
   c->dt = jnum(j, "dt", c->dt); if (c->dt < 0.005) c->dt = 0.005; if (c->dt > 0.04) c->dt = 0.04;
   c->tw = jnum(j, "tw", c->tw); c->speedW = jnum(j, "speedW", c->speedW); c->everyStep = jnum(j, "everyStep", c->everyStep) != 0;
-  c->valEvery = clampi((int)jnum(j, "valEvery", c->valEvery), 1, 1000); c->valScen = clampi((int)jnum(j, "valScen", c->valScen), 8, 1024);
+  c->valEvery = clampi((int)jnum(j, "valEvery", c->valEvery), 1, 1000); c->valScen = clampi((int)jnum(j, "valScen", c->valScen), 8, 512);
+  c->mode = jnum(j, "mode", c->mode) != 0; c->fair = jnum(j, "fair", c->fair) != 0;
+  c->range = fmin(100000, fmax(4000, jnum(j, "range", c->range))); c->evade = fmin(1, fmax(0, jnum(j, "evade", c->evade)));
+  c->noise = fmin(200, fmax(0, jnum(j, "noise", c->noise))); c->delayMs = fmin(2000, fmax(0, jnum(j, "delayMs", c->delayMs)));
+  c->detect = fmin(50000, fmax(0, jnum(j, "detect", c->detect))); c->twRunner = fmin(5, fmax(1.2, jnum(j, "twRunner", c->twRunner)));
 }
 void cfg_to_json(const TrainCfg* c, char* o, int len) {
   snprintf(o, len, "{\"backend\":\"%s\",\"wg\":%d,\"chunkMs\":%g,\"layers\":%d,\"width\":%d,\"K\":%d,\"mem\":%d,\"pop\":%d,\"scen\":%d,\"reuse\":%d,"
-    "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d}",
+    "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d,"
+    "\"mode\":%d,\"fair\":%d,\"range\":%g,\"evade\":%g,\"noise\":%g,\"delayMs\":%g,\"detect\":%g,\"twRunner\":%g}",
     c->backend, c->wg, c->chunkMs, c->layers, c->width, c->K, c->mem, c->pop, c->scen, c->reuse, c->islands, c->nIsl, c->migrate,
-    c->cma, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW, c->everyStep);
+    c->cma, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW, c->everyStep,
+    c->mode, c->fair, c->range, c->evade, c->noise, c->delayMs, c->detect, c->twRunner);
 }
 
 void setup_params(BrParams* P, const TrainCfg* c, int S) {
@@ -88,6 +96,9 @@ void setup_params(BrParams* P, const TrainCfg* c, int S) {
   double mass = 105;
   P->mass = (float)mass; P->thrust = (float)(c->tw * mass * 9.81); P->Cd = 0.32f; P->A = 0.03f; P->CNa = 4.5f; P->SM = 0.35f; P->len = 3; P->I = 40;
   P->dt = (float)c->dt; P->maxT = 120; P->hitR = 30;
+  P->mode = c->mode; P->ballD = 2; P->noise = (float)c->noise; P->detect = (float)c->detect;
+  P->delay = (int)lround(c->delayMs / (c->dt * 1000));
+  if (c->mode) P->maxT = (float)fmax(120, ceil((c->range + 1500) / 150) + 60);   // long runs need time to arrive
   P->ctrl = c->everyStep ? 1 : 2; P->K = c->K; P->rec = c->mem; P->memN = c->mem ? c->width : 0;
   P->nin = BR_NI * (c->K + 1) + P->memN;
   P->nl = c->layers + 1; P->arch[0] = P->nin;
@@ -124,7 +135,7 @@ Backend* make_backend(const char* id, const TrainCfg* c, char* err, int errLen) 
   return b;
 }
 
-// ---------------- scenarios and scoring (reach-target mode: ball starts 10 m up, pointing straight up)
+// ---------------- scenarios and scoring (reach-goal mode: ball starts 10 m up, pointing straight up)
 static void gen_scen(BrScen* s, Rng* r, double dist) {
   double a = urand(r) * 2 * M_PI, d = dist > 0 ? dist : 1500 + urand(r) * 5500, wa = urand(r) * 2 * M_PI, w = urand(r) * 15;
   memset(s, 0, sizeof *s);
@@ -132,18 +143,151 @@ static void gen_scen(BrScen* s, Rng* r, double dist) {
   s->wx = (float)(cos(wa) * w); s->wz = (float)(sin(wa) * w);
   s->sy = 10.0f; s->q0 = 0.0f;
 }
-static double fitness(const float* o, double speedW) {
-  double f = -log(fmax(o[0], 30.0) / 30.0);
+// Runner: the guidance algorithm, with its own engine (twRunner) and the evade weave, flies
+// from `start` to the defended point `def`. Records px,py,pz,vx,vy,vz for the start and after every physics step into
+// `traj` (6 floats per step, at most maxSteps steps). Returns the number of steps recorded; *atkHit = reached the goal.
+#define RUNNER_CTRL 2
+static int br_make_attack(const float def[3], const float wind[3], const float start[3], const BrParams* P0, float thrustAtk, double evade,
+                          Rng* r, float* traj, int maxSteps, int* atkHit) {
+  BrParams P = *P0; P.mode = 0; P.detect = 0; P.thrust = thrustAtk;   // the runner chases a fixed goal with its own engine
+  P.stride = S_HIST;
+  BrScen sc; memset(&sc, 0, sizeof sc);
+  sc.tx = def[0]; sc.ty = def[1]; sc.tz = def[2]; sc.wx = wind[0]; sc.wy = wind[1]; sc.wz = wind[2];
+  sc.sx = start[0]; sc.sy = start[1]; sc.sz = start[2];
+  sc.q0 = start[1] > 5 ? 0.0f : (float)(urand(r) * 0.02);   // ground launch: tiny random tilt
+  double w1 = 0.6 + urand(r) * 1.2, w2 = 0.6 + urand(r) * 1.2, f1 = urand(r) * 6.28, f2 = urand(r) * 6.28;
+  float g[S_HIST]; br_init(g, &P, &sc);
+  BrState s; br_load(&s, g);
+  BrTgt tg; memset(&tg, 0, sizeof tg);
+  tg.x = tg.px = tg.sx = def[0]; tg.y = tg.py = tg.sy = def[1]; tg.z = tg.pz = tg.sz = def[2];
+  traj[0] = s.px; traj[1] = s.py; traj[2] = s.pz; traj[3] = traj[4] = traj[5] = 0;
+  int n = 1;
+  while (s.alive && n < maxSteps) {
+    if (s.k++ % RUNNER_CTRL == 0) {
+      float u[3]; br_evader_control(&s, &P, &sc, &tg, (float)evade, (float)w1, (float)f1, (float)w2, (float)f2, u);
+      s.u0 = u[0]; s.u1 = u[1]; s.u2 = u[2];
+    }
+    br_step(&s, &P, &sc, &tg);
+    float* o = traj + (size_t)n * 6; o[0] = s.px; o[1] = s.py; o[2] = s.pz; o[3] = s.vx; o[4] = s.vy; o[5] = s.vz; n++;
+  }
+  *atkHit = s.hit;
+  return n;
+}
+
+// ---------------- tag scenarios: runner launches range–(range+1.5 km) from the defended
+// point and flies at it; the chaser launches 0.5–3 km from it, at least 0.7·range from the runner's launch site.
+// With `fair` on, a setup is kept only if the algorithm as chaser with perfect sensors passes within WIN_R.
+#define WIN_R 20
+static void ring_pt(const float c[3], double a, double b, Rng* r, float o[3]) {
+  double t = urand(r) * 2 * M_PI, d = a + urand(r) * (b - a);
+  o[0] = c[0] + (float)(cos(t) * d); o[1] = 1.6f; o[2] = c[2] + (float)(sin(t) * d);
+}
+// The algorithm chasing a recorded runner (tag rules, P's detect, no noise/delay). Returns the closest approach.
+static float algo_tag_rollout(const BrParams* P0, const BrScen* sc, const float* traj) {
+  BrParams P = *P0; P.mode = 1; P.noise = 0; P.delay = 0; P.stride = S_HIST;
+  float g[S_HIST]; br_init(g, &P, sc);
+  BrState s; br_load(&s, g);
+  BrTgt tg; memset(&tg, 0, sizeof tg);
+  while (s.alive) {
+    if (!br_target(&s, &P, sc, traj, &tg)) break;
+    if (s.k % P.ctrl == 0) { float u[3]; br_algo_control(&s, &P, sc, &tg, u); s.u0 = u[0]; s.u1 = u[1]; s.u2 = u[2]; }
+    s.k++;
+    br_step(&s, &P, sc, &tg);
+  }
+  return s.minD;
+}
+// Max physics steps one runner path can take (sizes the path buffer: scenarios × this × 6 floats).
+static int tag_max_steps(const BrParams* P) { return (int)(P->maxT / P->dt) + 2; }
+// Fills one tag scenario; its runner path goes to traj + off·6 (room for tag_max_steps). Returns the steps used.
+static int gen_tag_scen(BrScen* out, Rng* r, const TrainCfg* c, const BrParams* P, float* traj, int off) {
+  double R = c->range; int maxS = tag_max_steps(P);
+  float wind[3]; { double wa = urand(r) * 2 * M_PI, w = urand(r) * 15; wind[0] = (float)(cos(wa) * w); wind[1] = 0; wind[2] = (float)(sin(wa) * w); }
+  float def[3]; { double a = urand(r) * 2 * M_PI, d = urand(r) * 3000; def[0] = (float)(cos(a) * d); def[1] = 0; def[2] = (float)(sin(a) * d); }
+  float thrA = (float)(c->twRunner * P->mass * BR_G);
+  // each try is recorded into tmp, then copied to the batch buffer when kept (the last try is the fallback)
+  float* tmp = (float*)malloc(sizeof(float) * 6 * (size_t)maxS);
+  float* dst = traj + (size_t)off * 6;
+  int n = 0;
+  for (int tries = 0; tries < 30; tries++) {
+    float rs[3], st[3]; ring_pt(def, R, R + 1500, r, rs);
+    do ring_pt(def, 500, 3000, r, st); while (hypot(st[0] - rs[0], st[2] - rs[2]) < R * 0.7);
+    int hit, len = br_make_attack(def, wind, rs, P, thrA, c->evade, r, tmp, maxS, &hit);
+    BrScen sc; memset(&sc, 0, sizeof sc);
+    sc.tx = def[0]; sc.ty = def[1]; sc.tz = def[2]; sc.wx = wind[0]; sc.wy = wind[1]; sc.wz = wind[2];
+    sc.sx = st[0]; sc.sy = st[1]; sc.sz = st[2]; sc.q0 = (float)(urand(r) * 0.02);
+    sc.trajOff = (float)off; sc.trajLen = (float)len; sc.seed = (float)(int)(urand(r) * 16777216); sc.atkHit = (float)hit;
+    int ok = 0;
+    if (c->fair) { BrScen t0 = sc; t0.trajOff = 0; ok = algo_tag_rollout(P, &t0, tmp) <= WIN_R; sc.winnable = (float)ok; }
+    // keep this one (first try with fair off, any reachable one, else the last try as fallback)
+    *out = sc; memcpy(dst, tmp, sizeof(float) * 6 * (size_t)len); n = len;
+    if (!c->fair || ok) break;
+  }
+  free(tmp);
+  return n;
+}
+// A whole generation's tag scenarios, built on all CPU cores (flying every runner and the reachability check is the
+// costly part at long range). Each scenario draws from its own generator seeded from `r`, so the result does not
+// depend on the thread count. Paths are recorded into fixed slots, then packed contiguously (offsets in steps).
+// Returns the floats used.
+typedef struct { BrScen* sc; int S, maxS; unsigned* seeds; const TrainCfg* c; const BrParams* P; float* slots; int* len; br_atomic_int next; } TagJob;
+static void tag_worker(void* arg) {
+  TagJob* j = (TagJob*)arg;
+  for (;;) { int i = br_atomic_fetch_add(&j->next, 1); if (i >= j->S) break;
+    Rng r; rng_seed(&r, j->seeds[i]);
+    j->len[i] = gen_tag_scen(&j->sc[i], &r, j->c, j->P, j->slots, i * j->maxS); }
+}
+static size_t gen_tag_batch(BrScen* sc, int S, Rng* r, const TrainCfg* c, const BrParams* P, float* traj) {
+  int maxS = tag_max_steps(P), nt = br_cpu_count(); if (nt > S) nt = S;
+  unsigned* seeds = (unsigned*)malloc(sizeof(unsigned) * S); int* len = (int*)malloc(sizeof(int) * S);
+  for (int i = 0; i < S; i++) seeds[i] = (unsigned)(urand(r) * 4294967295.0);
+  TagJob job = { sc, S, maxS, seeds, c, P, traj, len, 0 };
+  br_run_threads(nt, tag_worker, &job);
+  int off = 0;   // pack: slot i starts at i·maxS ≥ off, so moving forward never overwrites an unread slot
+  for (int i = 0; i < S; i++) {
+    if (off != i * maxS) memmove(traj + (size_t)off * 6, traj + (size_t)i * maxS * 6, sizeof(float) * 6 * (size_t)len[i]);
+    sc[i].trajOff = (float)off; off += len[i];
+  }
+  free(seeds); free(len);
+  return (size_t)off * 6;
+}
+
+// Score of one flight o = [closest approach, hit, time, steps]: log distance down to the hit
+// size (2 m tagging, 30 m reach), +5 for a hit plus a speed bonus or a small time penalty; tag mode: −2 when the
+// runner reached its defended point (atkHit comes from the scenario, which the host already knows).
+static double fitness(const float* o, double speedW, int mode, float atkHit) {
+  double f = -log(fmax(o[0], mode ? 2.0 : 30.0) / 30.0);
   if (o[1] > 0.5f) f += 5 + (speedW > 0 ? speedW * fmax(0, 1 - o[2] / 60.0) : -0.01 * o[2]);
+  else if (mode && atkHit > 0.5f) f -= 2;
   return f;
 }
+
+// A set of scenarios: reach goals, or tag setups with their runner paths packed into one buffer.
+typedef struct { BrScen* sc; int n, cap; float* traj; size_t trajFloats, trajCap; } ScenSet;
+static void scen_make(ScenSet* s, int S, Rng* r, const TrainCfg* c, const BrParams* P) {
+  if (S > s->cap) { s->sc = (BrScen*)realloc(s->sc, sizeof(BrScen) * S); s->cap = S; }
+  s->n = S; s->trajFloats = 0;
+  if (!c->mode) { for (int i = 0; i < S; i++) gen_scen(&s->sc[i], r, 0); return; }
+  size_t need = (size_t)S * tag_max_steps(P) * 6;
+  if (need > s->trajCap) { s->traj = (float*)realloc(s->traj, sizeof(float) * need); s->trajCap = need; }
+  s->trajFloats = gen_tag_batch(s->sc, S, r, c, P, s->traj);
+}
+static void scen_free(ScenSet* s) { free(s->sc); free(s->traj); memset(s, 0, sizeof *s); }
+// Settings that change what a scenario is (when they change, scenarios are rebuilt).
+static int scen_same(const TrainCfg* a, const TrainCfg* b) {
+  return a->mode == b->mode && (!a->mode || (a->fair == b->fair && a->range == b->range && a->evade == b->evade &&
+         a->twRunner == b->twRunner && a->detect == b->detect && a->dt == b->dt && a->everyStep == b->everyStep));
+}
+static int eval_set(Backend* b, const float* g, int n, const ScenSet* s, BrParams* P, float* out) {
+  return b->eval(b, g, n, s->sc, s->trajFloats ? s->traj : NULL, s->trajFloats, P, out);
+}
+
 static void random_genome(float* g, const BrParams* P, Rng* r) {
   for (int i = 0; i < P->nw; i++) g[i] = (float)((urand(r) * 2 - 1) * 0.5);
   if (P->rec) { int ni = P->arch[0], h1 = P->arch[1], m0 = BR_NI * (P->K + 1);   // memory weights start small
     for (int j = 0; j < h1; j++) for (int i = m0; i < ni; i++) g[j * ni + i] *= 0.2f; }
 }
 
-// ---------------- optimizers (ports of the browser's GA and sep-CMA-ES)
+// ---------------- optimizers (GA and sep-CMA-ES)
 typedef struct { int n, lam; float* pop; double sigma; } GA;
 typedef struct { int n, lam, mu; double* w; double mueff, cs, ds, cc, c1, cmu, chiN, sigma; double *m, *C, *ps, *pc; float *Z, *Y, *X; int g; } CMA;
 typedef struct { int cma; GA ga; CMA c; float* bestG; double bestF; } Island;
@@ -228,9 +372,11 @@ static struct {
   TrainCfg cfg, pending; volatile int hasPending;
   Backend* be; char beId[32]; int beWg; double beChunk; int beThreads;
   BrParams P; Island* isl; int nIsl; int structKey[8];
-  Rng rng; BrScen* scen; int scenCount, scenAge;
-  float* champ; int champNw; int champArch[BR_MAXL]; int champNl; int champK, champMem; int champVersion; double champFit;
-  int gen; double best, mean, sigma, genTime, flightsPerS, stepsPerS, champHits, champMiss, valHit; int valGen;
+  Rng rng; ScenSet scen; int scenAge; TrainCfg scenCfg;
+  ScenSet val; TrainCfg valCfg; int valReady;   // fixed validation set (same seed every time, rebuilt when settings change)
+  int starMode;   // mode the current star was trained in (0 reach, 1 tag); each mode keeps its own save file
+  float* star; int starNw; int starArch[BR_MAXL]; int starNl; int starK, starMem; int starVersion; double starFit;
+  int gen; double best, mean, sigma, genTime, flightsPerS, stepsPerS, starHits, starMiss, valHit; int valGen;
   Hist* hist; int histN;
   char msg[256]; char beInfo[256];
   // auto-tune
@@ -239,63 +385,91 @@ static struct {
 
 static void set_msg(const char* fmt, ...) { va_list ap; va_start(ap, fmt); br_lock(&T.mx); vsnprintf(T.msg, sizeof T.msg, fmt, ap); br_unlock(&T.mx); va_end(ap); }
 
-static const char* save_path(void) {
+// One saved star per mode: BallArena-star-reach.json and BallArena-star-tag.json (mode -1 = the pre-tag file name,
+// read once as the reach star if no reach file exists yet).
+static const char* save_path_mode(int mode) {
   static char p[1024]; const char* h = getenv("HOME");
+  const char* name = mode < 0 ? "BallArena-star.json" : mode ? "BallArena-star-tag.json" : "BallArena-star-reach.json";
 #ifdef _WIN32
   if (!h) h = getenv("USERPROFILE");
-  snprintf(p, sizeof p, "%s\\BallisticRange-champion.json", h ? h : ".");
+  snprintf(p, sizeof p, "%s\\%s", h ? h : ".", name);
 #else
-  snprintf(p, sizeof p, "%s/BallisticRange-champion.json", h ? h : ".");
+  snprintf(p, sizeof p, "%s/%s", h ? h : ".", name);
 #endif
   return p;
 }
+static const char* save_path(void) { return save_path_mode(T.starMode); }
 
-static void champion_json_locked(Sb* o) {
-  sb_printf(o, "{\"format\":\"ballistic-range-network\",\"mode\":\"mission\",\"arch\":[");
-  for (int l = 0; l <= T.champNl; l++) sb_printf(o, "%s%d", l ? "," : "", T.champArch[l]);
+static void star_json_locked(Sb* o) {
+  sb_printf(o, "{\"format\":\"ball-arena-network\",\"mode\":\"%s\",\"arch\":[", T.starMode ? "tag" : "reach");
+  for (int l = 0; l <= T.starNl; l++) sb_printf(o, "%s%d", l ? "," : "", T.starArch[l]);
   sb_printf(o, "],\"K\":%d,\"memory\":%s,\"dt\":%g,\"ctrlEvery\":%d,\"thrustToWeight\":%g,\"generation\":%d,\"fitness\":%.4f,\"validationHitRate\":%.4f,\"version\":%d,\"weights\":[",
-    T.champK, T.champMem ? "true" : "false", T.cfg.dt, T.cfg.everyStep ? 1 : 2, T.cfg.tw, T.gen, T.champFit, T.valHit, T.champVersion);
-  for (int i = 0; i < T.champNw; i++) sb_printf(o, "%s%.7g", i ? "," : "", T.champ[i]);
+    T.starK, T.starMem ? "true" : "false", T.cfg.dt, T.cfg.everyStep ? 1 : 2, T.cfg.tw, T.gen, T.starFit, T.valHit, T.starVersion);
+  for (int i = 0; i < T.starNw; i++) sb_printf(o, "%s%.7g", i ? "," : "", T.star[i]);
   sb_printf(o, "]}");
 }
 static void autosave(void) {
-  Sb o = {0}; br_lock(&T.mx); if (T.champ) champion_json_locked(&o); br_unlock(&T.mx);
+  Sb o = {0}; br_lock(&T.mx); if (T.star) star_json_locked(&o); br_unlock(&T.mx);
   if (o.n) { FILE* f = fopen(save_path(), "w"); if (f) { fwrite(o.s, 1, o.n, f); fclose(f); } }
   free(o.s);
 }
 
 // Load a network (JSON with "arch", "K", "memory", "weights"). Called with the lock NOT held.
-int trainer_load_json(const char* json, char* msg, int len) {
+static int load_json_mode(const char* json, char* msg, int len, int wantMode) {
   const char* a = strstr(json, "\"arch\""); const char* w = strstr(json, "\"weights\"");
-  if (!a || !w) { snprintf(msg, len, "not a Ballistic Range network file"); return -1; }
+  if (!a || !w) { snprintf(msg, len, "not a Ball Arena network file"); return -1; }
   int arch[BR_MAXL], nl = -1; const char* p = strchr(a, '['); if (!p) return -1; p++;
   while (*p && *p != ']' && nl < BR_MAXL - 1) { arch[++nl] = (int)strtol(p, (char**)&p, 10); while (*p == ',' || *p == ' ') p++; }
   if (nl < 1) { snprintf(msg, len, "bad arch"); return -1; }
+  // mode: "tag", or "reach" ("mission" and a missing field are older reach saves). A star from the other mode is refused.
+  int fmode = 0; { const char* m = strstr(json, "\"mode\""); const char* t = m ? strstr(m, "\"tag\"") : NULL; if (t && t - m < 16) fmode = 1; }
+  if (wantMode >= 0 && fmode != wantMode) { snprintf(msg, len, "this network was trained in %s mode; switch to that mode to load it", fmode ? "intercept" : "reach"); return -1; }
   int nw = 0; for (int l = 0; l < nl; l++) nw += arch[l + 1] * arch[l] + arch[l + 1];
   float* g = (float*)malloc(sizeof(float) * nw); p = strchr(w, '['); if (!p) { free(g); return -1; } p++;
   int n = 0; while (n < nw && *p && *p != ']') { g[n++] = strtof(p, (char**)&p); while (*p == ',' || *p == ' ') p++; }
   if (n != nw) { free(g); snprintf(msg, len, "expected %d weights, found %d", nw, n); return -1; }
   br_lock(&T.mx);
-  free(T.champ); T.champ = g; T.champNw = nw; T.champNl = nl; memcpy(T.champArch, arch, sizeof(int) * (nl + 1));
-  T.champK = (int)jnum(json, "K", 0); T.champMem = jnum(json, "memory", 0) != 0; T.champVersion++; T.champFit = jnum(json, "fitness", 0);
+  free(T.star); T.star = g; T.starNw = nw; T.starMode = fmode; T.starNl = nl; memcpy(T.starArch, arch, sizeof(int) * (nl + 1));
+  T.starK = (int)jnum(json, "K", 0); T.starMem = jnum(json, "memory", 0) != 0; T.starVersion++; T.starFit = jnum(json, "fitness", 0);
   T.valHit = jnum(json, "validationHitRate", 0);
   br_unlock(&T.mx);
   snprintf(msg, len, "loaded network %d", arch[0]); for (int l = 1; l <= nl; l++) { char t[16]; snprintf(t, sizeof t, "-%d", arch[l]); strncat(msg, t, len - strlen(msg) - 1); }
   return 0;
 }
 
+static void free_islands(void);
+// Loading a network from the interface or --load: it must belong to the mode currently selected.
+int trainer_load_json(const char* json, char* msg, int len) { return load_json_mode(json, msg, len, T.cfg.mode); }
+
+// Make `mode`'s saved star the current one (none if that mode has never been trained). Lock NOT held.
+static void load_mode_star(int mode) {
+  br_lock(&T.mx); free(T.star); T.star = NULL; T.starNw = 0; T.starMode = mode; T.starVersion++; T.gen = 0; T.histN = 0;
+  T.best = T.mean = T.starHits = T.starMiss = T.valHit = 0; T.valGen = 0; br_unlock(&T.mx);
+  const char* p = save_path_mode(mode); FILE* f = fopen(p, "rb");
+  if (!f && !mode) { p = save_path_mode(-1); f = fopen(p, "rb"); }
+  if (f) { fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET); char* b = (char*)malloc(len + 1); len = (long)fread(b, 1, len, f); b[len] = 0; fclose(f);
+    char m[200]; if (!load_json_mode(b, m, sizeof m, mode)) set_msg("restored your last %s star (%s)", mode ? "intercept" : "reach", p); free(b); }
+  else set_msg("no saved %s star yet", mode ? "intercept" : "reach");
+}
+// Select a mode: saves the current star, then makes that mode's saved star current. Called with training stopped
+// (the interface's mode switch) or from the training thread between generations.
+void trainer_set_mode(int mode) {
+  mode = mode != 0;
+  if (mode == T.starMode && T.cfg.mode == mode) return;
+  autosave(); T.cfg.mode = mode; load_mode_star(mode);
+  free_islands();
+}
+
 void trainer_init(void) {
   br_mutex_init(&T.mx); rng_seed(&T.rng, (unsigned)(br_now() * 1000));
   cfg_defaults(&T.cfg); T.hist = (Hist*)calloc(HIST_MAX, sizeof(Hist));
-  FILE* f = fopen(save_path(), "rb");
-  if (f) { fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET); char* b = (char*)malloc(len + 1); len = (long)fread(b, 1, len, f); b[len] = 0; fclose(f);
-    char m[128]; if (!trainer_load_json(b, m, sizeof m)) snprintf(T.msg, sizeof T.msg, "restored your last champion (%s)", save_path()); free(b); }
+  load_mode_star(T.cfg.mode);
 }
 
-static int champ_matches(const BrParams* P) {
-  if (!T.champ || T.champNl != P->nl) return 0;
-  for (int l = 0; l <= P->nl; l++) if (T.champArch[l] != P->arch[l]) return 0;
-  return T.champK == P->K && T.champMem == P->rec;
+static int star_matches(const BrParams* P) {
+  if (!T.star || T.starMode != P->mode || T.starNl != P->nl) return 0;
+  for (int l = 0; l <= P->nl; l++) if (T.starArch[l] != P->arch[l]) return 0;
+  return T.starK == P->K && T.starMem == P->rec;
 }
 
 static void free_islands(void) {
@@ -308,7 +482,7 @@ static void build_islands(void) {
   int k = c->islands ? c->nIsl : 1; if (k > c->pop / 4) k = c->pop / 4 > 1 ? c->pop / 4 : 1;
   int per = c->pop / k; if (per < 4) per = 4;
   float* seed = (float*)malloc(sizeof(float) * T.P.nw); int seeded = 0;
-  br_lock(&T.mx); if (champ_matches(&T.P)) { memcpy(seed, T.champ, sizeof(float) * T.P.nw); seeded = 1; } br_unlock(&T.mx);
+  br_lock(&T.mx); if (star_matches(&T.P)) { memcpy(seed, T.star, sizeof(float) * T.P.nw); seeded = 1; } br_unlock(&T.mx);
   T.isl = (Island*)calloc(k, sizeof(Island)); T.nIsl = k;
   for (int i = 0; i < k; i++) {
     Island* I = &T.isl[i]; I->cma = c->cma; I->bestG = (float*)calloc(T.P.nw, sizeof(float)); I->bestF = -1e30;
@@ -341,10 +515,12 @@ static int ensure_backend(void) {
 
 static double validate(const float* g) {
   BrParams P; setup_params(&P, &T.cfg, T.cfg.valScen);
-  BrScen* sc = (BrScen*)malloc(sizeof(BrScen) * P.S); for (int i = 0; i < P.S; i++) gen_scen(&sc[i], &T.rng, 0);
+  if (!T.valReady || T.val.n != P.S || !scen_same(&T.valCfg, &T.cfg)) {
+    Rng r; rng_seed(&r, 4242); scen_make(&T.val, P.S, &r, &T.cfg, &P); T.valCfg = T.cfg; T.valReady = 1;
+  }
   float* out = (float*)malloc(sizeof(float) * 4 * P.S);
-  int hits = 0; if (!T.be->eval(T.be, g, 1, sc, &P, out)) for (int i = 0; i < P.S; i++) hits += out[i * 4 + 1] > 0.5f;
-  free(sc); free(out); return (double)hits / P.S;
+  int hits = 0; if (!eval_set(T.be, g, 1, &T.val, &P, out)) for (int i = 0; i < P.S; i++) hits += out[i * 4 + 1] > 0.5f;
+  free(out); return (double)hits / P.S;
 }
 
 static void train_thread(void* arg) {
@@ -352,16 +528,19 @@ static void train_thread(void* arg) {
   float* flat = NULL; size_t flatCap = 0; float* out = NULL; size_t outCap = 0; double* fit = NULL; int fitCap = 0;
   set_msg("training");
   while (!T.stopReq) {
-    if (T.hasPending) { br_lock(&T.mx); T.cfg = T.pending; T.hasPending = 0; br_unlock(&T.mx); }
+    if (T.hasPending) { br_lock(&T.mx); TrainCfg nc = T.pending; T.hasPending = 0; br_unlock(&T.mx);
+      if (nc.mode != T.starMode) trainer_set_mode(nc.mode);
+      T.cfg = nc; }
     if (ensure_backend()) break;
     if (needs_rebuild(&T.cfg)) build_islands();
     TrainCfg* c = &T.cfg;
     setup_params(&T.P, c, c->scen);   // physics settings may have changed
-    if (T.scenCount != c->scen || T.scenAge >= c->reuse) {
-      if (T.scenCount != c->scen) { free(T.scen); T.scen = (BrScen*)malloc(sizeof(BrScen) * c->scen); T.scenCount = c->scen; }
-      for (int i = 0; i < c->scen; i++) gen_scen(&T.scen[i], &T.rng, 0);
+    double tScen = br_now();   // tag scenarios fly the runner (and the reachability check) on the CPU: count that time
+    if (T.scen.n != c->scen || T.scenAge >= c->reuse || !scen_same(&T.scenCfg, c)) {
+      scen_make(&T.scen, c->scen, &T.rng, c, &T.P); T.scenCfg = *c;
       T.scenAge = 0;
     }
+    tScen = br_now() - tScen;
     T.scenAge++;
     int n = 0; for (int i = 0; i < T.nIsl; i++) { if (T.isl[i].cma) cma_ask(&T.isl[i].c, &T.rng); n += isl_size(&T.isl[i]); }
     size_t need = (size_t)n * T.P.nw; if (need > flatCap) { flat = (float*)realloc(flat, sizeof(float) * need); flatCap = need; }
@@ -369,12 +548,12 @@ static void train_thread(void* arg) {
     if (n > fitCap) { fit = (double*)realloc(fit, sizeof(double) * n); fitCap = n; }
     { size_t o = 0; for (int i = 0; i < T.nIsl; i++) { size_t k = (size_t)isl_size(&T.isl[i]) * T.P.nw; memcpy(flat + o, isl_genomes(&T.isl[i]), sizeof(float) * k); o += k; } }
     double t0 = br_now();
-    if (T.be->eval(T.be, flat, n, T.scen, &T.P, out)) { set_msg("evaluation failed on %s", T.be->info); break; }
-    double dt = br_now() - t0, steps = 0, mean = 0; int champ = 0;
-    for (int i = 0; i < n; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + ((size_t)i * c->scen + j) * 4; f += fitness(o, c->speedW); steps += o[3]; }
-      fit[i] = f / c->scen; mean += fit[i]; if (fit[i] > fit[champ]) champ = i; }
+    if (eval_set(T.be, flat, n, &T.scen, &T.P, out)) { set_msg("evaluation failed on %s", T.be->info); break; }
+    double dt = br_now() - t0 + tScen, steps = 0, mean = 0; int star = 0;
+    for (int i = 0; i < n; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + ((size_t)i * c->scen + j) * 4; f += fitness(o, c->speedW, c->mode, T.scen.sc[j].atkHit); steps += o[3]; }
+      fit[i] = f / c->scen; mean += fit[i]; if (fit[i] > fit[star]) star = i; }
     mean /= n;
-    int hits = 0; double miss = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + ((size_t)champ * c->scen + j) * 4; hits += o[1] > 0.5f; miss += o[0]; }
+    int hits = 0; double miss = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + ((size_t)star * c->scen + j) * 4; hits += o[1] > 0.5f; miss += o[0]; }
     // tell each island its slice; decay + floor; island bests for the chart
     float islBest[ISL_SHOW] = {0}; double sig = 0; int off = 0;
     for (int i = 0; i < T.nIsl; i++) {
@@ -389,11 +568,11 @@ static void train_thread(void* arg) {
     int gen;
     br_lock(&T.mx);
     gen = ++T.gen;
-    if (T.champNw != T.P.nw) { free(T.champ); T.champ = (float*)malloc(sizeof(float) * T.P.nw); T.champNw = T.P.nw; }
-    memcpy(T.champ, flat + (size_t)champ * T.P.nw, sizeof(float) * T.P.nw);
-    T.champNl = T.P.nl; memcpy(T.champArch, T.P.arch, sizeof(int) * (T.P.nl + 1)); T.champK = T.P.K; T.champMem = T.P.rec; T.champVersion++; T.champFit = fit[champ];
-    T.best = fit[champ]; T.mean = mean; T.sigma = sig / T.nIsl; T.genTime = dt; T.flightsPerS = n * c->scen / dt; T.stepsPerS = steps / dt;
-    T.champHits = (double)hits / c->scen; T.champMiss = miss / c->scen;
+    if (T.starNw != T.P.nw) { free(T.star); T.star = (float*)malloc(sizeof(float) * T.P.nw); T.starNw = T.P.nw; }
+    memcpy(T.star, flat + (size_t)star * T.P.nw, sizeof(float) * T.P.nw);
+    T.starNl = T.P.nl; memcpy(T.starArch, T.P.arch, sizeof(int) * (T.P.nl + 1)); T.starK = T.P.K; T.starMem = T.P.rec; T.starVersion++; T.starFit = fit[star];
+    T.best = fit[star]; T.mean = mean; T.sigma = sig / T.nIsl; T.genTime = dt; T.flightsPerS = n * c->scen / dt; T.stepsPerS = steps / dt;
+    T.starHits = (double)hits / c->scen; T.starMiss = miss / c->scen;
     if (T.histN == HIST_MAX) { memmove(T.hist, T.hist + 1, sizeof(Hist) * (HIST_MAX - 1)); T.histN--; }
     Hist* h = &T.hist[T.histN++]; h->gen = gen; h->best = (float)T.best; h->mean = (float)mean; memcpy(h->isl, islBest, sizeof islBest);
     br_unlock(&T.mx);
@@ -403,7 +582,7 @@ static void train_thread(void* arg) {
         if (to->cma) for (int j = 0; j < T.P.nw; j++) to->c.m[j] = 0.5 * (to->c.m[j] + g[j]);
         else memcpy(to->ga.pop + (size_t)(to->ga.lam - 1) * T.P.nw, g, sizeof(float) * T.P.nw); }
     if (gen % c->valEvery == 0) {
-      float* g = (float*)malloc(sizeof(float) * T.P.nw); memcpy(g, flat + (size_t)champ * T.P.nw, sizeof(float) * T.P.nw);
+      float* g = (float*)malloc(sizeof(float) * T.P.nw); memcpy(g, flat + (size_t)star * T.P.nw, sizeof(float) * T.P.nw);
       double v = validate(g); free(g);
       br_lock(&T.mx); T.valHit = v; T.valGen = gen; br_unlock(&T.mx);
       autosave();
@@ -431,8 +610,8 @@ void trainer_reset(void) {
   trainer_pause();
   free_islands();
   br_lock(&T.mx);
-  free(T.champ); T.champ = NULL; T.champNw = 0; T.champVersion++; T.gen = 0; T.histN = 0;
-  T.best = T.mean = T.sigma = T.genTime = T.flightsPerS = T.stepsPerS = T.champHits = T.champMiss = T.valHit = 0; T.valGen = 0;
+  free(T.star); T.star = NULL; T.starNw = 0; T.starVersion++; T.gen = 0; T.histN = 0;
+  T.best = T.mean = T.sigma = T.genTime = T.flightsPerS = T.stepsPerS = T.starHits = T.starMiss = T.valHit = 0; T.valGen = 0;
   snprintf(T.msg, sizeof T.msg, "reset · training stopped");
   br_unlock(&T.mx);
   remove(save_path());
@@ -440,10 +619,10 @@ void trainer_reset(void) {
 
 void trainer_status_json(Sb* o, int since) {
   br_lock(&T.mx);
-  sb_printf(o, "{\"running\":%s,\"tuning\":%s,\"gen\":%d,\"best\":%.4f,\"mean\":%.4f,\"champHits\":%.4f,\"champMiss\":%.2f,\"flightsPerS\":%.0f,\"stepsPerS\":%.0f,"
-    "\"genTime\":%.4f,\"sigma\":%.3g,\"valHit\":%.4f,\"valGen\":%d,\"champVersion\":%d,\"hasChampion\":%s,\"islands\":%d,\"backend\":",
-    T.running ? "true" : "false", T.tuning ? "true" : "false", T.gen, T.best, T.mean, T.champHits, T.champMiss, T.flightsPerS, T.stepsPerS,
-    T.genTime, T.sigma, T.valHit, T.valGen, T.champVersion, T.champ ? "true" : "false", T.nIsl);
+  sb_printf(o, "{\"mode\":%d,\"running\":%s,\"tuning\":%s,\"gen\":%d,\"best\":%.4f,\"mean\":%.4f,\"starHits\":%.4f,\"starMiss\":%.2f,\"flightsPerS\":%.0f,\"stepsPerS\":%.0f,"
+    "\"genTime\":%.4f,\"sigma\":%.3g,\"valHit\":%.4f,\"valGen\":%d,\"starVersion\":%d,\"hasStar\":%s,\"islands\":%d,\"backend\":",
+    T.starMode, T.running ? "true" : "false", T.tuning ? "true" : "false", T.gen, T.best, T.mean, T.starHits, T.starMiss, T.flightsPerS, T.stepsPerS,
+    T.genTime, T.sigma, T.valHit, T.valGen, T.starVersion, T.star ? "true" : "false", T.nIsl);
   sb_jstr(o, T.beInfo); sb_printf(o, ",\"message\":"); sb_jstr(o, T.msg); sb_printf(o, ",\"hist\":[");
   int first = 1;
   for (int i = 0; i < T.histN; i++) { Hist* h = &T.hist[i]; if (h->gen <= since) continue;
@@ -454,7 +633,7 @@ void trainer_status_json(Sb* o, int since) {
   sb_printf(o, "]}");
   br_unlock(&T.mx);
 }
-void trainer_champion_json(Sb* o) { br_lock(&T.mx); if (T.champ) champion_json_locked(o); else sb_printf(o, "{}"); br_unlock(&T.mx); }
+void trainer_star_json(Sb* o) { br_lock(&T.mx); if (T.star) star_json_locked(o); else sb_printf(o, "{}"); br_unlock(&T.mx); }
 
 void hardware_json(Sb* o) {
   sb_printf(o, "{\"cpuThreads\":%d,\"options\":[{\"id\":\"cpu\",\"label\":\"CPU (%d threads)\"}", br_cpu_count(), br_cpu_count());
@@ -475,10 +654,14 @@ static void tlog(const char* fmt, ...) {
 }
 typedef struct { char id[32], label[160]; int n, wg; double chunk, sps, sec; } Meas;
 
-static double measure(Backend* b, const float* G, int n, const BrScen* sc, BrParams* P, float* out, double* secOut) {
-  b->eval(b, G, n < 32 ? n : 32, sc, P, out);   // warm-up
+// Throughput of one batch. genSec: CPU time to build a generation's scenarios (tag mode flies every runner and the
+// reachability check), spread over the generations that reuse them, counted as part of each generation.
+static double g_tuneGenSec;
+static double measure(Backend* b, const float* G, int n, const ScenSet* sc, BrParams* P, float* out, double* secOut) {
+  eval_set(b, G, n < 32 ? n : 32, sc, P, out);   // warm-up
   double best = 1e9, steps = 0;
-  for (int r = 0; r < 2; r++) { double t0 = br_now(); if (b->eval(b, G, n, sc, P, out)) return 0; double t = br_now() - t0; if (t < best) best = t; }
+  for (int r = 0; r < 2; r++) { double t0 = br_now(); if (eval_set(b, G, n, sc, P, out)) return 0; double t = br_now() - t0; if (t < best) best = t; }
+  best += g_tuneGenSec;
   for (int k = 0; k < n * P->S; k++) steps += out[k * 4 + 3];
   if (secOut) *secOut = best;
   return steps / best;
@@ -487,26 +670,26 @@ static double measure(Backend* b, const float* G, int n, const BrScen* sc, BrPar
 static void tune_thread(void* arg) {
   (void)arg; TrainCfg c = T.tuneCfg; Rng r; rng_seed(&r, 777);
   BrParams P; setup_params(&P, &c, c.scen);
-  // A realistic population: your champion (if it matches the current network) plus small variations. Random networks
-  // crash within seconds and would mislead the measurement, so without a champion a quick CPU pre-training runs first.
+  // A realistic population: your star ball (if it matches the current network) plus small variations. Random networks
+  // crash within seconds and would mislead the measurement, so without a star a quick CPU pre-training runs first.
   float* base = (float*)malloc(sizeof(float) * P.nw); int have = 0;
-  br_lock(&T.mx); if (champ_matches(&P)) { memcpy(base, T.champ, sizeof(float) * P.nw); have = 1; } br_unlock(&T.mx);
+  br_lock(&T.mx); if (star_matches(&P)) { memcpy(base, T.star, sizeof(float) * P.nw); have = 1; } br_unlock(&T.mx);
   if (!have) {
     tlog("No trained network for this shape yet: pre-training a few seconds on the CPU so the test flights are realistic…");
     Backend* cpu = cpu_backend_create(0); BrParams Q; setup_params(&Q, &c, 8);
     CMA cm; float* s = (float*)malloc(sizeof(float) * P.nw); random_genome(s, &P, &r); for (int j = 0; j < P.nw; j++) s[j] *= 0.2f;
     cma_init(&cm, P.nw, 96, s, 0.25); free(s);
-    BrScen sc8[8]; float* o = (float*)malloc(sizeof(float) * 4 * 96 * 8); double* f = (double*)malloc(sizeof(double) * 96);
+    ScenSet sc8 = {0}; float* o = (float*)malloc(sizeof(float) * 4 * 96 * 8); double* f = (double*)malloc(sizeof(double) * 96);
     double t0 = br_now(); int bi = 0;
     for (int gnr = 0; gnr < 60 && br_now() - t0 < 8; gnr++) {
-      if (gnr % 5 == 0) for (int i = 0; i < 8; i++) gen_scen(&sc8[i], &r, 0);
-      cma_ask(&cm, &r); cpu->eval(cpu, cm.X, 96, sc8, &Q, o);
-      for (int i = 0; i < 96; i++) { double s2 = 0; for (int j = 0; j < 8; j++) s2 += fitness(o + ((size_t)i * 8 + j) * 4, 0); f[i] = s2 / 8; }
+      if (gnr % 5 == 0) scen_make(&sc8, 8, &r, &c, &Q);
+      cma_ask(&cm, &r); eval_set(cpu, cm.X, 96, &sc8, &Q, o);
+      for (int i = 0; i < 96; i++) { double s2 = 0; for (int j = 0; j < 8; j++) s2 += fitness(o + ((size_t)i * 8 + j) * 4, 0, c.mode, sc8.sc[j].atkHit); f[i] = s2 / 8; }
       bi = 0; for (int i = 1; i < 96; i++) if (f[i] > f[bi]) bi = i;
       memcpy(base, cm.X + (size_t)bi * P.nw, sizeof(float) * P.nw);
       cma_tell(&cm, f);
     }
-    cma_free(&cm); free(o); free(f); cpu->destroy(cpu);
+    cma_free(&cm); free(o); free(f); scen_free(&sc8); cpu->destroy(cpu);
   }
   // candidate compute options
   char ids[40][32], labels[40][160]; int nOpt = 0;
@@ -518,7 +701,10 @@ static void tune_thread(void* arg) {
   { char nm[32][160]; int g[32]; int k = opencl_devices(nm, g, 32); for (int i = 0; i < k && nOpt < 40; i++) if (g[i]) { snprintf(ids[nOpt], 32, "opencl:%d", i); snprintf(labels[nOpt++], 160, "OpenCL, %s", nm[i]); } }
 #endif
   int useN = c.cma ? 512 : 256;   // one CMA-ES gains little beyond ~512 networks per generation (GA: ~256)
-  BrScen* sc = (BrScen*)malloc(sizeof(BrScen) * P.S); for (int i = 0; i < P.S; i++) gen_scen(&sc[i], &r, 0);
+  ScenSet scs = {0}; double tg0 = br_now(); scen_make(&scs, P.S, &r, &c, &P);
+  g_tuneGenSec = (br_now() - tg0) / (c.reuse > 1 ? c.reuse : 1);
+  if (c.mode) tlog("Building %d tag scenarios takes %.0f ms on the CPU (counted in every timing below)", P.S, (br_now() - tg0) * 1000);
+  const ScenSet* sc = &scs;
   Meas rows[200]; int nRows = 0; Meas bestOpt[40]; int nBest = 0;
   for (int oi = 0; oi < nOpt; oi++) {
     char err[256] = ""; TrainCfg cc = c; Backend* b = make_backend(ids[oi], &cc, err, sizeof err);
@@ -607,7 +793,7 @@ static void tune_thread(void* arg) {
     tlog("Done: %s runs the most generations per second (%.1f).", m->label, 1 / m->sec);
   }
   br_lock(&T.mx); free(T.tuneResult.s); T.tuneResult = res; br_unlock(&T.mx);
-  free(base); free(sc);
+  free(base); scen_free(&scs);
   T.tuning = 0;
 }
 
@@ -626,32 +812,60 @@ void autotune_status_json(Sb* o) {
   br_unlock(&T.mx);
 }
 
-// ---------------- flight playback: fly the champion natively and return the paths for the 3D view
+// ---------------- flight playback: fly the star ball natively and return the paths for the 3D view
 void fly_json(const char* req, Sb* o) {
   int count = (int)jnum(req, "count", 3); if (count < 1) count = 1; if (count > 12) count = 12;
   double dist = jnum(req, "dist", 0);
   br_lock(&T.mx);
-  if (!T.champ) { br_unlock(&T.mx); sb_printf(o, "{\"error\":\"no trained network yet\"}"); return; }
   TrainCfg c; cfg_defaults(&c); cfg_from_json(&c, req);   // the UI sends its current settings
+  if (!T.star || T.starMode != c.mode) { br_unlock(&T.mx); sb_printf(o, "{\"error\":\"no trained network for this mode yet\"}"); return; }
   BrParams P; setup_params(&P, &c, 1);
-  int ok = P.nw == T.champNw && T.champNl == P.nl && T.champK == P.K && T.champMem == P.rec;
-  if (ok) for (int l = 0; l <= P.nl; l++) if (T.champArch[l] != P.arch[l]) ok = 0;
-  if (!ok) {   // the saved champion has another shape: fly it with its own shape
-    c.layers = T.champNl - 1; c.width = T.champArch[1]; c.K = T.champK; c.mem = T.champMem; setup_params(&P, &c, 1);
+  int ok = P.nw == T.starNw && T.starNl == P.nl && T.starK == P.K && T.starMem == P.rec;
+  if (ok) for (int l = 0; l <= P.nl; l++) if (T.starArch[l] != P.arch[l]) ok = 0;
+  if (!ok) {   // the saved star has another shape: fly it with its own shape
+    c.layers = T.starNl - 1; c.width = T.starArch[1]; c.K = T.starK; c.mem = T.starMem; setup_params(&P, &c, 1);
   }
-  float* g = (float*)malloc(sizeof(float) * P.nw); memcpy(g, T.champ, sizeof(float) * P.nw);
+  float* g = (float*)malloc(sizeof(float) * P.nw); memcpy(g, T.star, sizeof(float) * P.nw);
   br_unlock(&T.mx);
   float* wt = (float*)malloc(sizeof(float) * P.nw); br_transpose_genome(g, wt, &P);
   float* st = (float*)malloc(sizeof(float) * P.stride);
   Rng r; rng_seed(&r, (unsigned)(br_now() * 1e6));
   int every = (int)fmax(1, lround(0.05 / c.dt));   // ~20 samples per second
-  sb_printf(o, "{\"dt\":%g,\"flights\":[", every * c.dt);
+  sb_printf(o, "{\"dt\":%g,\"mode\":\"%s\",\"flights\":[", every * c.dt, c.mode ? "tag" : "reach");
+  if (c.mode) {
+    // Tag demo: one runner path (as in training), the star chasing it. Each sample is taken at the same physics step
+    // for both balls: runner [x,y,z], chaser [x,y,z,throttle]. The runner keeps flying after the chaser ends
+    // (unless it was tagged), so a miss shows it getting through.
+    int maxS = tag_max_steps(&P); float* tr = (float*)malloc(sizeof(float) * 6 * (size_t)maxS);
+    for (int f = 0; f < count; f++) {
+      BrScen sc; gen_tag_scen(&sc, &r, &c, &P, tr, 0);
+      int L = (int)sc.trajLen;
+      br_init(st, &P, &sc);
+      const float* rs = tr;
+      sb_printf(o, "%s{\"target\":[%.1f,%.1f,%.1f],\"wind\":[%.2f,0,%.2f],\"runnerStart\":[%.1f,%.1f,%.1f],\"start\":[%.1f,%.1f,%.1f],\"points\":[[%.2f,%.2f,%.2f,0]",
+        f ? "," : "", sc.tx, sc.ty, sc.tz, sc.wx, sc.wz, rs[0], rs[1], rs[2], sc.sx, sc.sy, sc.sz, sc.sx, sc.sy, sc.sz);
+      int k = 0;
+      while (st[S_ALIVE] != 0) {
+        br_run(st, &P, &sc, wt, tr, every); k = (int)st[S_K];
+        sb_printf(o, ",[%.2f,%.2f,%.2f,%.2f]", st[S_PX], st[S_PY], st[S_PZ], st[S_U0]);
+      }
+      int hit = st[S_HIT] != 0, escaped = !hit && k + 1 >= L;
+      // runner samples: the same steps as the chaser's, then on to the end of its path unless it was tagged
+      int endK = hit ? k : L - 1;
+      sb_printf(o, "],\"runner\":[");
+      for (int j = 0, n = 0; ; j += every, n++) { if (j > endK) j = endK; const float* a = tr + (size_t)j * 6;
+        sb_printf(o, "%s[%.2f,%.2f,%.2f]", n ? "," : "", a[0], a[1], a[2]); if (j == endK) break; }
+      sb_printf(o, "],\"hit\":%s,\"escaped\":%s,\"runnerHit\":%s,\"winnable\":%s,\"t\":%.2f,\"closest\":%.1f}",
+        hit ? "true" : "false", escaped ? "true" : "false", sc.atkHit > 0.5f && !hit ? "true" : "false", sc.winnable > 0.5f ? "true" : "false", st[S_T], st[S_MIND]);
+    }
+    free(tr); sb_printf(o, "]}"); free(g); free(wt); free(st); return;
+  }
   for (int f = 0; f < count; f++) {
     BrScen sc; gen_scen(&sc, &r, dist);
     br_init(st, &P, &sc);
     sb_printf(o, "%s{\"target\":[%.1f,%.1f,%.1f],\"wind\":[%.2f,0,%.2f],\"points\":[[%.2f,%.2f,%.2f,0]", f ? "," : "", sc.tx, sc.ty, sc.tz, sc.wx, sc.wz, sc.sx, sc.sy, sc.sz);
     while (st[S_ALIVE] != 0) {
-      br_run(st, &P, &sc, wt, every);
+      br_run(st, &P, &sc, wt, NULL, every);   // reach demo; the tag demo is added with the UI
       sb_printf(o, ",[%.2f,%.2f,%.2f,%.2f]", st[S_PX], st[S_PY], st[S_PZ], st[S_U0]);
     }
     sb_printf(o, "],\"hit\":%s,\"t\":%.2f,\"closest\":%.1f}", st[S_HIT] != 0 ? "true" : "false", st[S_T], st[S_MIND]);
@@ -675,6 +889,15 @@ static void cli_cfg(TrainCfg* c, int argc, char** argv, int* mode, int* gens, ch
     else if (!strcmp(a, "--opt")) { c->cma = strcmp(v, "ga") != 0; i++; } else if (!strcmp(a, "--dt")) { c->dt = atof(v); i++; }
     else if (!strcmp(a, "--gens")) { *gens = atoi(v); i++; } else if (!strcmp(a, "--load")) { *load = (char*)v; i++; }
     else if (!strcmp(a, "--wg")) { c->wg = atoi(v); i++; } else if (!strcmp(a, "--threads")) { c->threads = atoi(v); i++; }
+    // intercept (tag) mode
+    else if (!strcmp(a, "--mode")) { c->mode = !strcmp(v, "tag") || !strcmp(v, "intercept"); i++; }
+    else if (!strcmp(a, "--atk-range")) { c->range = fmin(100000, fmax(4000, atof(v))); i++; }
+    else if (!strcmp(a, "--evade")) { c->evade = fmin(1, fmax(0, atof(v))); i++; }
+    else if (!strcmp(a, "--noise")) { c->noise = fmax(0, atof(v)); i++; }
+    else if (!strcmp(a, "--delay")) { c->delayMs = fmax(0, atof(v)); i++; }
+    else if (!strcmp(a, "--detect")) { c->detect = fmin(50000, fmax(0, atof(v))); i++; }
+    else if (!strcmp(a, "--tw-runner")) { c->twRunner = fmin(5, fmax(1.2, atof(v))); i++; }
+    else if (!strcmp(a, "--no-fair")) c->fair = 0; else if (!strcmp(a, "--fair")) c->fair = 1;
   }
 }
 static char* read_file(const char* p) { FILE* f = fopen(p, "rb"); if (!f) return NULL; fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
@@ -684,37 +907,41 @@ int cli_main(int argc, char** argv) {
   TrainCfg c; cfg_defaults(&c); int mode = 0, gens = 100; char* load = NULL;
   cli_cfg(&c, argc, argv, &mode, &gens, &load);
   if (mode == 5) { printf("Double-click the app to open the interface. Developer options: --bench, --compare, --train [--gens N], --list-devices,\n"
-                          "with --backend cpu|metal|opencl:N --pop --scen --layers --width --K --mem --opt cma|ga --dt --every-step --islands N --wg --load FILE\n"); return 0; }
+                          "with --backend cpu|metal|opencl:N --pop --scen --layers --width --K --mem --opt cma|ga --dt --every-step --islands N --wg --load FILE\n"
+                          "Intercept (tag) mode: --mode reach|tag  --atk-range M (runner launch distance, 4000-100000 m)  --evade 0-1 (runner weave)\n"
+                          "  --noise M (sensor noise sigma)  --delay MS (sensor delay)  --detect M (wait on the pad until the runner is this close, 0 = off)\n"
+                          "  --tw-runner X (runner thrust-to-weight)  --no-fair (also keep tags the algorithm cannot reach; reachable-only is the default)\n"); return 0; }
   if (mode == 4) {
 #ifdef BR_HAVE_OPENCL
     opencl_list_devices();
 #endif
     Sb h = {0}; hardware_json(&h); printf("%s\n", h.s); free(h.s); return 0; }
   trainer_init();
+  trainer_set_mode(c.mode);   // that mode's saved star (each mode keeps its own)
   if (load) { char* j = read_file(load); char m[200]; if (!j || trainer_load_json(j, m, sizeof m)) { fprintf(stderr, "cannot load %s\n", load); return 1; } free(j); }
   if (mode == 3) {   // headless training through the same service the interface uses
     trainer_start(&c); int last = 0;
     while (T.running || T.hasPending) {
       br_sleep_ms(200);
-      br_lock(&T.mx); int g = T.gen; double best = T.best, hits = T.champHits, val = T.valHit, sps = T.stepsPerS, gt = T.genTime; int vg = T.valGen; br_unlock(&T.mx);
-      if (g != last) { printf("gen %5d  best %7.3f  champ hits %3.0f%%  validation %3.0f%% (gen %d)  %6.1f M steps/s  %.3f s/gen  [%s]\n", g, best, hits * 100, val * 100, vg, sps / 1e6, gt, T.beInfo); last = g; fflush(stdout); }
+      br_lock(&T.mx); int g = T.gen; double best = T.best, hits = T.starHits, val = T.valHit, sps = T.stepsPerS, gt = T.genTime; int vg = T.valGen; br_unlock(&T.mx);
+      if (g != last) { printf("gen %5d  best %7.3f  star hits %3.0f%%  validation %3.0f%% (gen %d)  %6.1f M steps/s  %.3f s/gen  [%s]\n", g, best, hits * 100, val * 100, vg, sps / 1e6, gt, T.beInfo); last = g; fflush(stdout); }
       if (g >= gens) break;
     }
     trainer_pause(); return 0;
   }
   // --bench / --compare: one batch on every compute option
   BrParams P; setup_params(&P, &c, c.scen); Rng r; rng_seed(&r, 12345);
-  BrScen* sc = (BrScen*)malloc(sizeof(BrScen) * c.scen); for (int i = 0; i < c.scen; i++) gen_scen(&sc[i], &r, 0);
+  ScenSet scs = {0}; scen_make(&scs, c.scen, &r, &c, &P); const ScenSet* sc = &scs;
   float* G = (float*)malloc(sizeof(float) * (size_t)c.pop * P.nw);
   for (int i = 0; i < c.pop; i++) random_genome(G + (size_t)i * P.nw, &P, &r);
-  if (T.champ && champ_matches(&P)) for (int i = 0; i < c.pop; i++) for (int j = 0; j < P.nw; j++) G[(size_t)i * P.nw + j] = T.champ[j] + (i ? (float)(gauss(&r) * 0.02) : 0);
+  if (T.star && star_matches(&P)) for (int i = 0; i < c.pop; i++) for (int j = 0; j < P.nw; j++) G[(size_t)i * P.nw + j] = T.star[j] + (i ? (float)(gauss(&r) * 0.02) : 0);
   size_t n = (size_t)c.pop * c.scen; float* ref = (float*)malloc(sizeof(float) * 4 * n); float* out = (float*)malloc(sizeof(float) * 4 * n);
   const char* ids[8] = { "cpu", "metal", "opencl:0" }; int nIds = 3;
   for (int b = 0; b < nIds; b++) {
     char err[256] = ""; Backend* be = make_backend(ids[b], &c, err, sizeof err); if (!be) { printf("  %-9s not available (%s)\n", ids[b], err); continue; }
     float* dst = b == 0 ? ref : out;
-    be->eval(be, G, c.pop < 32 ? c.pop : 32, sc, &P, dst);
-    double best = 1e9; for (int k = 0; k < 2; k++) { double t0 = br_now(); be->eval(be, G, c.pop, sc, &P, dst); double t = br_now() - t0; if (t < best) best = t; }
+    eval_set(be, G, c.pop < 32 ? c.pop : 32, sc, &P, dst);
+    double best = 1e9; for (int k = 0; k < 2; k++) { double t0 = br_now(); eval_set(be, G, c.pop, sc, &P, dst); double t = br_now() - t0; if (t < best) best = t; }
     double steps = 0, hits = 0; for (size_t k = 0; k < n; k++) { steps += dst[k * 4 + 3]; hits += dst[k * 4 + 1]; }
     printf("  %-9s %-36s %7.1f M steps/s  %5.0f hits", ids[b], be->info, steps / best / 1e6, hits);
     if (mode == 2 && b > 0) { int same = 0; for (size_t k = 0; k < n; k++) same += dst[k * 4 + 1] == ref[k * 4 + 1]; printf("  same hit/miss as CPU: %d/%lu", same, (unsigned long)n); }

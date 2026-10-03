@@ -70,11 +70,14 @@ static void handle(sock_t s) {
   else if (!strcmp(path, "/api/start")) { cfg_defaults(&c); cfg_from_json(&c, body); trainer_start(&c); sb_printf(&out, "{\"ok\":true}"); reply_sb(s, &out); }
   else if (!strcmp(path, "/api/pause")) { trainer_pause(); sb_printf(&out, "{\"ok\":true}"); reply_sb(s, &out); }
   else if (!strcmp(path, "/api/reset")) { trainer_reset(); sb_printf(&out, "{\"ok\":true}"); reply_sb(s, &out); }
-  else if (!strcmp(path, "/api/champion")) { trainer_champion_json(&out); reply_sb(s, &out); }
+  else if (!strcmp(path, "/api/star")) { trainer_star_json(&out); reply_sb(s, &out); }
   else if (!strcmp(path, "/api/load")) { char m[200]; int r = trainer_load_json(body ? body : "", m, sizeof m);
     sb_printf(&out, "{\"ok\":%s,\"message\":", r ? "false" : "true"); sb_jstr(&out, m); sb_printf(&out, "}"); reply_sb(s, &out); }
   else if (!strcmp(path, "/api/autotune")) { cfg_defaults(&c); cfg_from_json(&c, body); autotune_start(&c); sb_printf(&out, "{\"ok\":true}"); reply_sb(s, &out); }
   else if (!strcmp(path, "/api/autotune/status")) { autotune_status_json(&out); reply_sb(s, &out); }
+  else if (!strcmp(path, "/api/mode")) {   // the mode switch: save this mode's star, load the other's (training applies it itself)
+    cfg_defaults(&c); cfg_from_json(&c, body ? body : ""); if (!trainer_busy()) trainer_set_mode(c.mode);
+    sb_printf(&out, "{\"ok\":true}"); reply_sb(s, &out); }
   else if (!strcmp(path, "/api/fly")) { fly_json(body ? body : "", &out); reply_sb(s, &out); }
   else if (!strcmp(path, "/api/quit")) { sb_printf(&out, "{\"ok\":true}"); reply_sb(s, &out); quitReq = 1; }
   else reply(s, 404, "text/plain", "not found", 9);
@@ -115,7 +118,7 @@ int serve_ui(int openWindow) {
   for (int p = 8642; p < 8662; p++) { a.sin_port = htons((unsigned short)p); if (bind(ls, (struct sockaddr*)&a, sizeof a) == 0) { port = p; break; } }
   if (!port || listen(ls, 16) != 0) { fprintf(stderr, "Could not open a local port for the interface.\n"); return 1; }
   char url[64]; snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
-  printf("Ballistic Range trainer is running.\nInterface: %s\nClose this window or press Quit in the interface to stop.\n", url); fflush(stdout);
+  printf("Ball Arena trainer is running.\nInterface: %s\nClose this window or press Quit in the interface to stop.\n", url); fflush(stdout);
   trainer_init();
   if (openWindow) open_window(url);
   lastRequest = br_now();

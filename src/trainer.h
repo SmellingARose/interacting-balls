@@ -12,6 +12,9 @@ typedef struct {
   int cma, decayOn; double decay, lrMin;
   double dt, tw, speedW; int everyStep;
   int valEvery, valScen;
+  // tag mode: chase a runner ball that launches `range`–(`range`+1.5 km) out and flies at a defended point
+  int mode, fair;                     // mode 0 = reach goal, 1 = tag; fair = keep only tags the algorithm can reach
+  double range, evade, noise, delayMs, detect, twRunner;
 } TrainCfg;
 
 void cfg_defaults(TrainCfg* c);
@@ -31,8 +34,9 @@ void trainer_start(const TrainCfg* c);   // starts, or applies new settings to a
 void trainer_pause(void);
 void trainer_reset(void);
 void trainer_status_json(Sb* out, int since);
-void trainer_champion_json(Sb* out);
-int  trainer_load_json(const char* json, char* msg, int len);
+void trainer_star_json(Sb* out);
+int  trainer_load_json(const char* json, char* msg, int len);   // refuses a network saved in the other mode
+void trainer_set_mode(int mode);   // 0 reach, 1 tag: saves the current star and loads that mode's own
 void hardware_json(Sb* out);
 void autotune_start(const TrainCfg* c);
 void autotune_status_json(Sb* out);

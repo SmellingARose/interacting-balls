@@ -1,4 +1,4 @@
-// Ballistic Range trainer. Started without options (double-click), it opens the interface; all training,
+// Ball Arena trainer. Started without options (double-click), it opens the interface; all training,
 // auto-tuning and flights run natively on this computer. Developer options (--bench, --compare, --train) exist
 // for testing.
 #include <stdio.h>

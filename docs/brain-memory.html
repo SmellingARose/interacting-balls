@@ -1,7 +1,7 @@
-<title>Pilot Memory Math</title>
+<title>Brain Memory Math</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700&family=IBM+Plex+Sans:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
-/* Layout: one reading column; each memory option is a "card" of idea → formula → picture, in the Ballistic Range palette. */
+/* Layout: one reading column; each memory option is a "card" of idea → formula → picture, in the Ball Arena palette. */
 :root{
   --bg:#f3f5f7; --surface:#ffffff; --fg:#17212b; --dim:#5d6f80; --line:#d5dde5;
   --ai:#1f8fc4; --algo:#d27a10; --bad:#d0453f; --ok:#2f9a5c; --mem:#7a5bd1;
@@ -41,8 +41,8 @@ svg .dim{fill:var(--dim)} svg .lbl{font-size:11px}
 
 <main>
 <header>
-  <h1>Giving the interceptor a memory</h1>
-  <p class="lede">The neural pilot decides every Δt = 40 ms. Right now it sees only the current sensor snapshot <b>x<sub>t</sub></b> and outputs commands <b>u<sub>t</sub></b>, so it forgets everything between decisions. Each option below adds memory in a different way. Purple marks the memory path in every picture.</p>
+  <h1>Giving the chaser a memory</h1>
+  <p class="lede">The ball brain decides every Δt = 40 ms. Right now it sees only the current sensor snapshot <b>x<sub>t</sub></b> and outputs commands <b>u<sub>t</sub></b>, so it forgets everything between decisions. Each option below adds memory in a different way. Purple marks the memory path in every picture.</p>
 </header>
 
 <section>
@@ -56,7 +56,7 @@ svg .dim{fill:var(--dim)} svg .lbl{font-size:11px}
     <path class="ar" d="M370 45 H475"/>
     <rect class="box" x="480" y="25" width="150" height="40" rx="6"/><text x="555" y="50" text-anchor="middle">commands u<tspan baseline-shift="sub" font-size="9">t</tspan></text>
   </svg></div>
-  <p>With ±10 m of sensor noise, each snapshot is wrong by several times the 2 m hit size, and nothing lets the pilot average it out. The chart shows what it sees: grey dots are the readings, the dark line is the truth.</p>
+  <p>With ±10 m of sensor noise, each snapshot is wrong by several times the 2 m hit size, and nothing lets the brain average it out. The chart shows what it sees: grey dots are the readings, the dark line is the truth.</p>
   <div class="fig"><svg id="chart0" viewBox="0 0 640 200" role="img" aria-label="Noisy readings scattered around the true path"></svg></div>
 </section>
 
@@ -100,9 +100,9 @@ svg .dim{fill:var(--dim)} svg .lbl{font-size:11px}
   <span class="tag">Option 3</span>
   <h2>Change since last decision</h2>
   <div class="eq">Δx<sub>t</sub> = x<sub>t</sub> − x<sub>t−1</sub>     ω ≈ Δθ / Δt <span class="c">   // line-of-sight turn rate</span></div>
-  <div class="fig"><svg viewBox="0 0 640 170" role="img" aria-label="Line of sight to the attacker rotates between two decisions">
-    <circle cx="80" cy="140" r="9" fill="var(--ai)"/><text x="80" y="164" text-anchor="middle" class="dim lbl">interceptor</text>
-    <circle cx="520" cy="40" r="8" fill="var(--bad)" opacity=".45"/><text x="540" y="36" class="dim lbl">attacker at t−1</text>
+  <div class="fig"><svg viewBox="0 0 640 170" role="img" aria-label="Line of sight to the runner rotates between two decisions">
+    <circle cx="80" cy="140" r="9" fill="var(--ai)"/><text x="80" y="164" text-anchor="middle" class="dim lbl">chaser</text>
+    <circle cx="520" cy="40" r="8" fill="var(--bad)" opacity=".45"/><text x="540" y="36" class="dim lbl">runner at t−1</text>
     <circle cx="545" cy="80" r="8" fill="var(--bad)"/><text x="565" y="84" class="lbl">at t</text>
     <path d="M80 140 L520 40" stroke="var(--dim)" stroke-dasharray="4 4"/>
     <path d="M80 140 L545 80" stroke="var(--fg)"/>
@@ -156,7 +156,7 @@ svg .dim{fill:var(--dim)} svg .lbl{font-size:11px}
     <path class="ar" d="M500 82 H545"/>
     <rect class="net" x="550" y="58" width="80" height="48" rx="8"/><text x="590" y="79" text-anchor="middle">N</text><text x="590" y="96" text-anchor="middle" class="dim lbl">+v̂·d</text>
   </svg></div>
-  <p>The filter knows targets move smoothly, so it predicts where the attacker should be and only partly trusts each reading. Keeping a velocity estimate removes the lag of plain smoothing, and projecting forward by v̂·d undoes the sensor delay. A Kalman filter is the same loop with α and β calculated from the noise levels: gain K = P/(P+R), where P is how unsure the prediction is and R how noisy the sensor is.</p>
+  <p>The filter knows targets move smoothly, so it predicts where the runner should be and only partly trusts each reading. Keeping a velocity estimate removes the lag of plain smoothing, and projecting forward by v̂·d undoes the sensor delay. A Kalman filter is the same loop with α and β calculated from the noise levels: gain K = P/(P+R), where P is how unsure the prediction is and R how noisy the sensor is.</p>
   <p>One decision, step by step along one axis:</p>
   <div class="fig"><svg viewBox="0 0 640 170" role="img" aria-label="Prediction, reading and corrected estimate on a line, then projection past the delay">
     <line x1="30" y1="90" x2="620" y2="90" stroke="var(--line)" stroke-width="2"/>
@@ -188,7 +188,7 @@ svg .dim{fill:var(--dim)} svg .lbl{font-size:11px}
     <rect class="mem" x="480" y="70" width="150" height="36" rx="6"/><text x="555" y="93" text-anchor="middle">m<tspan baseline-shift="sub" font-size="9">t</tspan></text>
     <path class="arm" d="M555 106 V128 H70 V110"/>
   </svg></div>
-  <p>The network decides what to remember: for example "attacker swerved left last time" or "final approach now". Evolution has to discover useful uses for those slots, and that's slow, because a slot's value only pays off decisions later.</p>
+  <p>The network decides what to remember: for example "runner swerved left last time" or "final approach now". Evolution has to discover useful uses for those slots, and that's slow, because a slot's value only pays off decisions later.</p>
   <div class="verdict"><span class="p">+4–8 inputs and outputs</span><span class="p">network chooses what to keep</span><span class="m">hard to evolve</span></div>
 </section>
 
@@ -221,7 +221,7 @@ svg .dim{fill:var(--dim)} svg .lbl{font-size:11px}
 </main>
 
 <script>
-// Simulated one-axis track of a weaving attacker seen through noisy sensors (σ = 10 m), sampled every 40 ms.
+// Simulated one-axis track of a weaving runner seen through noisy sensors (σ = 10 m), sampled every 40 ms.
 // A fixed-seed random generator keeps the pictures identical on every load.
 (function(){
   let s=7; const rnd=()=>((s=Math.imul(s,1664525)+1013904223>>>0)/4294967296);
