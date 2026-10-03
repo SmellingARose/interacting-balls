@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ballistic Range Trainer</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: full-bleed 3D range; controls on the left, live training on the right, like a flight-test console. Single dark look. */
+:root{ --bg:#0b1118; --panel:rgba(12,19,27,.88); --line:rgba(150,180,205,.18); --fg:#e3ebf2; --dim:#8ea2b4;
+  --ai:#5fd1ff; --ok:#6fe39a; --bad:#ff6b6b; --warm:#ffb347;
+  --display:"Saira Condensed","Arial Narrow",sans-serif; --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace; color-scheme:dark; }
+[hidden]{display:none!important}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:12px var(--mono);overflow:hidden}
+#c{position:fixed;inset:0;width:100%;height:100%;display:block}
+.panel{position:fixed;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px;backdrop-filter:blur(8px);display:flex;flex-direction:column;gap:8px;overflow:auto;max-height:calc(100% - 32px)}
+.panel>*{flex-shrink:0}
+#left{left:16px;top:16px;width:270px}
+#right{right:16px;top:16px;width:min(470px,calc(100% - 330px))}
+#flyp{left:50%;transform:translateX(-50%);bottom:16px;width:min(420px,calc(100% - 640px));min-width:260px}
+h1{font:700 26px/1 var(--display);letter-spacing:.04em;margin:0}
+h2{font:500 13px var(--display);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:8px 0 0}
+.sub,.note{color:var(--dim);font-size:11px;line-height:1.45}
+label{display:grid;grid-template-columns:1fr auto;gap:2px 8px;color:var(--dim);font-size:11px}
+label input[type=range]{grid-column:1/-1;width:100%;accent-color:var(--ai)}
+label b{color:var(--fg);font-weight:600;font-variant-numeric:tabular-nums}
+label.chk{display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--fg)}
+label.chk input{accent-color:var(--ai);margin:0}
+select{font:12px var(--mono);background:rgba(255,255,255,.06);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:6px}
+.row{display:flex;gap:6px;flex-wrap:wrap}
+button{font:600 11px var(--mono);color:var(--fg);background:rgba(255,255,255,.06);border:1px solid var(--line);border-radius:4px;padding:7px 9px;cursor:pointer;flex:1;white-space:nowrap}
+button:hover{background:rgba(255,255,255,.12)} button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--ai);outline-offset:1px}
+button:disabled{opacity:.35;cursor:not-allowed}
+button.on{background:var(--ai);color:#04121a;border-color:var(--ai)}
+button.warn{color:var(--bad);border-color:rgba(255,107,107,.5)}
+.seg{display:flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}.seg button{border:0;border-radius:0;padding:6px 8px}
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:6px 12px;font-variant-numeric:tabular-nums}
+.stats div{display:flex;flex-direction:column}.stats small{color:var(--dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase}.stats b{font-size:14px}
+#chart{width:100%;height:110px;display:block}
+.status{color:var(--dim);font-size:11px}
+#tuneLog{max-height:120px;overflow:auto;font-size:10px;color:var(--dim);display:flex;flex-direction:column;gap:2px}
+#log{display:flex;flex-direction:column;gap:3px;font-size:11px}#log div{display:flex;justify-content:space-between;gap:8px}
+.chip{font-size:10px;padding:1px 5px;border-radius:3px;border:1px solid currentColor}
+#dlg{left:50%;top:50%;transform:translate(-50%,-50%);width:min(760px,calc(100% - 32px));z-index:5;background:rgba(10,16,23,.97)}
+#dlg table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+#dlg td,#dlg th{border-bottom:1px solid var(--line);padding:4px 6px;text-align:right;font-size:11px}
+#dlg th{color:var(--dim);font-weight:400} #dlg td:first-child,#dlg th:first-child{text-align:left}
+#dlg p,#dlg li{color:var(--dim);font-size:11px;line-height:1.6;max-width:75ch} #dlg ul{margin:0;padding-left:18px}
+#dlg .eq{font:600 13px/1.9 var(--mono);background:rgba(127,127,127,.12);border-radius:6px;padding:8px 12px;overflow-x:auto;white-space:nowrap}
+.best td{color:var(--ok)}
+#offline{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(5,9,13,.85);z-index:9;font:600 16px var(--display);letter-spacing:.1em}
+@media (max-width:1000px){ #right{left:300px;width:auto} #flyp{display:none} }
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="offline" hidden>THE TRAINER APP IS NOT RUNNING · START IT AGAIN TO CONTINUE</div>
+
+<div class="panel" id="left">
+  <h1>BALLISTIC RANGE TRAINER</h1>
+  <div class="sub">Everything runs natively on this computer. This window only shows it. Closing it keeps training running; open the app again to come back. The app quits by itself after 2 idle minutes.</div>
+
+  <h2>Compute</h2>
+  <select id="selBackend" aria-label="Compute"></select>
+  <div class="row"><button id="bTune">Auto-tune for this computer</button></div>
+  <div id="tuneBox" hidden><div id="tuneLog"></div></div>
+  <div class="note" id="tuneNote">Auto-tune measures every option on this machine (CPU, GPU work-group sizes, dispatch length, batch size) and picks the fastest.</div>
+
+  <h2>Network</h2>
+  <label>Hidden layers <b id="vLay"></b><input id="sLay" type="range" min="1" max="8" step="1" value="1"></label>
+  <label>Neurons per layer <b id="vWid"></b><input id="sWid" type="range" min="8" max="128" step="8" value="32"></label>
+  <label>Past frames K <b id="vK"></b><input id="sK" type="range" min="0" max="4" step="1" value="0"></label>
+  <label class="chk"><input type="checkbox" id="cMem"> Memory neurons</label>
+  <div class="note" id="netNote"></div>
+
+  <h2>Training</h2>
+  <div class="seg" role="group" aria-label="Optimizer"><button id="opCMA" class="on">CMA-ES</button><button id="opGA">Genetic</button></div>
+  <label>Population <b id="vPop"></b><input id="sPop" type="range" min="16" max="16384" step="16" value="256"></label>
+  <label>Scenarios per network <b id="vScen"></b><input id="sScen" type="range" min="1" max="256" step="1" value="16"></label>
+  <label>New scenarios every <b id="vReuse"></b><input id="sReuse" type="range" min="1" max="50" step="1" value="5"></label>
+  <label class="chk"><input type="checkbox" id="cIsl"> Islands</label>
+  <label>Islands <b id="vIsl"></b><input id="sIsl" type="range" min="2" max="256" step="1" value="8"></label>
+  <label>Migrate every <b id="vMig"></b><input id="sMig" type="range" min="1" max="50" step="1" value="10"></label>
+  <label class="chk"><input type="checkbox" id="cDecay" checked> Decay step size</label>
+  <label>Decay per generation <b id="vDecay"></b><input id="sDecay" type="range" min="0.9" max="0.999" step="0.001" value="0.995"></label>
+  <label>Minimum step size <b id="vLrMin"></b><input id="sLrMin" type="range" min="-6" max="-1" step="0.25" value="-4"></label>
+  <label class="chk"><input type="checkbox" id="cSpeed"> Reward speed</label>
+  <label>Speed weight <b id="vSpw"></b><input id="sSpw" type="range" min="0.5" max="10" step="0.5" value="3"></label>
+
+  <h2>Physics</h2>
+  <label>Physics step <b id="vDt"></b><input id="sDt" type="range" min="5" max="40" step="1" value="20"></label>
+  <label class="chk"><input type="checkbox" id="cEvery"> Pilot decides every physics step</label>
+  <label>Thrust-to-weight <b id="vTw"></b><input id="sTw" type="range" min="1.2" max="5" step="0.1" value="2.5"></label>
+  <div class="note">The ball starts 10 m above the pad, pointing straight up. Targets are 1.5–7 km away with up to 15 m/s of wind.</div>
+</div>
+
+<div class="panel" id="right">
+  <div class="row" style="align-items:center"><h2 style="margin:0;flex:2">Training</h2>
+    <button id="bTrain">Train</button><button class="warn" id="bReset">Reset</button></div>
+  <div class="stats">
+    <div><small>Generation</small><b id="sGen">0</b></div>
+    <div><small>Best fitness</small><b id="sBest">—</b></div>
+    <div><small>Champ hits</small><b id="sHit">—</b></div>
+    <div><small>Validation</small><b id="sVal">—</b></div>
+    <div><small>M steps/s</small><b id="sSps">—</b></div>
+    <div><small>Flights/s</small><b id="sFps">—</b></div>
+    <div><small>Gen time</small><b id="sGt">—</b></div>
+    <div><small>Step size σ</small><b id="sSig">—</b></div>
+  </div>
+  <div class="status" id="status">Connecting…</div>
+  <canvas id="chart"></canvas>
+  <div class="note">Validation = the champion flown on 64 fresh scenarios every 10 generations: the honest hit rate. The champion is saved automatically and restored next time.</div>
+  <div class="row"><button id="bSave">Save network…</button><button id="bLoad">Load network…</button><input type="file" id="fLoad" accept=".json" hidden></div>
+  <div class="row"><button id="bResults">Auto-tune results</button><button id="bMath">Network math</button><button id="bGuide">Training guide</button></div>
+  <div class="row"><button class="warn" id="bQuit">Quit app</button></div>
+</div>
+
+<div class="panel" id="flyp">
+  <div class="row" style="align-items:center"><h2 style="margin:0;flex:1">Watch the champion</h2><button id="bFly1">Fly 1</button><button id="bFly5">Fly 5</button><button id="bClear">Clear</button></div>
+  <label>Target distance <b id="vDist"></b><input id="sDist" type="range" min="0" max="7000" step="250" value="0"></label>
+  <label>Playback speed <b id="vTs"></b><input id="sTs" type="range" min="0.5" max="8" step="0.5" value="2"></label>
+  <div id="log"><div class="sub">Flights are computed by the app and drawn here.</div></div>
+</div>
+
+<div class="panel" id="dlg" hidden role="dialog" aria-label="Details">
+  <div class="row" style="align-items:center"><h2 style="margin:0;flex:1" id="dlgTitle"></h2><button id="bDlgClose" style="flex:0">Close</button></div>
+  <div id="dlgBody"></div>
+</div>
+
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+const $=id=>document.getElementById(id);
+const api=async(path,body)=>{ const r=await fetch(path,body===undefined?{}:{method:'POST',body:typeof body==='string'?body:JSON.stringify(body)}); if(!r.ok) throw new Error(r.status); return r.json(); };
+const fmt=(v,d=0)=>Number(v).toLocaleString(undefined,{maximumFractionDigits:d,minimumFractionDigits:d});
+
+/* ---------------- settings (remembered in this window) ---------------- */
+const S={ backend:'auto', layers:1, width:32, K:0, mem:0, cma:1, pop:256, scen:16, reuse:5, islands:0, nIsl:8, migrate:10,
+  decayOn:1, decay:0.995, lrMin:1e-4, speedOn:0, speedW:3, dt:0.02, everyStep:0, tw:2.5, wg:64, chunkMs:40 };
+try{ Object.assign(S, JSON.parse(localStorage.getItem('brt-settings')||'{}')); }catch(e){}
+const save=()=>{ try{ localStorage.setItem('brt-settings',JSON.stringify(S)); }catch(e){} };
+const cfg=()=>({ ...S, speedW:S.speedOn?S.speedW:0 });
+let running=false, pushTimer=0;
+function changed(){ save(); netNote(); if(running){ clearTimeout(pushTimer); pushTimer=setTimeout(()=>api('/api/start',cfg()).catch(()=>{}),250); } }
+const bind=(id,lab,key,f,map=v=>v,unmap=v=>v)=>{ const el=$(id); el.value=unmap(S[key]);
+  const u=()=>{ S[key]=map(+el.value); $(lab).textContent=f(+el.value); }; el.addEventListener('input',()=>{ u(); changed(); }); u(); };
+const check=(id,key,after)=>{ const el=$(id); el.checked=!!S[key]; el.addEventListener('change',()=>{ S[key]=el.checked?1:0; after&&after(); changed(); }); };
+bind('sLay','vLay','layers',v=>v); bind('sWid','vWid','width',v=>v); bind('sK','vK','K',v=>v?v+' frame'+(v>1?'s':''):'off');
+check('cMem','mem');
+bind('sPop','vPop','pop',v=>v); bind('sScen','vScen','scen',v=>v); bind('sReuse','vReuse','reuse',v=>v===1?'generation':v+' generations');
+check('cIsl','islands',syncDis); bind('sIsl','vIsl','nIsl',v=>v); bind('sMig','vMig','migrate',v=>v+' gens');
+check('cDecay','decayOn',syncDis); bind('sDecay','vDecay','decay',v=>'×'+v.toFixed(3));
+bind('sLrMin','vLrMin','lrMin',v=>{ const x=10**v; return x>=0.01?x.toFixed(2):x.toExponential(0); },v=>10**v,v=>Math.log10(v));
+check('cSpeed','speedOn',syncDis); bind('sSpw','vSpw','speedW',v=>v);
+bind('sDt','vDt','dt',v=>v+' ms',v=>v/1000,v=>Math.round(v*1000)); check('cEvery','everyStep'); bind('sTw','vTw','tw',v=>v.toFixed(1)+'×');
+function syncDis(){ $('sIsl').disabled=$('sMig').disabled=!S.islands; $('sDecay').disabled=!S.decayOn; $('sSpw').disabled=!S.speedOn; }
+function seg(){ $('opCMA').classList.toggle('on',!!S.cma); $('opGA').classList.toggle('on',!S.cma); }
+$('opCMA').onclick=()=>{ S.cma=1; seg(); changed(); }; $('opGA').onclick=()=>{ S.cma=0; seg(); changed(); };
+seg(); syncDis();
+function arch(){ const ni=29*(S.K+1)+(S.mem?S.width:0); return [ni,...Array(S.layers).fill(S.width),3]; }
+function nWeights(a){ let n=0; for(let l=1;l<a.length;l++) n+=a[l]*a[l-1]+a[l]; return n; }
+function netNote(){ const a=arch(); $('netNote').textContent=a.join(' → ')+' · '+nWeights(a).toLocaleString()+' weights'; }
+netNote();
+$('selBackend').addEventListener('change',e=>{ S.backend=e.target.value; changed(); });
+
+/* ---------------- hardware + auto-tune ---------------- */
+let HW=null, TUNE=null;
+async function loadHardware(){
+  HW=await api('/api/hardware');
+  const sel=$('selBackend'); sel.innerHTML=`<option value="auto">Automatic (${HW.options.find(o=>o.id===HW.default)?.label||HW.default})</option>`+HW.options.map(o=>`<option value="${o.id}">${o.label}</option>`).join('');
+  sel.value=HW.options.some(o=>o.id===S.backend)?S.backend:'auto';
+}
+$('bTune').onclick=async()=>{
+  $('bTune').disabled=true; $('tuneBox').hidden=false; $('tuneLog').innerHTML='<div>Starting…</div>'; setTrainBtn(false);
+  await api('/api/autotune',cfg());
+  const poll=async()=>{ const st=await api('/api/autotune/status');
+    $('tuneLog').innerHTML=st.log.map(l=>`<div>${l}</div>`).join(''); $('tuneLog').scrollTop=1e9;
+    if(st.running){ setTimeout(poll,400); return; }
+    $('bTune').disabled=false; TUNE=st.result;
+    if(TUNE&&TUNE.ok){ const b=TUNE.best;
+      Object.assign(S,{backend:b.backend,wg:b.wg,chunkMs:b.chunkMs,pop:b.pop,scen:b.scen,islands:b.islands,nIsl:b.nIsl}); save();
+      for(const [id,k] of [['sPop','pop'],['sScen','scen'],['sIsl','nIsl']]){ $(id).value=S[k]; $(id).dispatchEvent(new Event('input')); }
+      $('cIsl').checked=!!S.islands; syncDis(); $('selBackend').value=S.backend;
+      $('tuneNote').textContent=`Fastest: ${b.label} at ${fmt(b.stepsPerS/1e6,1)} M steps/s. Applied: population ${b.pop}${b.islands?` in ${b.nIsl} islands`:''}, ${b.scen} scenarios, work-group ${b.wg}, ${b.chunkMs} ms dispatches. ${TUNE.note}`;
+      openDlg('results'); }
+    else $('tuneNote').textContent='Auto-tune could not measure any compute option.';
+  };
+  poll();
+};
+
+/* ---------------- training ---------------- */
+let HIST=[], since=0, champVersion=-1;
+function setTrainBtn(on){ running=on; $('bTrain').classList.toggle('on',on); $('bTrain').textContent=on?'Pause':'Train'; }
+$('bTrain').onclick=async()=>{ if(running){ await api('/api/pause',{}); setTrainBtn(false); } else { await api('/api/start',cfg()); setTrainBtn(true); } };
+let resetArm=0;
+$('bReset').onclick=async()=>{ if(Date.now()-resetArm>3000){ resetArm=Date.now(); $('bReset').textContent='Click again to reset'; setTimeout(()=>$('bReset').textContent='Reset',3000); return; }
+  resetArm=0; $('bReset').textContent='Reset'; await api('/api/reset',{}); setTrainBtn(false); HIST=[]; since=0; drawChart(); };
+let stopped=false;
+async function poll(){
+  if(stopped) return;
+  try{
+    const st=await api('/api/status?since='+since); $('offline').hidden=true;
+    if(st.gen<since){ HIST=[]; since=0; }
+    for(const h of st.hist){ HIST.push(h); since=h[0]; } if(HIST.length>2000) HIST=HIST.slice(-2000);
+    if(running!==st.running && !st.tuning) setTrainBtn(st.running);
+    $('sGen').textContent=st.gen; $('sBest').textContent=st.gen?st.best.toFixed(2):'—';
+    $('sHit').textContent=st.gen?Math.round(st.champHits*100)+'%':'—'; $('sVal').textContent=st.valGen?Math.round(st.valHit*100)+'%':'—';
+    $('sSps').textContent=st.stepsPerS?fmt(st.stepsPerS/1e6,1):'—'; $('sFps').textContent=st.flightsPerS?fmt(st.flightsPerS):'—';
+    $('sGt').textContent=st.genTime?fmt(st.genTime,3)+' s':'—'; $('sSig').textContent=st.gen?Number(st.sigma).toPrecision(2):'—';
+    $('status').textContent=(st.tuning?'auto-tuning · ':'')+(st.backend?st.backend+' · ':'')+(st.message||'')+(st.islands>1?` · ${st.islands} islands`:'');
+    drawChart();
+  }catch(e){ $('offline').hidden=false; }
+  setTimeout(poll,350);
+}
+function drawChart(){
+  const c=$('chart'), r=devicePixelRatio, W=c.clientWidth, H=c.clientHeight; if(!W) return; c.width=W*r; c.height=H*r;
+  const x=c.getContext('2d'); x.scale(r,r); x.font='10px JetBrains Mono, monospace'; x.fillStyle='#8ea2b4';
+  if(HIST.length<2){ x.fillText('Fitness per generation appears here once training runs.',4,H/2); return; }
+  const all=HIST.flatMap(h=>h.slice(1)), lo=Math.min(...all), hi=Math.max(...all,lo+0.1);
+  const px=i=>30+i/(HIST.length-1)*(W-36), py=v=>H-12-(v-lo)/(hi-lo)*(H-20);
+  x.strokeStyle='rgba(150,180,205,.15)'; x.beginPath(); x.moveTo(30,py(lo)); x.lineTo(W,py(lo)); x.moveTo(30,py(hi)); x.lineTo(W,py(hi)); x.stroke();
+  x.fillText(hi.toFixed(1),0,py(hi)+3); x.fillText(lo.toFixed(1),0,py(lo)+3);
+  const k=HIST.at(-1).length-3;
+  for(let j=0;j<k;j++){ x.strokeStyle=`hsla(${j/k*360},80%,60%,.3)`; x.beginPath(); HIST.forEach((h,i)=>{ const v=h[3+j]; if(v===undefined) return; i?x.lineTo(px(i),py(v)):x.moveTo(px(i),py(v)); }); x.stroke(); }
+  for(const [idx,col,lw] of [[2,'rgba(95,209,255,.4)',1],[1,'#5fd1ff',2]]){ x.strokeStyle=col; x.lineWidth=lw; x.beginPath(); HIST.forEach((h,i)=>i?x.lineTo(px(i),py(h[idx])):x.moveTo(px(i),py(h[idx]))); x.stroke(); }
+}
+addEventListener('resize',drawChart);
+
+/* ---------------- save / load / quit ---------------- */
+$('bSave').onclick=async()=>{ const j=await api('/api/champion'); if(!j.weights){ $('status').textContent='No trained network to save yet.'; return; }
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([JSON.stringify(j)],{type:'application/json'}));
+  a.download=`ballistic-range-${j.arch.join('-')}-gen${j.generation}.json`; a.click(); };
+$('bLoad').onclick=()=>$('fLoad').click();
+$('fLoad').onchange=async e=>{ const f=e.target.files[0]; if(!f) return; const r=await api('/api/load',await f.text()); $('status').textContent=r.message; e.target.value=''; };
+$('bQuit').onclick=async()=>{ stopped=true; await api('/api/quit',{}).catch(()=>{}); document.body.innerHTML='<div id="offline">THE TRAINER HAS STOPPED · YOU CAN CLOSE THIS WINDOW</div>'; };
+
+/* ---------------- dialogs: auto-tune results, network math, training guide ---------------- */
+function openDlg(which){
+  $('dlg').hidden=false; const b=$('dlgBody');
+  if(which==='results'){ $('dlgTitle').textContent='Auto-tune results';
+    if(!TUNE||!TUNE.ok){ b.innerHTML='<p>Run “Auto-tune for this computer” first.</p>'; return; }
+    const best=TUNE.best;
+    b.innerHTML=`<p>Measured on this machine with your current network (${arch().join(' → ')}). Speed is physics steps per second, the fair measure: better pilots fly longer flights.</p>
+      <table><tr><th>Compute option</th><th>Best speed</th><th>Batch (networks)</th><th>Work-group</th><th>Dispatch</th></tr>
+      ${TUNE.options.map(o=>`<tr class="${o.backend===best.backend?'best':''}"><td>${o.label}</td><td>${fmt(o.stepsPerS/1e6,1)} M/s</td><td>${o.batchNetworks}</td><td>${o.backend==='cpu'?'—':o.wg}</td><td>${o.backend==='cpu'?'—':o.chunkMs+' ms'}</td></tr>`).join('')}</table>
+      <p><b style="color:var(--ok)">Applied:</b> ${best.label}, population ${best.pop}${best.islands?` in ${best.nIsl} islands`:''}, ${best.scen} scenarios per network. ${TUNE.note}</p>
+      <p>The batch is the smallest one within 8% of the fastest: the same speed with more generations per minute. Islands spread a big batch over many small populations so GPU capacity turns into more learning instead of one oversized population.</p>
+      <details><summary class="note">Every measurement</summary><table><tr><th>Option</th><th>Networks</th><th>Flights</th><th>Work-group</th><th>Dispatch</th><th>Speed</th><th>Batch time</th></tr>
+      ${TUNE.rows.map(r=>`<tr><td>${r.label}</td><td>${r.networks}</td><td>${r.flights}</td><td>${r.backend==='cpu'?'—':r.wg}</td><td>${r.backend==='cpu'?'—':r.chunkMs+' ms'}</td><td>${fmt(r.stepsPerS/1e6,1)} M/s</td><td>${fmt(r.sec,3)} s</td></tr>`).join('')}</table></details>`;
+  }
+  if(which==='math'){ $('dlgTitle').textContent='Network math'; const a=arch(), H=a.slice(1,-1), mem=S.mem?S.width:0;
+    b.innerHTML=`<table><tr><th>Network input</th><th>Numbers</th></tr><tr><td>Sensors now</td><td>29</td></tr>${S.K?`<tr><td>Past frames (K = ${S.K})</td><td>${29*S.K}</td></tr>`:''}${mem?`<tr><td>Memory from last decision</td><td>${mem}</td></tr>`:''}<tr><td><b>Total</b></td><td><b>${a[0]}</b></td></tr></table>
+      <div class="eq">h¹ = tanh( W·[x<sub>t</sub>${S.K?', past frames':''}]${mem?' + U·h<sub>t−1</sub>':''} + b )<br>${H.slice(1).map((_,i)=>`h${i+2} = tanh( W${i+2}·h${i+1} + b )`).join('<br>')}${H.length>1?'<br>':''}u = tanh( V·h + c ) → throttle, pitch, yaw</div>
+      <table><tr><th>Weights</th><th>Count</th></tr><tr><td>Input layer</td><td>${fmt(a[0]*a[1]+a[1])}</td></tr>${H.length>1?`<tr><td>Deeper hidden layers</td><td>${fmt(H.slice(1).reduce((s,n,i)=>s+n*H[i]+n,0))}</td></tr>`:''}<tr><td>Output layer</td><td>${fmt(H.at(-1)*3+3)}</td></tr><tr><td><b>Total</b></td><td><b>${fmt(nWeights(a))}</b></td></tr></table>
+      <p>The pilot decides every ${S.dt*1000*(S.everyStep?1:2)} ms (physics every ${S.dt*1000} ms).</p>`;
+  }
+  if(which==='guide'){ $('dlgTitle').textContent='Training guide';
+    b.innerHTML=`<ul>
+      <li><b>Start with Auto-tune.</b> It measures this computer and sets compute, population, scenarios and islands for the fastest training.</li>
+      <li><b>Watch Validation, not Champ hits.</b> Champ hits is the best of many networks on this generation's tests, so it is often lucky. Validation flies the champion on 64 fresh scenarios.</li>
+      <li><b>CMA-ES</b> learns a step size per weight: the best default, especially for memory neurons. The genetic algorithm needs decay to fine-tune.</li>
+      <li><b>Islands</b> run many small populations side by side and swap their best every few generations. On a GPU that needs huge batches, islands turn the capacity into more learning.</li>
+      <li><b>Scenarios per network:</b> 16–32 once it hits; keep scenarios 5–10 generations so networks are compared on the same tests.</li>
+      <li><b>Memory neurons and past frames</b> help when the task needs history; start with K = 1–2 before memory neurons.</li>
+      <li><b>Pitfalls:</b> decay ×0.9 freezes training within ~60 generations; speed reward too early makes it rush and miss; changing the network shape starts a fresh network.</li></ul>`;
+  }
+}
+$('bResults').onclick=()=>openDlg('results'); $('bMath').onclick=()=>openDlg('math'); $('bGuide').onclick=()=>openDlg('guide');
+$('bDlgClose').onclick=()=>$('dlg').hidden=true;
+addEventListener('keydown',e=>{ if(e.key==='Escape') $('dlg').hidden=true; });
+
+/* ---------------- 3D range: draws flights the app computed ---------------- */
+const canvas=$('c'), renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.toneMapping=THREE.ACESFilmicToneMapping;
+const scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(0x9fb4c6,0.00004);
+const camera=new THREE.PerspectiveCamera(55,1,0.5,200000); camera.position.set(-2500,1800,3500);
+const controls=new OrbitControls(camera,canvas); controls.enableDamping=true; controls.target.set(0,200,0); controls.maxDistance=60000;
+const sunDir=new THREE.Vector3(0.5,0.35,-0.8).normalize();
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(150000,32,16),new THREE.ShaderMaterial({side:THREE.BackSide,depthWrite:false,fog:false,uniforms:{sun:{value:sunDir}},
+  vertexShader:`varying vec3 d;void main(){d=normalize(position);gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+  fragmentShader:`uniform vec3 sun;varying vec3 d;void main(){float h=max(d.y,0.);vec3 c=mix(vec3(.74,.80,.86),vec3(.16,.33,.58),pow(h,.55));c=mix(c,vec3(.52,.48,.44),smoothstep(0.,-.05,d.y));float s=max(dot(d,sun),0.);c+=vec3(1.,.82,.6)*(pow(s,600.)*3.+pow(s,8.)*.25);gl_FragColor=vec4(c,1.);}`})));
+scene.add(new THREE.HemisphereLight(0xbcd3ea,0x5a5040,1.0)); const sun=new THREE.DirectionalLight(0xfff0dc,2); sun.position.copy(sunDir).multiplyScalar(1000); scene.add(sun);
+const gGeo=new THREE.PlaneGeometry(120000,120000,160,160); gGeo.rotateX(-Math.PI/2);
+{ const pos=gGeo.attributes.position, col=[], c=new THREE.Color();
+  for(let i=0;i<pos.count;i++){ const x=pos.getX(i),z=pos.getZ(i),r=Math.hypot(x,z),n=Math.sin(x*0.0011)*Math.cos(z*0.0013)+0.5*Math.sin(x*0.0041+z*0.0033);
+    if(r>14000) pos.setY(i,Math.max(0,(r-14000)*0.06*(0.6+0.4*n))); c.setHSL(0.08+n*0.015,0.28,0.38+n*0.05); col.push(c.r,c.g,c.b); }
+  gGeo.setAttribute('color',new THREE.Float32BufferAttribute(col,3)); gGeo.computeVertexNormals(); }
+scene.add(new THREE.Mesh(gGeo,new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.95})));
+const grid=new THREE.GridHelper(20000,20,0xffffff,0xffffff); grid.material.opacity=0.07; grid.material.transparent=true; grid.position.y=0.5; scene.add(grid);
+const pad=new THREE.Mesh(new THREE.CylinderGeometry(8,9,0.6,32),new THREE.MeshStandardMaterial({color:0x6b6f74})); pad.position.y=0.3; scene.add(pad);
+const flights=[]; const ballGeo=new THREE.SphereGeometry(1,24,16), haloGeo=new THREE.SphereGeometry(1.8,16,12);
+function addFlight(f,i){
+  const hue=(0.55+i*0.11)%1, color=new THREE.Color().setHSL(hue,0.8,0.62);
+  const g=new THREE.Group(); const ball=new THREE.Mesh(ballGeo,new THREE.MeshStandardMaterial({color,emissive:color,emissiveIntensity:0.35,roughness:0.3}));
+  const halo=new THREE.Mesh(haloGeo,new THREE.MeshBasicMaterial({color:0xffa040,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false}));
+  g.add(ball,halo); scene.add(g);
+  const pts=f.points.flatMap(p=>[p[0],p[1],p[2]]), geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.Float32BufferAttribute(pts,3)); geo.setDrawRange(0,1);
+  const trail=new THREE.Line(geo,new THREE.LineBasicMaterial({color})); trail.frustumCulled=false; scene.add(trail);
+  const ring=new THREE.Mesh(new THREE.RingGeometry(26,30,48),new THREE.MeshBasicMaterial({color:0x6fe39a,side:THREE.DoubleSide,transparent:true,opacity:0.9}));
+  ring.rotation.x=-Math.PI/2; ring.position.set(f.target[0],0.8,f.target[2]); scene.add(ring);
+  const beam=new THREE.Mesh(new THREE.CylinderGeometry(3,3,1200,12,1,true),new THREE.MeshBasicMaterial({color:0x6fe39a,transparent:true,opacity:0.16,blending:THREE.AdditiveBlending,depthWrite:false}));
+  beam.position.set(f.target[0],600,f.target[2]); scene.add(beam);
+  flights.push({f,g,halo,trail,ring,beam,t:0,done:false,color,dt:FLY_DT});
+}
+let FLY_DT=0.05, timeScale=2, easy=true;
+async function fly(n){
+  $('bFly1').disabled=$('bFly5').disabled=true;
+  try{ const r=await api('/api/fly',{...cfg(),count:n,dist:+$('sDist').value});
+    if(r.error){ $('log').innerHTML=`<div class="sub">${r.error}: press Train first.</div>`; return; }
+    FLY_DT=r.dt; const base=flights.length; r.flights.forEach((f,i)=>addFlight(f,base+i));
+    let mx=0; for(const f of r.flights) mx=Math.max(mx,Math.hypot(f.target[0],f.target[2]));
+    const tgt=r.flights[0].target; controls.target.set(tgt[0]*0.5,300,tgt[2]*0.5);
+    camera.position.set(tgt[0]*0.5-tgt[2]*0.9, 900+mx*0.25, tgt[2]*0.5+tgt[0]*0.9);
+  } finally { $('bFly1').disabled=$('bFly5').disabled=false; }
+}
+function logFlight(fl){ const f=fl.f, el=document.createElement('div');
+  el.innerHTML=`<span style="color:#${fl.color.getHexString()}">● ${fmt(Math.hypot(f.target[0],f.target[2])/1000,1)} km</span><span>${f.hit?fmt(f.t,1)+' s':fmt(f.closest)+' m off'}</span><span class="chip" style="color:${f.hit?'var(--ok)':'var(--bad)'}">${f.hit?'HIT':'MISS'}</span>`;
+  const log=$('log'); if(log.firstChild&&log.firstChild.classList?.contains('sub')) log.innerHTML=''; log.prepend(el); while(log.children.length>8) log.lastChild.remove(); }
+$('bFly1').onclick=()=>fly(1); $('bFly5').onclick=()=>fly(5);
+$('bClear').onclick=()=>{ for(const fl of flights){ scene.remove(fl.g,fl.trail,fl.ring,fl.beam); fl.trail.geometry.dispose(); } flights.length=0; $('log').innerHTML='<div class="sub">Flights are computed by the app and drawn here.</div>'; };
+{ const d=$('sDist'), ts=$('sTs'); const u=()=>{ $('vDist').textContent=+d.value?fmt(+d.value/1000,2)+' km':'random'; $('vTs').textContent=ts.value+'×'; timeScale=+ts.value; };
+  d.oninput=u; ts.oninput=u; u(); }
+function resize(){ renderer.setSize(innerWidth,innerHeight,false); camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); drawChart(); }
+addEventListener('resize',resize); resize();
+const clock=new THREE.Clock(), _v=new THREE.Vector3();
+renderer.setAnimationLoop(()=>{
+  const dt=Math.min(clock.getDelta(),0.05);
+  const px=Math.tan(camera.fov*Math.PI/360)*2/innerHeight;
+  for(const fl of flights){
+    const P=fl.f.points, N=P.length;
+    if(!fl.done){ fl.t+=dt*timeScale; const k=Math.min(N-1,fl.t/fl.dt), i=Math.floor(k), a=k-i, p=P[i], q=P[Math.min(N-1,i+1)];
+      fl.g.position.set(p[0]+(q[0]-p[0])*a,p[1]+(q[1]-p[1])*a,p[2]+(q[2]-p[2])*a);
+      fl.halo.material.opacity=0.15+0.6*(p[3]||0); fl.trail.geometry.setDrawRange(0,i+1);
+      if(i>=N-1){ fl.done=true; logFlight(fl); if(fl.f.hit) fl.ring.material.color.set(0xffffff); } }
+    const d=camera.position.distanceTo(fl.g.getWorldPosition(_v)); fl.g.scale.setScalar(easy?Math.max(1,d*px*14/2):1);
+    const dr=camera.position.distanceTo(fl.ring.position), tk=Math.max(1,dr*px*26/60); fl.ring.scale.setScalar(tk);
+  }
+  controls.update(); renderer.render(scene,camera);
+});
+
+loadHardware().catch(()=>{}); poll();
+</script>
+</body></html>

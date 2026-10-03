@@ -1,0 +1,61 @@
+cmake_minimum_required(VERSION 3.16)
+project(brtrain C)
+
+option(BR_METAL  "Metal backend (Apple GPUs)" ${APPLE})
+option(BR_OPENCL "OpenCL backend (AMD Radeon e.g. RX 6700 XT)" ON)
+set(CMAKE_C_STANDARD 11)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+set(EMBED ${CMAKE_BINARY_DIR}/kernels_embed.c)
+file(GLOB KERNEL_FILES ${CMAKE_SOURCE_DIR}/src/kernels/* ${CMAKE_SOURCE_DIR}/web/index.html)
+add_custom_command(OUTPUT ${EMBED}
+  COMMAND ${CMAKE_COMMAND} -DOUT=${EMBED} -DSRC=${CMAKE_SOURCE_DIR}/src -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
+  DEPENDS ${CMAKE_SOURCE_DIR}/src/sim_core.h ${KERNEL_FILES} ${CMAKE_SOURCE_DIR}/cmake/embed.cmake)
+
+add_executable(brtrain src/main.c src/trainer.c src/server.c src/backend_cpu.c ${EMBED})
+target_include_directories(brtrain PRIVATE src)
+
+# Fast CPU code for the machine it is built on
+include(CheckCCompilerFlag)
+if(MSVC)
+  target_compile_options(brtrain PRIVATE /O2 /fp:fast /arch:AVX2)
+  target_compile_definitions(brtrain PRIVATE _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
+else()
+  target_compile_options(brtrain PRIVATE -O3 -ffast-math)
+  check_c_compiler_flag(-march=native HAS_MARCH_NATIVE)
+  check_c_compiler_flag(-mcpu=native HAS_MCPU_NATIVE)
+  if(HAS_MARCH_NATIVE)
+    target_compile_options(brtrain PRIVATE -march=native)
+  elseif(HAS_MCPU_NATIVE)
+    target_compile_options(brtrain PRIVATE -mcpu=native)
+  endif()
+endif()
+
+find_package(Threads REQUIRED)
+target_link_libraries(brtrain PRIVATE Threads::Threads)
+if(NOT WIN32)
+  target_link_libraries(brtrain PRIVATE m)
+endif()
+
+if(BR_METAL AND APPLE)
+  enable_language(OBJC)
+  target_sources(brtrain PRIVATE src/backend_metal.m)
+  set_source_files_properties(src/backend_metal.m PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  target_link_libraries(brtrain PRIVATE "-framework Metal" "-framework Foundation")
+  target_compile_definitions(brtrain PRIVATE BR_HAVE_METAL)
+  message(STATUS "brtrain: Metal backend ON")
+endif()
+
+if(BR_OPENCL)
+  # OpenCL is loaded at runtime from the GPU driver (src/br_cl.h): nothing to find or link at build time
+  target_sources(brtrain PRIVATE src/backend_opencl.c)
+  target_compile_definitions(brtrain PRIVATE BR_HAVE_OPENCL)
+  if(NOT WIN32)
+    target_link_libraries(brtrain PRIVATE ${CMAKE_DL_LIBS})
+  endif()
+endif()
+if(WIN32)
+  target_link_libraries(brtrain PRIVATE ws2_32 shell32)
+endif()

@@ -1,0 +1,245 @@
+<title>Memory Neurons</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700&family=IBM+Plex+Sans:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: three stacked levels (idea → mechanics → training), each with a live canvas you drive with sliders. */
+:root{
+  --bg:#f3f5f7; --surface:#ffffff; --fg:#17212b; --dim:#5d6f80; --line:#d5dde5;
+  --ai:#1f8fc4; --mem:#7a5bd1; --warm:#d27a10; --bad:#d0453f; --ok:#2f9a5c;
+  --display:"Saira Condensed","Arial Narrow",sans-serif; --body:"IBM Plex Sans",system-ui,sans-serif; --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0b1118; --surface:#121b25; --fg:#e3ebf2; --dim:#8ea2b4; --line:#253242;
+  --ai:#5fd1ff; --mem:#b59cff; --warm:#ffb347; --bad:#ff6b6b; --ok:#6fe39a; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --bg:#0b1118; --surface:#121b25; --fg:#e3ebf2; --dim:#8ea2b4; --line:#253242;
+  --ai:#5fd1ff; --mem:#b59cff; --warm:#ffb347; --bad:#ff6b6b; --ok:#6fe39a; color-scheme:dark }
+body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--body);padding-block:32px 64px;padding-inline:16px}
+main{max-width:880px;margin:0 auto;display:flex;flex-direction:column;gap:26px}
+h1{font:700 42px/1 var(--display);letter-spacing:.03em;margin:0;text-wrap:balance}
+h2{font:700 26px/1.1 var(--display);letter-spacing:.03em;margin:0;text-wrap:balance}
+h3{font:600 15px var(--body);margin:0}
+.lede{color:var(--dim);max-width:65ch;margin:8px 0 0}
+section{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:20px;display:flex;flex-direction:column;gap:14px;min-width:0}
+section p{margin:0;max-width:68ch}
+.lvl{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mem)}
+.eq{font:600 15px/1.7 var(--mono);background:var(--bg);border-radius:6px;padding:10px 14px;overflow-x:auto;white-space:nowrap}
+.eq .c{color:var(--dim);font-weight:400}
+canvas{width:100%;display:block;border-radius:6px;background:var(--bg)}
+.controls{display:flex;flex-wrap:wrap;gap:12px 22px;align-items:end}
+.controls label{display:flex;flex-direction:column;gap:4px;font:12px var(--mono);color:var(--dim);min-width:200px;flex:1}
+.controls label b{color:var(--fg);font-weight:600}
+input[type=range]{width:100%;accent-color:var(--mem)}
+.seg{display:flex;border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.seg button{font:600 12px var(--mono);background:transparent;color:var(--fg);border:0;padding:7px 11px;cursor:pointer}
+.seg button.on{background:var(--mem);color:var(--surface)}
+.seg button:focus-visible,input:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
+.state{font:600 13px var(--mono);padding:4px 10px;border-radius:4px;border:1px solid currentColor;align-self:flex-start}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font:12px var(--mono);color:var(--dim)}
+.legend i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.card{border:1px solid var(--line);border-radius:6px;padding:12px 14px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.card p{font-size:14px;color:var(--dim)}
+.card .eq{font-size:13px;padding:6px 10px}
+svg{display:block;max-width:100%;height:auto}
+svg text{font-family:var(--mono);font-size:13px;fill:var(--fg)}
+@media (prefers-reduced-motion: reduce){ .pulse{animation:none!important} }
+@keyframes travel{ from{offset-distance:0%} to{offset-distance:100%} }
+.pulse{offset-path:path("M330 60 H430 V120 H230 V60 H330");animation:travel 2.4s linear infinite}
+</style>
+
+<main>
+<header>
+  <h1>Memory neurons</h1>
+  <p class="lede">How a network can remember between decisions, explained in three levels, from the idea to the training. Every chart is live: drag the sliders.</p>
+</header>
+
+<section>
+  <span class="lvl">Level 1 · the idea</span>
+  <h2>A note to itself</h2>
+  <p>A normal network looks at one photo and acts. A memory neuron also keeps a small note from the last moment and reads it again next time, so the network sees a film instead of a photo.</p>
+  <svg viewBox="0 0 660 150" role="img" aria-label="Sensors feed a brain with a memory loop that leads to an action">
+    <rect x="20" y="40" width="140" height="44" rx="8" fill="var(--bg)" stroke="var(--line)" stroke-width="1.5"/><text x="90" y="67" text-anchor="middle">what it sees</text>
+    <path d="M160 62 H228" stroke="var(--fg)" stroke-width="1.5"/><path d="M222 57 L230 62 L222 67" fill="var(--fg)"/>
+    <rect x="230" y="30" width="200" height="64" rx="10" fill="var(--surface)" stroke="var(--ai)" stroke-width="2"/><text x="330" y="67" text-anchor="middle">brain</text>
+    <path d="M430 62 H498" stroke="var(--fg)" stroke-width="1.5"/><path d="M492 57 L500 62 L492 67" fill="var(--fg)"/>
+    <rect x="500" y="40" width="140" height="44" rx="8" fill="var(--bg)" stroke="var(--line)" stroke-width="1.5"/><text x="570" y="67" text-anchor="middle">what it does</text>
+    <path d="M330 94 V120 H430 V60" fill="none" stroke="var(--mem)" stroke-width="2" stroke-dasharray="5 4"/>
+    <path d="M330 94 V120 H230 V94" fill="none" stroke="var(--mem)" stroke-width="2" stroke-dasharray="5 4"/>
+    <text x="330" y="142" text-anchor="middle" style="fill:var(--mem)">note from last time</text>
+    <circle class="pulse" r="6" fill="var(--mem)"/>
+  </svg>
+</section>
+
+<section>
+  <span class="lvl">Level 2 · the mechanics</span>
+  <h2>Mix the new with the old</h2>
+  <div class="eq">h<sub>t</sub> = tanh( w · x<sub>t</sub>  +  U · h<sub>t−1</sub> ) <span class="c">  // x = what it sees now, h = the memory, U = how much old memory carries over</span></div>
+  <p>One weight, U, decides the personality of the memory. Pick an input signal, then drag U and watch the neuron's value h (purple) respond to the input x (grey).</p>
+  <div class="controls">
+    <label>Carry-over U <b id="vU"></b><input id="sU" type="range" min="-1.5" max="1.5" step="0.05" value="0.8"></label>
+    <div class="seg" role="group" aria-label="Input signal"><button data-in="blip" class="on">one blip</button><button data-in="noisy">noisy reading</button><button data-in="weave">weave</button></div>
+  </div>
+  <span class="state" id="stateU"></span>
+  <canvas id="cH" height="220" aria-label="Memory value over time"></canvas>
+  <div class="legend"><span><i style="background:var(--dim)"></i>input x</span><span><i style="background:var(--mem)"></i>memory h</span></div>
+  <h3>Unrolled in time</h3>
+  <p>The same neuron at each decision, chained together. The fill shows how strong its memory is at that step.</p>
+  <canvas id="cChain" height="120" aria-label="Chain of memory states over time"></canvas>
+</section>
+
+<section>
+  <span class="lvl">Level 3 · training</span>
+  <h2>Why they're hard to train</h2>
+  <h3>1. Influence explodes or vanishes</h3>
+  <p>An input k steps back reaches today's decision multiplied by U about k times. Below 1 its effect fades to nothing; above 1 it blows up. Training has to land in a narrow band around 1 to remember long without blowing up.</p>
+  <div class="controls">
+    <label>Carry-over U <b id="vU2"></b><input id="sU2" type="range" min="0.5" max="1.5" step="0.01" value="0.9"></label>
+  </div>
+  <canvas id="cGrad" height="220" aria-label="Influence of past inputs on a log scale"></canvas>
+  <p id="gradTxt" style="font:13px var(--mono);color:var(--dim)"></p>
+
+  <h3>2. A tiny change ripples through every later step</h3>
+  <p>Evolution changes weights by small random amounts. Near U = 1, a small change flips the memory's whole behaviour. Both neurons below get the same single blip; their U differs only by the mutation size. Drag U toward 1.</p>
+  <div class="controls">
+    <label>Parent U <b id="vU3"></b><input id="sU3" type="range" min="0.6" max="1.2" step="0.01" value="0.95"></label>
+    <label>Mutation size <b id="vD3"></b><input id="sD3" type="range" min="0.02" max="0.2" step="0.01" value="0.1"></label>
+  </div>
+  <canvas id="cLand" height="220" aria-label="Parent and slightly mutated child respond very differently to the same blip"></canvas>
+  <div class="legend"><span><i style="background:var(--mem)"></i>parent (U)</span><span><i style="background:var(--bad)"></i>child (U + mutation)</span></div>
+  <p id="landTxt" style="font:13px var(--mono);color:var(--dim)"></p>
+
+  <h3>3. Credit is spread over time</h3>
+  <p>A miss at the end may come from a memory written hundreds of steps earlier. Each step in between could be to blame, and evolution only sees the final score.</p>
+  <svg viewBox="0 0 660 110" role="img" aria-label="A memory written early causes a miss much later">
+    <circle cx="60" cy="50" r="22" fill="var(--surface)" stroke="var(--mem)" stroke-width="2.5"/><text x="60" y="55" text-anchor="middle">h₁₂₀</text>
+    <path d="M82 50 H560" stroke="var(--mem)" stroke-width="2" stroke-dasharray="3 6"/>
+    <text x="320" y="40" text-anchor="middle" style="fill:var(--dim)">180 steps of U · U · U · …</text>
+    <circle cx="590" cy="50" r="22" fill="var(--surface)" stroke="var(--bad)" stroke-width="2.5"/><text x="590" y="55" text-anchor="middle">miss</text>
+    <text x="60" y="98" text-anchor="middle" style="fill:var(--mem)">real cause</text><text x="590" y="98" text-anchor="middle" style="fill:var(--bad)">blame shows up here</text>
+  </svg>
+</section>
+
+<section>
+  <span class="lvl">Level 3 · training</span>
+  <h2>How to train them</h2>
+  <p>The single most useful fix is the leaky neuron. It blends old memory with new input instead of adding them, so it can't blow up. Drag both sliders to compare it with the plain neuron on the same noisy weave.</p>
+  <div class="eq">plain:  h = tanh(w·x + U·h)<br>leaky:  h = λ·h + (1−λ)·tanh(w·x) <span class="c">  // λ between 0 and 1: always stable</span></div>
+  <div class="controls">
+    <label>Plain U <b id="vUp"></b><input id="sUp" type="range" min="0" max="1.4" step="0.02" value="1.1"></label>
+    <label>Leaky λ <b id="vLam"></b><input id="sLam" type="range" min="0" max="0.98" step="0.02" value="0.8"></label>
+  </div>
+  <canvas id="cFix" height="230" aria-label="Plain and leaky neurons tracking a noisy weave"></canvas>
+  <div class="legend"><span><i style="background:var(--fg)"></i>true weave</span><span><i style="background:var(--dim)"></i>noisy readings</span><span><i style="background:var(--bad)"></i>plain neuron</span><span><i style="background:var(--ok)"></i>leaky neuron</span></div>
+  <div class="grid">
+    <div class="card"><h3>Start U small</h3><div class="eq">U ≈ 0.1</div><p>Begin with almost no memory. Evolution grows it only when it helps, and the network stays stable from the first generation.</p></div>
+    <div class="card"><h3>Leaky or gated neurons</h3><div class="eq">h = g·h + (1−g)·new</div><p>A blend instead of a sum can't explode. In gated units (GRU, LSTM) the network learns g itself.</p></div>
+    <div class="card"><h3>Smaller mutations on U</h3><div class="eq">σ<sub>U</sub> ≈ σ / 5</div><p>The memory weights ripple through every step, so nudge them gently while the rest of the network explores.</p></div>
+    <div class="card"><h3>Curriculum</h3><div class="eq">clean → noise → delay → weave</div><p>Learn to hit with perfect sensors first, then add each difficulty once the last one is mastered.</p></div>
+    <div class="card"><h3>Fixed, plentiful scenarios</h3><div class="eq">16–32 per network</div><p>Less luck in the score, so evolution sees what a change to U really did.</p></div>
+    <div class="card"><h3>Two stages</h3><div class="eq">train N, then add memory at 0</div><p>Start from a pilot that already flies, with memory switched off, and let memory grow from there.</p></div>
+  </div>
+</section>
+</main>
+
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const tok=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  let seed=11; const rnd=()=>((seed=Math.imul(seed,1664525)+1013904223>>>0)/4294967296);
+  const gauss=()=>Math.sqrt(-2*Math.log(rnd()+1e-12))*Math.cos(2*Math.PI*rnd());
+  const T=80, NOISE=Array.from({length:400},gauss);   // fixed noise so pictures don't flicker
+
+  function signal(kind){ return Array.from({length:T},(_,t)=>
+    kind==='blip'? (t===6?1.6:0) :
+    kind==='noisy'? 0.6+0.5*NOISE[t] :
+    Math.sin(t*0.16)*0.9+0.35*NOISE[t+100]); }
+  const weaveTrue=Array.from({length:T},(_,t)=>Math.sin(t*0.16)*0.9);
+
+  function setup(cv){ const r=devicePixelRatio||1, w=cv.clientWidth, h=+cv.getAttribute('height');
+    cv.width=w*r; cv.height=h*r; cv.style.height=h+'px'; const x=cv.getContext('2d'); x.scale(r,r); return [x,w,h]; }
+  function axes(x,w,h,lo,hi,ticks,fmt,L=46,B=26){
+    x.font='11px '+tok('--mono'); x.fillStyle=tok('--dim'); x.strokeStyle=tok('--line'); x.lineWidth=1;
+    const Y=v=>10+(hi-v)/(hi-lo)*(h-10-B);
+    for(const v of ticks){ x.beginPath(); x.moveTo(L,Y(v)); x.lineTo(w-10,Y(v)); x.stroke(); x.textAlign='right'; x.fillText(fmt(v),L-6,Y(v)+4); }
+    return Y; }
+  function line(x,pts,col,wd,dash){ x.strokeStyle=col; x.lineWidth=wd; x.setLineDash(dash||[]); x.beginPath(); pts.forEach(([a,b],i)=>i?x.lineTo(a,b):x.moveTo(a,b)); x.stroke(); x.setLineDash([]); }
+
+  // ---------- Level 2: h over time + chain
+  let inKind='blip';
+  function run(U,xs){ let h=0; return xs.map(v=>(h=Math.tanh(v+U*h))); }
+  function drawH(){
+    const U=+$('sU').value; $('vU').textContent=U.toFixed(2);
+    const xs=signal(inKind), hs=run(U,xs);
+    const [x,w,h]=setup($('cH')), L=46, X=t=>L+t/(T-1)*(w-L-10);
+    const Y=axes(x,w,h,-1.7,1.7,[-1,0,1],v=>v.toFixed(0));
+    x.fillStyle=tok('--dim'); xs.forEach((v,t)=>{ x.beginPath(); x.arc(X(t),Y(Math.max(-1.7,Math.min(1.7,v))),2.4,0,7); x.fill(); });
+    line(x,hs.map((v,t)=>[X(t),Y(v)]),tok('--mem'),2.6);
+    x.fillStyle=tok('--dim'); x.textAlign='center'; x.fillText('decisions →',w/2,h-6);
+    // state chip
+    const tail=hs.slice(-15), sat=tail.every(v=>Math.abs(v)>0.95), osc=U<-0.2;
+    let txt,col;
+    if(Math.abs(U)>=1.0 && (sat||inKind==='blip'&&Math.abs(hs[T-1])>0.6)){ txt='Stuck: memory saturates at ±1 and stops responding'; col='--bad'; }
+    else if(osc){ txt='Oscillates: flips sign every step'; col='--warm'; }
+    else if(Math.abs(U)<0.3){ txt='Forgets almost at once (like no memory)'; col='--dim'; }
+    else { const half=Math.log(0.5)/Math.log(Math.abs(U)); txt=`Remembers: a blip fades to half in about ${half.toFixed(1)} decisions`; col='--ok'; }
+    const st=$('stateU'); st.textContent=txt; st.style.color=tok(col);
+    // chain
+    const [c,cw,ch]=setup($('cChain')), n=Math.max(6,Math.min(16,Math.floor(cw/52))), gap=(cw-40)/(n-1);
+    for(let i=0;i<n;i++){ const cx=20+i*gap, cy=50, v=hs[i+2];
+      if(i<n-1){ c.strokeStyle=tok('--mem'); c.lineWidth=2; c.setLineDash([4,4]); c.beginPath(); c.moveTo(cx+16,cy); c.lineTo(cx+gap-16,cy); c.stroke(); c.setLineDash([]); }
+      c.beginPath(); c.arc(cx,cy,15,0,7); c.fillStyle=tok('--surface'); c.fill(); c.strokeStyle=tok('--mem'); c.lineWidth=2; c.stroke();
+      c.save(); c.beginPath(); c.arc(cx,cy,15,0,7); c.clip(); c.globalAlpha=Math.min(1,Math.abs(v)); c.fillStyle=tok(v>=0?'--mem':'--warm'); c.fillRect(cx-15,cy+15-30*Math.abs(v),30,30*Math.abs(v)); c.restore();
+      c.fillStyle=tok('--dim'); c.font='10px '+tok('--mono'); c.textAlign='center'; c.fillText('t'+(i+2),cx,cy+32); }
+  }
+  document.querySelectorAll('[data-in]').forEach(b=>b.onclick=()=>{ inKind=b.dataset.in; document.querySelectorAll('[data-in]').forEach(o=>o.classList.toggle('on',o===b)); drawH(); });
+  $('sU').oninput=drawH;
+
+  // ---------- Level 3.1: U^k influence (log scale)
+  function drawGrad(){
+    const U=+$('sU2').value; $('vU2').textContent=U.toFixed(2);
+    const N=40, [x,w,h]=setup($('cGrad')), L=46, B=26;
+    const Y=axes(x,w,h,-6,6,[-6,-3,0,3,6],v=>v===0?'1':'1e'+v,L,B);
+    const bw=(w-L-10)/N;
+    for(let k=1;k<=N;k++){ const lg=Math.max(-6,Math.min(6,k*Math.log10(U))), x0=L+(N-k)*bw;
+      x.fillStyle=tok(lg>1?'--bad':lg<-1?'--dim':'--ok'); x.fillRect(x0+1,Math.min(Y(0),Y(lg)),bw-2,Math.abs(Y(lg)-Y(0))||1); }
+    x.fillStyle=tok('--dim'); x.textAlign='left'; x.fillText('← 40 steps back',L,h-6); x.textAlign='right'; x.fillText('now →',w-10,h-6);
+    const v30=Math.pow(U,30);
+    $('gradTxt').textContent=`An input 30 decisions back counts ×${v30<1e-3||v30>1e4?v30.toExponential(1):v30.toFixed(3)} today. `+
+      (v30<0.05?'It has effectively vanished.':v30>20?'It has exploded and drowns out the present.':'It still matters, which is the useful band.');
+  }
+  $('sU2').oninput=drawGrad;
+
+  // ---------- Level 3.2: parent vs slightly mutated child on the same blip
+  function track(form,U,xs){ let h=0; return xs.map(v=>(h= form==='plain'? Math.tanh(0.6*v+U*h) : U*h+(1-U)*Math.tanh(0.9*v))); }
+  function drawLand(){
+    const U=+$('sU3').value, d=+$('sD3').value; $('vU3').textContent=U.toFixed(2); $('vD3').textContent='+'+d.toFixed(2);
+    const xs=signal('blip'), a=run(U,xs), b=run(U+d,xs);
+    const [x,w,h]=setup($('cLand')), L=46, X=t=>L+t/(T-1)*(w-L-10);
+    const Y=axes(x,w,h,-0.2,1.2,[0,0.5,1],v=>v.toFixed(1));
+    line(x,a.map((v,t)=>[X(t),Y(v)]),tok('--mem'),2.6); line(x,b.map((v,t)=>[X(t),Y(v)]),tok('--bad'),2.4,[6,4]);
+    x.fillStyle=tok('--dim'); x.textAlign='center'; x.fillText('decisions after the blip →',w/2,h-6);
+    const ea=a[T-1], eb=b[T-1];
+    $('landTxt').textContent=`After ${T} decisions the parent remembers ${(ea*100).toFixed(0)}% and the child ${(eb*100).toFixed(0)}%. `+
+      (U<1&&U+d>=1?'The mutation crossed U = 1: forgetting turned into a memory that never lets go.':
+       U>=1?'Both are above 1: each holds the blip forever and can never forget.':'Both are below 1: the same mutation barely matters here.');
+  }
+  $('sU3').oninput=drawLand; $('sD3').oninput=drawLand;
+
+  // ---------- How to train: plain vs leaky on the weave
+  function drawFix(){
+    const U=+$('sUp').value, lam=+$('sLam').value; $('vUp').textContent=U.toFixed(2); $('vLam').textContent=lam.toFixed(2);
+    const xs=signal('weave'), [x,w,h]=setup($('cFix')), L=46, X=t=>L+t/(T-1)*(w-L-10);
+    const Y=axes(x,w,h,-1.5,1.5,[-1,0,1],v=>v.toFixed(0));
+    x.fillStyle=tok('--dim'); xs.forEach((v,t)=>{ x.beginPath(); x.arc(X(t),Y(Math.max(-1.5,Math.min(1.5,v))),2.2,0,7); x.fill(); });
+    line(x,weaveTrue.map((v,t)=>[X(t),Y(v)]),tok('--fg'),1.6,[5,4]);
+    line(x,track('plain',U,xs).map((v,t)=>[X(t),Y(v)]),tok('--bad'),2.4);
+    line(x,track('leaky',lam,xs).map((v,t)=>[X(t),Y(v)]),tok('--ok'),2.6);
+  }
+  $('sUp').oninput=drawFix; $('sLam').oninput=drawFix;
+
+  const all=()=>{ drawH(); drawGrad(); drawLand(); drawFix(); };
+  all(); addEventListener('resize',all);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change',all);
+  new MutationObserver(all).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

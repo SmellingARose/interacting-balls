@@ -1,0 +1,283 @@
+<title>Pilot Memory Math</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700&family=IBM+Plex+Sans:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column; each memory option is a "card" of idea → formula → picture, in the Ballistic Range palette. */
+:root{
+  --bg:#f3f5f7; --surface:#ffffff; --fg:#17212b; --dim:#5d6f80; --line:#d5dde5;
+  --ai:#1f8fc4; --algo:#d27a10; --bad:#d0453f; --ok:#2f9a5c; --mem:#7a5bd1;
+  --display:"Saira Condensed","Arial Narrow",sans-serif; --body:"IBM Plex Sans",system-ui,sans-serif; --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0b1118; --surface:#121b25; --fg:#e3ebf2; --dim:#8ea2b4; --line:#253242;
+  --ai:#5fd1ff; --algo:#ffb347; --bad:#ff6b6b; --ok:#6fe39a; --mem:#b59cff; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --bg:#0b1118; --surface:#121b25; --fg:#e3ebf2; --dim:#8ea2b4; --line:#253242;
+  --ai:#5fd1ff; --algo:#ffb347; --bad:#ff6b6b; --ok:#6fe39a; --mem:#b59cff; color-scheme:dark }
+body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--body);padding:32px 16px 64px}
+main{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:28px}
+h1{font:700 40px/1 var(--display);letter-spacing:.03em;margin:0;text-wrap:balance}
+h2{font:700 24px/1.1 var(--display);letter-spacing:.03em;margin:0;text-wrap:balance}
+.lede{color:var(--dim);max-width:65ch;margin:8px 0 0}
+section{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:20px;display:flex;flex-direction:column;gap:12px;min-width:0}
+section p{margin:0;max-width:68ch}
+.eq{font:600 15px/1.7 var(--mono);background:var(--bg);border-radius:6px;padding:10px 14px;overflow-x:auto;white-space:nowrap}
+.eq .c{color:var(--dim);font-weight:400}
+.tag{font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.verdict{display:flex;gap:8px;flex-wrap:wrap;font-size:13px}
+.verdict span{border:1px solid var(--line);border-radius:4px;padding:2px 8px}
+.verdict .p{color:var(--ok);border-color:currentColor} .verdict .m{color:var(--bad);border-color:currentColor}
+.fig{overflow-x:auto}
+svg{display:block;max-width:100%;height:auto}
+svg text{font-family:var(--mono);font-size:12px;fill:var(--fg)}
+svg .dim{fill:var(--dim)} svg .lbl{font-size:11px}
+.box{fill:var(--bg);stroke:var(--line);stroke-width:1.5}
+.net{fill:var(--surface);stroke:var(--ai);stroke-width:2}
+.mem{fill:var(--surface);stroke:var(--mem);stroke-width:2}
+.ar{stroke:var(--fg);stroke-width:1.5;fill:none;marker-end:url(#ah)}
+.arm{stroke:var(--mem);stroke-width:1.8;fill:none;marker-end:url(#ahm);stroke-dasharray:5 4}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font:12px var(--mono);color:var(--dim)}
+.legend i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px}
+</style>
+
+<main>
+<header>
+  <h1>Giving the interceptor a memory</h1>
+  <p class="lede">The neural pilot decides every Δt = 40 ms. Right now it sees only the current sensor snapshot <b>x<sub>t</sub></b> and outputs commands <b>u<sub>t</sub></b>, so it forgets everything between decisions. Each option below adds memory in a different way. Purple marks the memory path in every picture.</p>
+</header>
+
+<section>
+  <span class="tag">Today · no memory</span>
+  <h2>The baseline</h2>
+  <div class="eq">u<sub>t</sub> = N(x<sub>t</sub>) <span class="c">   // commands depend only on this instant</span></div>
+  <div class="fig"><svg viewBox="0 0 640 90" role="img" aria-label="Sensors feed the network, which outputs commands">
+    <rect class="box" x="10" y="25" width="130" height="40" rx="6"/><text x="75" y="50" text-anchor="middle">sensors x<tspan baseline-shift="sub" font-size="9">t</tspan></text>
+    <path class="ar" d="M140 45 H245"/>
+    <rect class="net" x="250" y="20" width="120" height="50" rx="8"/><text x="310" y="50" text-anchor="middle">N</text>
+    <path class="ar" d="M370 45 H475"/>
+    <rect class="box" x="480" y="25" width="150" height="40" rx="6"/><text x="555" y="50" text-anchor="middle">commands u<tspan baseline-shift="sub" font-size="9">t</tspan></text>
+  </svg></div>
+  <p>With ±10 m of sensor noise, each snapshot is wrong by several times the 2 m hit size, and nothing lets the pilot average it out. The chart shows what it sees: grey dots are the readings, the dark line is the truth.</p>
+  <div class="fig"><svg id="chart0" viewBox="0 0 640 200" role="img" aria-label="Noisy readings scattered around the true path"></svg></div>
+</section>
+
+<section>
+  <span class="tag">Option 1</span>
+  <h2>Previous outputs as inputs</h2>
+  <div class="eq">u<sub>t</sub> = N(x<sub>t</sub>, u<sub>t−1</sub>)</div>
+  <div class="fig"><svg viewBox="0 0 640 130" role="img" aria-label="Last command loops back into the network">
+    <rect class="box" x="10" y="25" width="130" height="40" rx="6"/><text x="75" y="50" text-anchor="middle">x<tspan baseline-shift="sub" font-size="9">t</tspan></text>
+    <path class="ar" d="M140 45 H245"/>
+    <rect class="net" x="250" y="20" width="120" height="50" rx="8"/><text x="310" y="50" text-anchor="middle">N</text>
+    <path class="ar" d="M370 45 H475"/>
+    <rect class="box" x="480" y="25" width="150" height="40" rx="6"/><text x="555" y="50" text-anchor="middle">u<tspan baseline-shift="sub" font-size="9">t</tspan></text>
+    <path class="arm" d="M555 65 V105 H290 V75"/>
+    <text x="420" y="122" text-anchor="middle" class="dim lbl">last command, delayed one step</text>
+  </svg></div>
+  <p>The network knows what it just did, so it can avoid flipping between full left and full right. It knows nothing more about the target than before.</p>
+  <div class="verdict"><span class="p">+3 inputs</span><span class="p">smoother steering</span><span class="m">no help with noise</span></div>
+</section>
+
+<section>
+  <span class="tag">Option 2</span>
+  <h2>Previous inputs (frame stacking)</h2>
+  <div class="eq">u<sub>t</sub> = N(x<sub>t</sub>, x<sub>t−1</sub>, x<sub>t−2</sub>) <span class="c">   // averaging k readings: noise σ → σ/√k</span></div>
+  <div class="fig"><svg viewBox="0 0 640 150" role="img" aria-label="Three snapshots enter the network side by side">
+    <rect class="box" x="10" y="10" width="130" height="34" rx="6"/><text x="75" y="32" text-anchor="middle">x<tspan baseline-shift="sub" font-size="9">t</tspan></text>
+    <rect class="mem" x="10" y="58" width="130" height="34" rx="6"/><text x="75" y="80" text-anchor="middle">x<tspan baseline-shift="sub" font-size="9">t−1</tspan></text>
+    <rect class="mem" x="10" y="106" width="130" height="34" rx="6"/><text x="75" y="128" text-anchor="middle">x<tspan baseline-shift="sub" font-size="9">t−2</tspan></text>
+    <path class="ar" d="M140 27 L250 65"/><path class="ar" d="M140 75 H245"/><path class="ar" d="M140 123 L250 85"/>
+    <rect class="net" x="250" y="50" width="120" height="50" rx="8"/><text x="310" y="80" text-anchor="middle">N</text>
+    <path class="ar" d="M370 75 H475"/>
+    <rect class="box" x="480" y="55" width="150" height="40" rx="6"/><text x="555" y="80" text-anchor="middle">u<tspan baseline-shift="sub" font-size="9">t</tspan></text>
+  </svg></div>
+  <p>Seeing several snapshots lets the network compute a rate, (x<sub>t</sub> − x<sub>t−1</sub>)/Δt, and average a little noise. Its memory only reaches back k steps, and every extra snapshot multiplies the inputs, so the network gets slower.</p>
+  <div class="fig"><svg id="chartK" viewBox="0 0 640 200" role="img" aria-label="Noise falls as 1 over the square root of the number of snapshots"></svg></div>
+  <p>Averaging k snapshots of ±10 m noise: 4 snapshots halve it, but you need 25 to get under the 2 m hit size, and by then the oldest reading is a second out of date.</p>
+  <div class="verdict"><span class="p">rates become visible</span><span class="m">inputs ×k</span><span class="m">short memory</span></div>
+</section>
+
+<section>
+  <span class="tag">Option 3</span>
+  <h2>Change since last decision</h2>
+  <div class="eq">Δx<sub>t</sub> = x<sub>t</sub> − x<sub>t−1</sub>     ω ≈ Δθ / Δt <span class="c">   // line-of-sight turn rate</span></div>
+  <div class="fig"><svg viewBox="0 0 640 170" role="img" aria-label="Line of sight to the attacker rotates between two decisions">
+    <circle cx="80" cy="140" r="9" fill="var(--ai)"/><text x="80" y="164" text-anchor="middle" class="dim lbl">interceptor</text>
+    <circle cx="520" cy="40" r="8" fill="var(--bad)" opacity=".45"/><text x="540" y="36" class="dim lbl">attacker at t−1</text>
+    <circle cx="545" cy="80" r="8" fill="var(--bad)"/><text x="565" y="84" class="lbl">at t</text>
+    <path d="M80 140 L520 40" stroke="var(--dim)" stroke-dasharray="4 4"/>
+    <path d="M80 140 L545 80" stroke="var(--fg)"/>
+    <path id="dtharc" stroke="var(--mem)" stroke-width="2.5" fill="none"/>
+    <text id="dthlbl" class="lbl" style="fill:var(--mem)">Δθ</text>
+  </svg></div>
+  <p>Classic guidance steers to keep the line of sight from turning (ω → 0 means a collision course). Handing the network Δθ directly measures that turn rate. The catch: subtracting two noisy readings adds their noise, giving σ√2, so this works best on smoothed readings.</p>
+  <div class="verdict"><span class="p">~6 inputs</span><span class="p">turn rate measured directly</span><span class="m">noise ×√2 unless smoothed</span></div>
+</section>
+
+<section>
+  <span class="tag">Option 4</span>
+  <h2>Smoothed sensors (moving average)</h2>
+  <div class="eq">x̂<sub>t</sub> = x̂<sub>t−1</sub> + α · (z<sub>t</sub> − x̂<sub>t−1</sub>) <span class="c">   // z = raw reading, 0 &lt; α ≤ 1</span><br>
+    noise → σ·√(α / (2−α))     lag ≈ (1−α)/α decisions</div>
+  <div class="fig"><svg viewBox="0 0 640 110" role="img" aria-label="Each reading nudges a running estimate">
+    <rect class="box" x="10" y="15" width="120" height="36" rx="6"/><text x="70" y="38" text-anchor="middle">z<tspan baseline-shift="sub" font-size="9">t</tspan></text>
+    <path class="ar" d="M130 33 H190"/><text x="210" y="37" text-anchor="middle">×α</text>
+    <path class="ar" d="M230 33 H280"/>
+    <circle cx="300" cy="33" r="18" class="mem"/><text x="300" y="38" text-anchor="middle">+</text>
+    <path class="ar" d="M318 33 H385"/>
+    <rect class="mem" x="390" y="15" width="100" height="36" rx="6"/><text x="440" y="38" text-anchor="middle">x̂<tspan baseline-shift="sub" font-size="9">t</tspan></text>
+    <path class="ar" d="M490 33 H545"/>
+    <rect class="net" x="550" y="10" width="80" height="46" rx="8"/><text x="590" y="38" text-anchor="middle">N</text>
+    <path class="arm" d="M440 51 V90 H300 V55"/><text x="370" y="104" text-anchor="middle" class="dim lbl">×(1−α) of the old estimate</text>
+  </svg></div>
+  <p>Each new reading only nudges the estimate. With α = 0.2, noise drops to a third, but the estimate trails a moving target by about 4 decisions (160 ms). That's the trade: less noise, more lag.</p>
+  <div class="fig"><svg id="chart4" viewBox="0 0 640 200" role="img" aria-label="Smoothed estimate follows the truth with less noise but lags"></svg></div>
+  <div class="legend"><span><i style="background:var(--fg)"></i>truth</span><span><i style="background:var(--dim)"></i>readings</span><span><i style="background:var(--algo)"></i>smoothed (α = 0.2)</span></div>
+  <p>The trade-off for every α: lower α means less noise (blue) but more lag (orange). No setting gets both low, which is why plain smoothing struggles against a moving target.</p>
+  <div class="fig"><svg id="chartA" viewBox="0 0 640 210" role="img" aria-label="As alpha falls, noise falls but lag grows"></svg></div>
+  <div class="legend"><span><i style="background:var(--ai)"></i>noise left (% of raw)</span><span><i style="background:var(--algo)"></i>lag (ms)</span></div>
+</section>
+
+<section>
+  <span class="tag">Option 5</span>
+  <h2>Tracking filter (α-β, the simple Kalman)</h2>
+  <div class="eq">predict:  p⁻ = p̂ + v̂·Δt<br>
+    error:    r = z − p⁻<br>
+    correct:  p̂ = p⁻ + α·r     v̂ = v̂ + (β/Δt)·r<br>
+    undo delay: p<sub>now</sub> ≈ p̂ + v̂·d <span class="c">   // d = sensor delay</span></div>
+  <div class="fig"><svg viewBox="0 0 640 170" role="img" aria-label="Predict, compare with the reading, correct, then project forward">
+    <rect class="mem" x="10" y="60" width="130" height="44" rx="6"/><text x="75" y="80" text-anchor="middle">state</text><text x="75" y="96" text-anchor="middle" class="dim lbl">p̂, v̂</text>
+    <path class="ar" d="M140 82 H195"/>
+    <rect class="box" x="200" y="60" width="120" height="44" rx="6"/><text x="260" y="80" text-anchor="middle">predict</text><text x="260" y="96" text-anchor="middle" class="dim lbl">p̂ + v̂Δt</text>
+    <path class="ar" d="M320 82 H375"/>
+    <rect class="box" x="380" y="60" width="120" height="44" rx="6"/><text x="440" y="80" text-anchor="middle">correct</text><text x="440" y="96" text-anchor="middle" class="dim lbl">+α·r, +β·r</text>
+    <rect class="box" x="380" y="5" width="120" height="32" rx="6"/><text x="440" y="26" text-anchor="middle">reading z</text>
+    <path class="ar" d="M440 37 V56"/>
+    <path class="arm" d="M440 104 V140 H75 V108"/><text x="260" y="156" text-anchor="middle" class="dim lbl">updated state for next decision</text>
+    <path class="ar" d="M500 82 H545"/>
+    <rect class="net" x="550" y="58" width="80" height="48" rx="8"/><text x="590" y="79" text-anchor="middle">N</text><text x="590" y="96" text-anchor="middle" class="dim lbl">+v̂·d</text>
+  </svg></div>
+  <p>The filter knows targets move smoothly, so it predicts where the attacker should be and only partly trusts each reading. Keeping a velocity estimate removes the lag of plain smoothing, and projecting forward by v̂·d undoes the sensor delay. A Kalman filter is the same loop with α and β calculated from the noise levels: gain K = P/(P+R), where P is how unsure the prediction is and R how noisy the sensor is.</p>
+  <p>One decision, step by step along one axis:</p>
+  <div class="fig"><svg viewBox="0 0 640 170" role="img" aria-label="Prediction, reading and corrected estimate on a line, then projection past the delay">
+    <line x1="30" y1="90" x2="620" y2="90" stroke="var(--line)" stroke-width="2"/>
+    <circle cx="120" cy="90" r="8" fill="var(--ok)"/><text x="120" y="122" text-anchor="middle" class="lbl">p̂ (last estimate)</text>
+    <path class="ar" d="M128 80 Q200 40 268 78"/><text x="200" y="44" text-anchor="middle" class="dim lbl">+ v̂·Δt</text>
+    <circle cx="280" cy="90" r="8" fill="none" stroke="var(--ok)" stroke-width="2"/><text x="280" y="122" text-anchor="middle" class="lbl">p⁻ predicted</text>
+    <circle cx="400" cy="90" r="6" fill="var(--dim)"/><text x="400" y="74" text-anchor="middle" class="lbl">z reading</text>
+    <path d="M280 104 V140 H400 V104" stroke="var(--bad)" fill="none"/><text x="340" y="156" text-anchor="middle" class="lbl" style="fill:var(--bad)">error r</text>
+    <circle cx="322" cy="90" r="8" fill="var(--ok)"/><text x="322" y="66" text-anchor="middle" class="lbl">p̂ = p⁻ + α·r</text>
+    <path class="arm" d="M330 90 H510"/><circle cx="520" cy="90" r="8" fill="var(--mem)"/><text x="520" y="122" text-anchor="middle" class="lbl">p_now = p̂ + v̂·d</text>
+    <text x="440" y="112" text-anchor="middle" class="dim lbl" style="fill:var(--mem)">undo delay</text>
+  </svg></div>
+  <div class="fig"><svg id="chart5" viewBox="0 0 640 200" role="img" aria-label="Tracking filter follows the truth closely without lag"></svg></div>
+  <div class="legend"><span><i style="background:var(--fg)"></i>truth</span><span><i style="background:var(--dim)"></i>readings</span><span><i style="background:var(--algo)"></i>smoothed</span><span><i style="background:var(--ok)"></i>α-β tracker</span></div>
+  <div class="verdict"><span class="p">handles noise and delay</span><span class="p">fits current code</span><span class="m">hand-tuned</span><span class="m">can't anticipate weaving</span></div>
+</section>
+
+<section>
+  <span class="tag">Option 6</span>
+  <h2>Learned memory slots</h2>
+  <div class="eq">[u<sub>t</sub>, m<sub>t</sub>] = N(x<sub>t</sub>, m<sub>t−1</sub>) <span class="c">   // m = a few numbers the network writes for itself</span></div>
+  <div class="fig"><svg viewBox="0 0 640 140" role="img" aria-label="Network writes memory values that return next decision">
+    <rect class="box" x="10" y="20" width="120" height="36" rx="6"/><text x="70" y="43" text-anchor="middle">x<tspan baseline-shift="sub" font-size="9">t</tspan></text>
+    <rect class="mem" x="10" y="70" width="120" height="36" rx="6"/><text x="70" y="93" text-anchor="middle">m<tspan baseline-shift="sub" font-size="9">t−1</tspan></text>
+    <path class="ar" d="M130 38 L250 55"/><path class="ar" d="M130 88 L250 72"/>
+    <rect class="net" x="255" y="35" width="120" height="56" rx="8"/><text x="315" y="68" text-anchor="middle">N</text>
+    <path class="ar" d="M375 52 L475 38"/><path class="ar" d="M375 74 L475 88"/>
+    <rect class="box" x="480" y="20" width="150" height="36" rx="6"/><text x="555" y="43" text-anchor="middle">u<tspan baseline-shift="sub" font-size="9">t</tspan></text>
+    <rect class="mem" x="480" y="70" width="150" height="36" rx="6"/><text x="555" y="93" text-anchor="middle">m<tspan baseline-shift="sub" font-size="9">t</tspan></text>
+    <path class="arm" d="M555 106 V128 H70 V110"/>
+  </svg></div>
+  <p>The network decides what to remember: for example "attacker swerved left last time" or "final approach now". Evolution has to discover useful uses for those slots, and that's slow, because a slot's value only pays off decisions later.</p>
+  <div class="verdict"><span class="p">+4–8 inputs and outputs</span><span class="p">network chooses what to keep</span><span class="m">hard to evolve</span></div>
+</section>
+
+<section>
+  <span class="tag">Option 7</span>
+  <h2>Memory neurons (recurrent network)</h2>
+  <div class="eq">h<sub>t</sub> = tanh(W·x<sub>t</sub> + U·h<sub>t−1</sub> + b)     u<sub>t</sub> = tanh(V·h<sub>t</sub>)<br>
+    extra weights: U is H×H <span class="c">   // 32 neurons → +1,024 weights</span></div>
+  <div class="fig"><svg viewBox="0 0 660 250" role="img" aria-label="Three decisions side by side; each one's memory is handed to the next">
+    <text x="110" y="18" text-anchor="middle" class="dim">decision 1</text><text x="330" y="18" text-anchor="middle" class="dim">decision 2</text><text x="550" y="18" text-anchor="middle" class="dim">decision 3</text>
+    <rect class="box" x="45" y="190" width="130" height="38" rx="6"/><text x="110" y="214" text-anchor="middle">sees x₁</text>
+    <rect class="box" x="265" y="190" width="130" height="38" rx="6"/><text x="330" y="214" text-anchor="middle">sees x₂</text>
+    <rect class="box" x="485" y="190" width="130" height="38" rx="6"/><text x="550" y="214" text-anchor="middle">sees x₃</text>
+    <rect class="mem" x="45" y="110" width="130" height="46" rx="10"/><text x="110" y="132" text-anchor="middle">memory h₁</text><text x="110" y="148" text-anchor="middle" class="dim lbl">hidden neurons</text>
+    <rect class="mem" x="265" y="110" width="130" height="46" rx="10"/><text x="330" y="132" text-anchor="middle">memory h₂</text><text x="330" y="148" text-anchor="middle" class="dim lbl">= mix(x₂, h₁)</text>
+    <rect class="mem" x="485" y="110" width="130" height="46" rx="10"/><text x="550" y="132" text-anchor="middle">memory h₃</text><text x="550" y="148" text-anchor="middle" class="dim lbl">= mix(x₃, h₂)</text>
+    <rect class="box" x="45" y="32" width="130" height="38" rx="6"/><text x="110" y="56" text-anchor="middle">does u₁</text>
+    <rect class="box" x="265" y="32" width="130" height="38" rx="6"/><text x="330" y="56" text-anchor="middle">does u₂</text>
+    <rect class="box" x="485" y="32" width="130" height="38" rx="6"/><text x="550" y="56" text-anchor="middle">does u₃</text>
+    <path class="ar" d="M110 190 V160"/><path class="ar" d="M330 190 V160"/><path class="ar" d="M550 190 V160"/>
+    <path class="ar" d="M110 110 V74"/><path class="ar" d="M330 110 V74"/><path class="ar" d="M550 110 V74"/>
+    <path class="arm" d="M175 133 H261"/><path class="arm" d="M395 133 H481"/>
+    <text x="220" y="124" text-anchor="middle" class="lbl" style="fill:var(--mem)">hand over</text><text x="440" y="124" text-anchor="middle" class="lbl" style="fill:var(--mem)">hand over</text>
+    <text x="220" y="100" text-anchor="middle" class="lbl" style="fill:var(--mem)">×U</text><text x="440" y="100" text-anchor="middle" class="lbl" style="fill:var(--mem)">×U</text>
+  </svg></div>
+  <p><b>How to read it:</b> it's one network, drawn three times for three decisions in a row. Bottom to top, each decision goes: what it sees → its memory (the hidden neurons) → what it does. The purple arrows are the new part: each decision's memory is handed to the next one, scaled by the weights U. So memory h₂ is a mix of what it sees now (x₂) and what it remembered (h₁).</p>
+  <p>Every hidden neuron feeds its value into the next decision through the weights U, so memory is built into the network. It can learn filtering, timing and weave anticipation on its own. Because each weight now affects every later decision, random mutations rarely improve it, and large U values can make h explode or stick at ±1.</p>
+  <div class="verdict"><span class="p">most flexible</span><span class="m">+H² weights</span><span class="m">hardest to evolve</span><span class="m">CPU, GPU and WebAssembly code need rewriting</span></div>
+</section>
+</main>
+
+<script>
+// Simulated one-axis track of a weaving attacker seen through noisy sensors (σ = 10 m), sampled every 40 ms.
+// A fixed-seed random generator keeps the pictures identical on every load.
+(function(){
+  let s=7; const rnd=()=>((s=Math.imul(s,1664525)+1013904223>>>0)/4294967296);
+  const gauss=()=>Math.sqrt(-2*Math.log(rnd()+1e-12))*Math.cos(2*Math.PI*rnd());
+  const N=80, dt=0.04, truth=[], z=[];
+  for(let i=0;i<N;i++){ const t=i*dt; truth.push(40*Math.sin(t*2.2)+30*t); z.push(truth[i]+gauss()*10); }
+  const ema=[]; let e=z[0]; for(const v of z){ e+=0.2*(v-e); ema.push(e); }
+  const ab=[]; let p=z[0], v=0; const a=0.35, b=0.08;
+  for(const r0 of z){ const pp=p+v*dt, r=r0-pp; p=pp+a*r; v+=b/dt*r; ab.push(p); }
+  const lo=Math.min(...z,...truth)-5, hi=Math.max(...z,...truth)+5;
+  const W=640,H=200,L=46,R=12,T=12,B=30, X=i=>L+i/(N-1)*(W-L-R), Y=y=>T+(hi-y)/(hi-lo)*(H-T-B);
+  const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n);
+  function draw(id,series){
+    const svg=document.getElementById(id); let g='';
+    for(const y of [Math.ceil(lo/20)*20, Math.round((lo+hi)/40)*20, Math.floor(hi/20)*20])
+      g+=`<line x1="${L}" x2="${W-R}" y1="${Y(y)}" y2="${Y(y)}" stroke="var(--line)"/><text x="${L-6}" y="${Y(y)+4}" text-anchor="end" class="dim lbl">${y} m</text>`;
+    for(const ms of [0,1000,2000,3000]){ const i=ms/40; if(i<N) g+=`<text x="${X(i)}" y="${H-10}" text-anchor="middle" class="dim lbl">${ms/1000} s</text>`; }
+    g+=z.map((y,i)=>`<circle cx="${X(i).toFixed(1)}" cy="${Y(y).toFixed(1)}" r="2.2" fill="var(--dim)" opacity=".7"/>`).join('');
+    const line=(arr,col,w)=>`<polyline fill="none" stroke="${col}" stroke-width="${w}" points="${arr.map((y,i)=>X(i).toFixed(1)+','+Y(y).toFixed(1)).join(' ')}"/>`;
+    g+=line(truth,'var(--fg)',1.6);
+    for(const [arr,col] of series) g+=line(arr,col,2.4);
+    svg.innerHTML=g;
+  }
+  // σ/√k
+  (function(){ const svg=document.getElementById('chartK'), W=640,H=200,L=46,R=16,T=26,B=34, X=k=>L+(k-1)/31*(W-L-R), Y=v=>T+(10-v)/10*(H-T-B);
+    let g=''; for(const v of [0,2,5,10]) g+=`<line x1="${L}" x2="${W-R}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text x="${L-6}" y="${Y(v)+4}" text-anchor="end" class="dim lbl">${v} m</text>`;
+    for(const k of [1,4,8,16,25,32]) g+=`<text x="${X(k)}" y="${H-12}" text-anchor="middle" class="dim lbl">${k}</text>`;
+    g+=`<line x1="${L}" x2="${W-R}" y1="${Y(2)}" y2="${Y(2)}" stroke="var(--ok)" stroke-dasharray="5 4"/><text x="${W-R}" y="${Y(2)-6}" text-anchor="end" class="lbl" style="fill:var(--ok)">2 m hit size</text>`;
+    let pts=''; for(let k=1;k<=32;k+=0.25) pts+=X(k).toFixed(1)+','+Y(10/Math.sqrt(k)).toFixed(1)+' ';
+    g+=`<polyline fill="none" stroke="var(--ai)" stroke-width="2.4" points="${pts}"/>`;
+    for(const k of [1,4,25]) g+=`<circle cx="${X(k)}" cy="${Y(10/Math.sqrt(k))}" r="4" fill="var(--ai)"/><text x="${X(k)+8}" y="${Y(10/Math.sqrt(k))-8}" class="lbl">${(10/Math.sqrt(k)).toFixed(1)} m</text>`;
+    g+=`<text x="${(L+W-R)/2}" y="${H-1}" text-anchor="middle" class="dim lbl">snapshots averaged (k)</text>`;
+    svg.innerHTML=g; })();
+  // EMA trade-off
+  (function(){ const svg=document.getElementById('chartA'), W=640,H=210,L=46,R=50,T=12,B=34, X=a=>L+(a-0.05)/0.95*(W-L-R), Y=v=>T+(100-v)/100*(H-T-B), Y2=ms=>T+(800-ms)/800*(H-T-B);
+    let g=''; for(const v of [0,25,50,75,100]) g+=`<line x1="${L}" x2="${W-R}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text x="${L-6}" y="${Y(v)+4}" text-anchor="end" class="lbl" style="fill:var(--ai)">${v}%</text><text x="${W-R+6}" y="${Y(v)+4}" class="lbl" style="fill:var(--algo)">${v*8} ms</text>`;
+    for(const a of [0.05,0.2,0.4,0.6,0.8,1]) g+=`<text x="${X(a)}" y="${H-12}" text-anchor="middle" class="dim lbl">${a}</text>`;
+    let n='',l=''; for(let a=0.05;a<=1.0001;a+=0.01){ n+=X(a).toFixed(1)+','+Y(100*Math.sqrt(a/(2-a))).toFixed(1)+' '; l+=X(a).toFixed(1)+','+Y2(Math.min(800,40*(1-a)/a)).toFixed(1)+' '; }
+    g+=`<polyline fill="none" stroke="var(--ai)" stroke-width="2.4" points="${n}"/><polyline fill="none" stroke="var(--algo)" stroke-width="2.4" points="${l}"/>`;
+    const a=0.2; g+=`<line x1="${X(a)}" x2="${X(a)}" y1="${T}" y2="${H-B}" stroke="var(--dim)" stroke-dasharray="3 4"/><text x="${X(a)+6}" y="${T+12}" class="lbl">α = 0.2: 33% noise, 160 ms lag</text>`;
+    g+=`<text x="${(L+W-R)/2}" y="${H-1}" text-anchor="middle" class="dim lbl">α (how much each new reading counts)</text>`;
+    svg.innerHTML=g; })();
+  // Option 3 angle arc between the two sight lines
+  (function(){ const cx=80,cy=140,r=150, a1=Math.atan2(40-140,520-80), a2=Math.atan2(80-140,545-80);
+    const p=a=>[cx+r*Math.cos(a),cy+r*Math.sin(a)], [x1,y1]=p(a1),[x2,y2]=p(a2);
+    document.getElementById('dtharc').setAttribute('d',`M${x1} ${y1} A${r} ${r} 0 0 1 ${x2} ${y2}`);
+    const [lx,ly]=p((a1+a2)/2); const t=document.getElementById('dthlbl'); t.setAttribute('x',lx+8); t.setAttribute('y',ly+4); })();
+  draw('chart0',[]); draw('chart4',[[ema,'var(--algo)']]); draw('chart5',[[ema,'var(--algo)'],[ab,'var(--ok)']]);
+})();
+</script>
+<script>
+/* hidden helper for <use> arrows: markers */
+document.querySelectorAll('svg').forEach(svg=>{
+  if(svg.id) return;
+  const d=document.createElementNS('http://www.w3.org/2000/svg','defs');
+  d.innerHTML='<marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="var(--fg)"/></marker><marker id="ahm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="var(--mem)"/></marker>';
+  svg.prepend(d);
+});
+</script>
