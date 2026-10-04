@@ -40,7 +40,7 @@ int br_cl_load(void) {
 
 typedef struct {
   cl_context ctx; cl_command_queue q; cl_device_id dev;
-  cl_program prog; cl_kernel k, swk, swgk; int progMaxW, progSwW;
+  cl_program prog, gprog; cl_kernel k, swk, swgk; int progMaxW, progSwW, grpSwW, grpStride;
   cl_mem state, weights, scen, params, alive, idx, flags, traj, wD, bat; size_t capState, capW, capScen, capIdx, capFlags, capTraj, capWD, capBat;
   int chunk;
 } ClImpl;
@@ -79,9 +79,8 @@ static int build_program(ClImpl* c, int maxW, int swW) {
   if (c->prog && c->progMaxW == maxW && c->progSwW == swW) return 0;
   if (c->k) CL.ReleaseKernel(c->k);
   if (c->swk) CL.ReleaseKernel(c->swk);
-  if (c->swgk) CL.ReleaseKernel(c->swgk);
   if (c->prog) CL.ReleaseProgram(c->prog);
-  c->k = c->swk = c->swgk = NULL; c->prog = NULL;
+  c->k = c->swk = NULL; c->prog = NULL;
   const char* parts[2] = { BR_SRC_SIM_CORE, BR_SRC_OPENCL };
   cl_int e; c->prog = CL.CreateProgramWithSource(c->ctx, 2, parts, NULL, &e);
   char opts[160]; snprintf(opts, sizeof opts, "-DBR_OPENCL=1 -DMAXW=%d -DSW_MAXW=%d -cl-fast-relaxed-math -cl-mad-enable", maxW, swW);
@@ -95,9 +94,27 @@ static int build_program(ClImpl* c, int maxW, int swW) {
   if (e != CL_SUCCESS) { fprintf(stderr, "OpenCL kernel create failed (%d)\n", e); return -1; }
   c->swk = CL.CreateKernel(c->prog, "br_sw_kernel", &e);
   if (e != CL_SUCCESS) { fprintf(stderr, "OpenCL swarm kernel create failed (%d)\n", e); return -1; }
-  c->swgk = CL.CreateKernel(c->prog, "br_sw_group_kernel", &e);
-  if (e != CL_SUCCESS) { fprintf(stderr, "OpenCL swarm group kernel create failed (%d)\n", e); return -1; }
   c->progMaxW = maxW; c->progSwW = swW; return 0;
+}
+
+// The work-group battle kernel keeps the battle in __local memory: built per battle size (SW_STRIDE floats).
+static int build_group(ClImpl* c, int swW, int stride) {
+  if (c->gprog && c->grpSwW == swW && c->grpStride == stride) return 0;
+  if (c->swgk) CL.ReleaseKernel(c->swgk);
+  if (c->gprog) CL.ReleaseProgram(c->gprog);
+  c->swgk = NULL; c->gprog = NULL;
+  const char* parts[2] = { BR_SRC_SIM_CORE, BR_SRC_OPENCL };
+  cl_int e; c->gprog = CL.CreateProgramWithSource(c->ctx, 2, parts, NULL, &e);
+  char opts[220]; snprintf(opts, sizeof opts, "-DBR_OPENCL=1 -DBR_SW_LOCAL=1 -DBR_SG=__local -DMAXW=32 -DSW_MAXW=%d -DSW_STRIDE=%d -cl-fast-relaxed-math -cl-mad-enable", swW, stride);
+  e = CL.BuildProgram(c->gprog, 1, &c->dev, opts, NULL, NULL);
+  if (e != CL_SUCCESS) {
+    size_t len = 0; CL.GetProgramBuildInfo(c->gprog, c->dev, CL_PROGRAM_BUILD_LOG, 0, NULL, &len);
+    char* log = (char*)malloc(len + 1); CL.GetProgramBuildInfo(c->gprog, c->dev, CL_PROGRAM_BUILD_LOG, len, log, NULL); log[len] = 0;
+    fprintf(stderr, "OpenCL swarm group build failed (%d):\n%s\n", e, log); free(log); return -1;
+  }
+  c->swgk = CL.CreateKernel(c->gprog, "br_sw_group_kernel", &e);
+  if (e != CL_SUCCESS) { fprintf(stderr, "OpenCL swarm group kernel create failed (%d)\n", e); return -1; }
+  c->grpSwW = swW; c->grpStride = stride; return 0;
 }
 
 static cl_mem grow(ClImpl* c, cl_mem m, size_t* cap, size_t bytes) {
@@ -196,6 +213,7 @@ static int opencl_eval_battles(Backend* b, const float* attW, const float* defW,
   CL.EnqueueWriteBuffer(c->q, c->scen, CL_FALSE, 0, sizeof(BrScen) * (size_t)nS, scen, 0, NULL, NULL);
   CL.EnqueueWriteBuffer(c->q, c->bat, CL_FALSE, 0, sizeof(int) * 3 * (size_t)nBattles, bat, 0, NULL, NULL);
   int gThreads = 32, group = br_sw_group_layout(b, P, &gThreads);
+  if (group && build_group(c, br_sw_max_width(P), P->stride)) return -1;
   cl_kernel kern = group ? c->swgk : c->swk;
   size_t local = group ? (size_t)gThreads : (size_t)(b->wg > 0 ? b->wg : 64); if ((int)local > b->maxWg) local = (size_t)b->maxWg;
   { size_t kmax = 0; if (CL.GetKernelWorkGroupInfo(kern, c->dev, CL_KERNEL_WORK_GROUP_SIZE, sizeof kmax, &kmax, NULL) == CL_SUCCESS && kmax && local > kmax) local = kmax; }
@@ -237,6 +255,7 @@ static void opencl_destroy(Backend* b) { ClImpl* c = (ClImpl*)b->impl;
   if (c->k) CL.ReleaseKernel(c->k);
   if (c->swk) CL.ReleaseKernel(c->swk);
   if (c->swgk) CL.ReleaseKernel(c->swgk);
+  if (c->gprog) CL.ReleaseProgram(c->gprog);
   if (c->prog) CL.ReleaseProgram(c->prog);
   CL.ReleaseCommandQueue(c->q); CL.ReleaseContext(c->ctx); free(c); free(b); }
 

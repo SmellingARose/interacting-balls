@@ -52,7 +52,12 @@ buffer, so every backend starts from identical states. Each step runs in phases:
 
 The CPU runs the phases in order (one battle per core). GPUs either give each battle one thread (`br_sw_kernel`, best for
 small swarms) or a work-group with a thread per ball and barriers between phases (`br_sw_group_kernel`, best from about
-12 balls); both produce the same battle. Swarm networks have no past frames or memory. Sensors report the present plus
+12 balls); both produce the same battle. Speed-ups: battles where every defender is gone and the attackers fly the algorithm unweaved end at once, the
+remaining attackers counted as leaks (unopposed, they arrive; off with `--no-early`); the catch search skips attackers
+that cannot beat the nearest one so far (an exact lower bound); the GPU work-group kernel keeps its battle in on-chip
+memory (built per battle size, `BR_SG`) and splits commander layers across its threads (whole neurons per thread, the
+same sums in the same order, so the same results); on the CPU a nearest-K side's decisions run as one batch, reading
+each layer's weights once for all its balls. Swarm networks have no past frames or memory. Sensors report the present plus
 noise (no delay). Per-battle results (`BR_SWOUT`): catches, leaks, closeness scores for each side, ball-steps, time,
 crashes.
 

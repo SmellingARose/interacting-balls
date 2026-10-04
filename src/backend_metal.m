@@ -8,7 +8,7 @@
 
 typedef struct {
   id<MTLDevice> dev; id<MTLCommandQueue> q;
-  id<MTLComputePipelineState> pipe, swPipe, swGroupPipe; int pipeMaxW, pipeSwW;
+  id<MTLComputePipelineState> pipe, swPipe, swGroupPipe; int pipeMaxW, pipeSwW, grpSwW, grpStride;
   id<MTLBuffer> state, weights, scen, params, alive, idx, flags, traj, wD, bat;
   double chunkMs;   // target GPU time per dispatch
   int chunk;
@@ -34,9 +34,24 @@ static int build_pipeline(MetalImpl* m, int maxW, int swW, char* err, int errLen
   if (!m->pipe) { snprintf(err, errLen, "Metal pipeline failed: %s", e.localizedDescription.UTF8String); return -1; }
   m->swPipe = [m->dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"br_sw_kernel"] error:&e];
   if (!m->swPipe) { snprintf(err, errLen, "Metal swarm pipeline failed: %s", e.localizedDescription.UTF8String); return -1; }
+  m->pipeMaxW = maxW; m->pipeSwW = swW;
+  return 0;
+}
+
+// The work-group battle kernel keeps the battle in threadgroup memory: built per battle size (SW_STRIDE floats).
+static int build_group(MetalImpl* m, int swW, int stride, char* err, int errLen) {
+  if (m->swGroupPipe && m->grpSwW == swW && m->grpStride == stride) return 0;
+  NSString* src = [NSString stringWithFormat:@"#include <metal_stdlib>\nusing namespace metal;\n#define BR_METAL 1\n#define BR_SW_LOCAL 1\n#define BR_SG threadgroup\n#define MAXW 32\n#define SW_MAXW %d\n#define SW_STRIDE %d\n%s\n%s\n",
+                   swW, stride, BR_SRC_SIM_CORE, BR_SRC_METAL];
+  MTLCompileOptions* opt = [MTLCompileOptions new];
+  if (@available(macOS 15.0, *)) opt.mathMode = MTLMathModeFast;
+  else { _Pragma("clang diagnostic push") _Pragma("clang diagnostic ignored \"-Wdeprecated-declarations\"") opt.fastMathEnabled = YES; _Pragma("clang diagnostic pop") }
+  NSError* e = nil;
+  id<MTLLibrary> lib = [m->dev newLibraryWithSource:src options:opt error:&e];
+  if (!lib) { snprintf(err, errLen, "Metal swarm group compile failed: %s", e.localizedDescription.UTF8String); return -1; }
   m->swGroupPipe = [m->dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"br_sw_group_kernel"] error:&e];
   if (!m->swGroupPipe) { snprintf(err, errLen, "Metal swarm group pipeline failed: %s", e.localizedDescription.UTF8String); return -1; }
-  m->pipeMaxW = maxW; m->pipeSwW = swW;
+  m->grpSwW = swW; m->grpStride = stride;
   return 0;
 }
 
@@ -125,6 +140,7 @@ static int metal_eval_battles(Backend* b, const float* attW, const float* defW, 
     P->nActive = nBattles;
     br_sw_init_states((float*)m->state.contents, P, scen, bat, nBattles, start);
     int gThreads = 32, group = br_sw_group_layout(b, P, &gThreads);
+    if (group && build_group(m, br_sw_max_width(P), P->stride, err, sizeof err)) { fprintf(stderr, "%s\n", err); return -1; }
     id<MTLComputePipelineState> pipe = group ? m->swGroupPipe : m->swPipe;
     NSUInteger tg = pipe.maxTotalThreadsPerThreadgroup;
     NSUInteger want = group ? (NSUInteger)gThreads : b->wg > 0 ? (NSUInteger)b->wg : 64; if (tg > want) tg = want;

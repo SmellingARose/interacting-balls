@@ -120,6 +120,7 @@ static void sw_params(BrParams* P, const TrainCfg* c) {
   P->attNw = sw_nw(P, P->attNin, P->attNout); P->defNw = sw_nw(P, P->defNin, P->defNout);
   P->thrustAtk = (float)(c->twRunner * P->mass * BR_G); P->evade = (float)c->evade; P->leakR = 30;
   P->delay = 0;   // swarm sensors report the present (plus noise)
+  P->swEarly = !c->noEarly;
   P->stride = br_sw_stride(P);
 }
 void setup_params(BrParams* P, const TrainCfg* c, int S) {
@@ -1236,6 +1237,7 @@ static void cli_cfg(TrainCfg* c, int argc, char** argv, int* mode, int* gens, ch
     else if (!strcmp(a, "--k")) { c->swK = clampi(atoi(v), 1, BR_SW_MAXK); i++; }
     else if (!strcmp(a, "--blast")) { c->blast = fmin(10, fmax(0, atof(v))); i++; }
     else if (!strcmp(a, "--reach-max")) { c->reachMax = fmin(100000, fmax(2000, atof(v))); i++; }
+    else if (!strcmp(a, "--no-early")) c->noEarly = 1;
     else if (!strcmp(a, "--atk-range-max")) { c->rangeMax = fmin(100000, fmax(4000, atof(v))); i++; }
     else if (!strcmp(a, "--atk-range")) { c->range = fmin(100000, fmax(4000, atof(v))); i++; }
     else if (!strcmp(a, "--evade")) { c->evade = fmin(1, fmax(0, atof(v))); i++; }
@@ -1321,7 +1323,8 @@ int cli_main(int argc, char** argv) {
       for (int k = 0; k < 2; k++) { double t0 = br_now(); if (be->evalBattles(be, wA, wD, bat, N, scs.sc, scs.traj, scs.trajFloats, &P, dst)) { best = -1; break; } double t = br_now() - t0; if (t < best) best = t; }
       if (best < 0) { printf("  %-9s %-36s failed\n", ids[bi], be->info); be->destroy(be); continue; }
       double ca = 0, le = 0, bs = 0; for (int i = 0; i < N; i++) { ca += dst[i * BR_SWOUT]; le += dst[i * BR_SWOUT + 1]; bs += dst[i * BR_SWOUT + 4]; }
-      printf("  %-9s %-36s %7.0f battles/s  %6.1f M ball-steps/s  caught %4.0f  leaked %4.0f", ids[bi], be->info, N / best, bs / best / 1e6, ca, le);
+      double fp = 0; for (int i = 0; i < N; i++) fp += dst[i * BR_SWOUT + 2] + dst[i * BR_SWOUT + 3] + dst[i * BR_SWOUT + 4];   // path fingerprint
+      printf("  %-9s %-36s %7.0f battles/s  %6.1f M ball-steps/s  caught %4.0f  leaked %4.0f  paths %.4f", ids[bi], be->info, N / best, bs / best / 1e6, ca, le, fp);
       if (mode == 2 && bi > 0) { int same = 0; for (int i = 0; i < N; i++) same += dst[i * BR_SWOUT] == ref[i * BR_SWOUT] && dst[i * BR_SWOUT + 1] == ref[i * BR_SWOUT + 1];
         printf("  same catches/leaks as CPU: %d/%d", same, N); }
       printf("\n"); be->destroy(be);
