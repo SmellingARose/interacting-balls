@@ -76,6 +76,7 @@ void cfg_from_json(TrainCfg* c, const char* j) {
   c->cma = jnum(j, "cma", c->cma) != 0; c->decayOn = jnum(j, "decayOn", c->decayOn) != 0; c->decay = jnum(j, "decay", c->decay); c->lrMin = jnum(j, "lrMin", c->lrMin);
   c->dt = jnum(j, "dt", c->dt); if (c->dt < 0.005) c->dt = 0.005; if (c->dt > 0.04) c->dt = 0.04;
   c->tw = jnum(j, "tw", c->tw); c->speedW = jnum(j, "speedW", c->speedW); c->everyStep = jnum(j, "everyStep", c->everyStep) != 0;
+  c->altOn = jnum(j, "altOn", c->altOn) != 0;
   c->valEvery = clampi((int)jnum(j, "valEvery", c->valEvery), 1, 1000); c->valScen = clampi((int)jnum(j, "valScen", c->valScen), 8, 512);
   c->mode = jnum(j, "mode", c->mode) != 0; c->fair = jnum(j, "fair", c->fair) != 0;
   c->range = fmin(100000, fmax(4000, jnum(j, "range", c->range))); c->evade = fmin(1, fmax(0, jnum(j, "evade", c->evade)));
@@ -84,10 +85,10 @@ void cfg_from_json(TrainCfg* c, const char* j) {
 }
 void cfg_to_json(const TrainCfg* c, char* o, int len) {
   snprintf(o, len, "{\"backend\":\"%s\",\"wg\":%d,\"chunkMs\":%g,\"layers\":%d,\"width\":%d,\"K\":%d,\"mem\":%d,\"pop\":%d,\"scen\":%d,\"reuse\":%d,"
-    "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d,"
+    "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d,\"altOn\":%d,"
     "\"mode\":%d,\"fair\":%d,\"range\":%g,\"evade\":%g,\"noise\":%g,\"delayMs\":%g,\"detect\":%g,\"twRunner\":%g}",
     c->backend, c->wg, c->chunkMs, c->layers, c->width, c->K, c->mem, c->pop, c->scen, c->reuse, c->islands, c->nIsl, c->migrate,
-    c->cma, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW, c->everyStep,
+    c->cma, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW, c->everyStep, c->altOn,
     c->mode, c->fair, c->range, c->evade, c->noise, c->delayMs, c->detect, c->twRunner);
 }
 
@@ -254,10 +255,12 @@ static size_t gen_tag_batch(BrScen* sc, int S, Rng* r, const TrainCfg* c, const 
 // Score of one flight o = [closest approach, hit, time, steps]: log distance down to the hit
 // size (2 m tagging, 30 m reach), +5 for a hit plus a speed bonus or a small time penalty; tag mode: −2 when the
 // runner reached its defended point (atkHit comes from the scenario, which the host already knows).
-static double fitness(const float* o, double speedW, int mode, float atkHit) {
+// Altitude reward (when on): up to +0.5, from 0 when half of mid-flight is above 5 m to full at 80% or more.
+static double fitness(const float* o, double speedW, int mode, float atkHit, int altOn) {
   double f = -log(fmax(o[0], mode ? 2.0 : 30.0) / 30.0);
   if (o[1] > 0.5f) f += 5 + (speedW > 0 ? speedW * fmax(0, 1 - o[2] / 60.0) : -0.01 * o[2]);
   else if (mode && atkHit > 0.5f) f -= 2;
+  if (altOn) f += 0.5 * fmin(1, fmax(0, (1 - o[4] - 0.5) / 0.3));
   return f;
 }
 
@@ -385,11 +388,11 @@ static struct {
 
 static void set_msg(const char* fmt, ...) { va_list ap; va_start(ap, fmt); br_lock(&T.mx); vsnprintf(T.msg, sizeof T.msg, fmt, ap); br_unlock(&T.mx); va_end(ap); }
 
-// One saved star per mode: BallArena-star-reach.json and BallArena-star-tag.json (mode -1 = the pre-tag file name,
-// read once as the reach star if no reach file exists yet).
+// One saved star per mode: BallArena-star-reach.json and BallArena-star-tag.json. Older single-mode saves
+// (mode -1: BallArena-star.json, -2: BallisticRange-champion.json) are read as the reach star if no reach file exists.
 static const char* save_path_mode(int mode) {
   static char p[1024]; const char* h = getenv("HOME");
-  const char* name = mode < 0 ? "BallArena-star.json" : mode ? "BallArena-star-tag.json" : "BallArena-star-reach.json";
+  const char* name = mode == -2 ? "BallisticRange-champion.json" : mode < 0 ? "BallArena-star.json" : mode ? "BallArena-star-tag.json" : "BallArena-star-reach.json";
 #ifdef _WIN32
   if (!h) h = getenv("USERPROFILE");
   snprintf(p, sizeof p, "%s\\%s", h ? h : ".", name);
@@ -446,7 +449,7 @@ static void load_mode_star(int mode) {
   br_lock(&T.mx); free(T.star); T.star = NULL; T.starNw = 0; T.starMode = mode; T.starVersion++; T.gen = 0; T.histN = 0;
   T.best = T.mean = T.starHits = T.starMiss = T.valHit = 0; T.valGen = 0; br_unlock(&T.mx);
   const char* p = save_path_mode(mode); FILE* f = fopen(p, "rb");
-  if (!f && !mode) { p = save_path_mode(-1); f = fopen(p, "rb"); }
+  for (int old = -1; !f && !mode && old >= -2; old--) { p = save_path_mode(old); f = fopen(p, "rb"); }
   if (f) { fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET); char* b = (char*)malloc(len + 1); len = (long)fread(b, 1, len, f); b[len] = 0; fclose(f);
     char m[200]; if (!load_json_mode(b, m, sizeof m, mode)) set_msg("restored your last %s star (%s)", mode ? "intercept" : "reach", p); free(b); }
   else set_msg("no saved %s star yet", mode ? "intercept" : "reach");
@@ -518,8 +521,8 @@ static double validate(const float* g) {
   if (!T.valReady || T.val.n != P.S || !scen_same(&T.valCfg, &T.cfg)) {
     Rng r; rng_seed(&r, 4242); scen_make(&T.val, P.S, &r, &T.cfg, &P); T.valCfg = T.cfg; T.valReady = 1;
   }
-  float* out = (float*)malloc(sizeof(float) * 4 * P.S);
-  int hits = 0; if (!eval_set(T.be, g, 1, &T.val, &P, out)) for (int i = 0; i < P.S; i++) hits += out[i * 4 + 1] > 0.5f;
+  float* out = (float*)malloc(sizeof(float) * BR_OUT * P.S);
+  int hits = 0; if (!eval_set(T.be, g, 1, &T.val, &P, out)) for (int i = 0; i < P.S; i++) hits += out[i * BR_OUT + 1] > 0.5f;
   free(out); return (double)hits / P.S;
 }
 
@@ -544,16 +547,16 @@ static void train_thread(void* arg) {
     T.scenAge++;
     int n = 0; for (int i = 0; i < T.nIsl; i++) { if (T.isl[i].cma) cma_ask(&T.isl[i].c, &T.rng); n += isl_size(&T.isl[i]); }
     size_t need = (size_t)n * T.P.nw; if (need > flatCap) { flat = (float*)realloc(flat, sizeof(float) * need); flatCap = need; }
-    size_t needO = (size_t)n * c->scen * 4; if (needO > outCap) { out = (float*)realloc(out, sizeof(float) * needO); outCap = needO; }
+    size_t needO = (size_t)n * c->scen * BR_OUT; if (needO > outCap) { out = (float*)realloc(out, sizeof(float) * needO); outCap = needO; }
     if (n > fitCap) { fit = (double*)realloc(fit, sizeof(double) * n); fitCap = n; }
     { size_t o = 0; for (int i = 0; i < T.nIsl; i++) { size_t k = (size_t)isl_size(&T.isl[i]) * T.P.nw; memcpy(flat + o, isl_genomes(&T.isl[i]), sizeof(float) * k); o += k; } }
     double t0 = br_now();
     if (eval_set(T.be, flat, n, &T.scen, &T.P, out)) { set_msg("evaluation failed on %s", T.be->info); break; }
     double dt = br_now() - t0 + tScen, steps = 0, mean = 0; int star = 0;
-    for (int i = 0; i < n; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + ((size_t)i * c->scen + j) * 4; f += fitness(o, c->speedW, c->mode, T.scen.sc[j].atkHit); steps += o[3]; }
+    for (int i = 0; i < n; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + ((size_t)i * c->scen + j) * BR_OUT; f += fitness(o, c->speedW, c->mode, T.scen.sc[j].atkHit, c->altOn); steps += o[3]; }
       fit[i] = f / c->scen; mean += fit[i]; if (fit[i] > fit[star]) star = i; }
     mean /= n;
-    int hits = 0; double miss = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + ((size_t)star * c->scen + j) * 4; hits += o[1] > 0.5f; miss += o[0]; }
+    int hits = 0; double miss = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + ((size_t)star * c->scen + j) * BR_OUT; hits += o[1] > 0.5f; miss += o[0]; }
     // tell each island its slice; decay + floor; island bests for the chart
     float islBest[ISL_SHOW] = {0}; double sig = 0; int off = 0;
     for (int i = 0; i < T.nIsl; i++) {
@@ -662,7 +665,7 @@ static double measure(Backend* b, const float* G, int n, const ScenSet* sc, BrPa
   double best = 1e9, steps = 0;
   for (int r = 0; r < 2; r++) { double t0 = br_now(); if (eval_set(b, G, n, sc, P, out)) return 0; double t = br_now() - t0; if (t < best) best = t; }
   best += g_tuneGenSec;
-  for (int k = 0; k < n * P->S; k++) steps += out[k * 4 + 3];
+  for (int k = 0; k < n * P->S; k++) steps += out[k * BR_OUT + 3];
   if (secOut) *secOut = best;
   return steps / best;
 }
@@ -679,12 +682,12 @@ static void tune_thread(void* arg) {
     Backend* cpu = cpu_backend_create(0); BrParams Q; setup_params(&Q, &c, 8);
     CMA cm; float* s = (float*)malloc(sizeof(float) * P.nw); random_genome(s, &P, &r); for (int j = 0; j < P.nw; j++) s[j] *= 0.2f;
     cma_init(&cm, P.nw, 96, s, 0.25); free(s);
-    ScenSet sc8 = {0}; float* o = (float*)malloc(sizeof(float) * 4 * 96 * 8); double* f = (double*)malloc(sizeof(double) * 96);
+    ScenSet sc8 = {0}; float* o = (float*)malloc(sizeof(float) * BR_OUT * 96 * 8); double* f = (double*)malloc(sizeof(double) * 96);
     double t0 = br_now(); int bi = 0;
     for (int gnr = 0; gnr < 60 && br_now() - t0 < 8; gnr++) {
       if (gnr % 5 == 0) scen_make(&sc8, 8, &r, &c, &Q);
       cma_ask(&cm, &r); eval_set(cpu, cm.X, 96, &sc8, &Q, o);
-      for (int i = 0; i < 96; i++) { double s2 = 0; for (int j = 0; j < 8; j++) s2 += fitness(o + ((size_t)i * 8 + j) * 4, 0, c.mode, sc8.sc[j].atkHit); f[i] = s2 / 8; }
+      for (int i = 0; i < 96; i++) { double s2 = 0; for (int j = 0; j < 8; j++) s2 += fitness(o + ((size_t)i * 8 + j) * BR_OUT, 0, c.mode, sc8.sc[j].atkHit, c.altOn); f[i] = s2 / 8; }
       bi = 0; for (int i = 1; i < 96; i++) if (f[i] > f[bi]) bi = i;
       memcpy(base, cm.X + (size_t)bi * P.nw, sizeof(float) * P.nw);
       cma_tell(&cm, f);
@@ -719,7 +722,7 @@ static void tune_thread(void* arg) {
     if (!G) { tlog("%s: not enough memory to test", b->info); b->destroy(b); continue; }
     int filled = 0;
     #define FILL(N) for (; filled < (N); filled++) for (int j = 0; j < P.nw; j++) G[(size_t)filled * P.nw + j] = base[j] + (filled ? (float)(gauss(&r) * 0.02) : 0)
-    float* out = (float*)malloc(sizeof(float) * 4 * (size_t)nMaxMem * P.S);
+    float* out = (float*)malloc(sizeof(float) * BR_OUT * (size_t)nMaxMem * P.S);
     FILL(n0);
     int bestWg = b->wg; double bestChunk = b->chunkMs, sec = 0, sps;
     if (gpu) {
@@ -881,6 +884,7 @@ static void cli_cfg(TrainCfg* c, int argc, char** argv, int* mode, int* gens, ch
     if (!strcmp(a, "--bench")) *mode = 1; else if (!strcmp(a, "--compare")) *mode = 2; else if (!strcmp(a, "--train")) *mode = 3;
     else if (!strcmp(a, "--list-devices")) *mode = 4; else if (!strcmp(a, "--help")) *mode = 5;
     else if (!strcmp(a, "--every-step")) c->everyStep = 1;
+    else if (!strcmp(a, "--alt-reward")) c->altOn = 1;
     else if (!strcmp(a, "--islands")) { c->islands = 1; c->nIsl = atoi(v); i++; }
     else if (!strcmp(a, "--backend")) { snprintf(c->backend, sizeof c->backend, "%s", v); i++; }
     else if (!strcmp(a, "--pop")) { c->pop = atoi(v); i++; } else if (!strcmp(a, "--scen")) { c->scen = atoi(v); i++; }
@@ -907,7 +911,7 @@ int cli_main(int argc, char** argv) {
   TrainCfg c; cfg_defaults(&c); int mode = 0, gens = 100; char* load = NULL;
   cli_cfg(&c, argc, argv, &mode, &gens, &load);
   if (mode == 5) { printf("Double-click the app to open the interface. Developer options: --bench, --compare, --train [--gens N], --list-devices,\n"
-                          "with --backend cpu|metal|opencl:N --pop --scen --layers --width --K --mem --opt cma|ga --dt --every-step --islands N --wg --load FILE\n"
+                          "with --backend cpu|metal|opencl:N --pop --scen --layers --width --K --mem --opt cma|ga --dt --every-step --alt-reward --islands N --wg --load FILE\n"
                           "Intercept (tag) mode: --mode reach|tag  --atk-range M (runner launch distance, 4000-100000 m)  --evade 0-1 (runner weave)\n"
                           "  --noise M (sensor noise sigma)  --delay MS (sensor delay)  --detect M (wait on the pad until the runner is this close, 0 = off)\n"
                           "  --tw-runner X (runner thrust-to-weight)  --no-fair (also keep tags the algorithm cannot reach; reachable-only is the default)\n"); return 0; }
@@ -935,16 +939,16 @@ int cli_main(int argc, char** argv) {
   float* G = (float*)malloc(sizeof(float) * (size_t)c.pop * P.nw);
   for (int i = 0; i < c.pop; i++) random_genome(G + (size_t)i * P.nw, &P, &r);
   if (T.star && star_matches(&P)) for (int i = 0; i < c.pop; i++) for (int j = 0; j < P.nw; j++) G[(size_t)i * P.nw + j] = T.star[j] + (i ? (float)(gauss(&r) * 0.02) : 0);
-  size_t n = (size_t)c.pop * c.scen; float* ref = (float*)malloc(sizeof(float) * 4 * n); float* out = (float*)malloc(sizeof(float) * 4 * n);
+  size_t n = (size_t)c.pop * c.scen; float* ref = (float*)malloc(sizeof(float) * BR_OUT * n); float* out = (float*)malloc(sizeof(float) * BR_OUT * n);
   const char* ids[8] = { "cpu", "metal", "opencl:0" }; int nIds = 3;
   for (int b = 0; b < nIds; b++) {
     char err[256] = ""; Backend* be = make_backend(ids[b], &c, err, sizeof err); if (!be) { printf("  %-9s not available (%s)\n", ids[b], err); continue; }
     float* dst = b == 0 ? ref : out;
     eval_set(be, G, c.pop < 32 ? c.pop : 32, sc, &P, dst);
     double best = 1e9; for (int k = 0; k < 2; k++) { double t0 = br_now(); eval_set(be, G, c.pop, sc, &P, dst); double t = br_now() - t0; if (t < best) best = t; }
-    double steps = 0, hits = 0; for (size_t k = 0; k < n; k++) { steps += dst[k * 4 + 3]; hits += dst[k * 4 + 1]; }
+    double steps = 0, hits = 0; for (size_t k = 0; k < n; k++) { steps += dst[k * BR_OUT + 3]; hits += dst[k * BR_OUT + 1]; }
     printf("  %-9s %-36s %7.1f M steps/s  %5.0f hits", ids[b], be->info, steps / best / 1e6, hits);
-    if (mode == 2 && b > 0) { int same = 0; for (size_t k = 0; k < n; k++) same += dst[k * 4 + 1] == ref[k * 4 + 1]; printf("  same hit/miss as CPU: %d/%lu", same, (unsigned long)n); }
+    if (mode == 2 && b > 0) { int same = 0; for (size_t k = 0; k < n; k++) same += dst[k * BR_OUT + 1] == ref[k * BR_OUT + 1]; printf("  same hit/miss as CPU: %d/%lu", same, (unsigned long)n); }
     printf("\n"); be->destroy(be);
   }
   return 0;

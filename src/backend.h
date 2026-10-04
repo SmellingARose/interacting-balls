@@ -1,5 +1,5 @@
 // Backend interface: evaluate a batch of flights (genome × scenario) and return per flight
-// [closest approach, hit, flight time, physics steps].
+// BR_OUT floats: [closest approach, hit, flight time, physics steps, fraction of mid-flight below 5 m].
 #ifndef BR_BACKEND_H
 #define BR_BACKEND_H
 #include <stddef.h>

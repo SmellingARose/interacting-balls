@@ -9,7 +9,7 @@ Training, auto-tune and flight playback run natively; a local window shows setti
 
 ## Run
 Open the app (`Ball Arena Trainer.app` on Mac, `BallArenaTrainer.exe` on Windows), press
-**Auto-tune for this computer**, then **Train**. Watch **Validation** (star on 64 fresh scenarios).
+**Auto-tune for this computer**, then **Train**. Watch **Validation** (the star on a fixed set of 64 scenarios it never trains on).
 Each mode keeps its own star ball: `~/BallArena-star-reach.json` and `~/BallArena-star-tag.json`.
 
 ## Compute

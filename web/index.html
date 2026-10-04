@@ -103,6 +103,8 @@ button.warn{color:var(--bad);border-color:rgba(255,107,107,.5)}
   <label class="chk"><input type="checkbox" id="cDecay" checked> Decay step size</label>
   <label>Decay per generation <b id="vDecay"></b><input id="sDecay" type="range" min="0.9" max="0.999" step="0.001" value="0.995"></label>
   <label>Minimum step size <b id="vLrMin"></b><input id="sLrMin" type="range" min="-6" max="-1" step="0.25" value="-4"></label>
+  <label class="chk"><input type="checkbox" id="cAlt"> Reward staying above 5 m</label>
+  <div class="note">Small bonus (up to +0.5) for flying above 5 m through mid-flight: from 3 s after launch until 300 m from the target.</div>
   <label class="chk"><input type="checkbox" id="cSpeed"> Reward speed</label>
   <label>Speed weight <b id="vSpw"></b><input id="sSpw" type="range" min="0.5" max="10" step="0.5" value="3"></label>
 
@@ -128,7 +130,7 @@ button.warn{color:var(--bad);border-color:rgba(255,107,107,.5)}
   </div>
   <div class="status" id="status">Connecting…</div>
   <canvas id="chart"></canvas>
-  <div class="note">Validation = the star ball flown on 64 fresh scenarios every 10 generations: the honest hit rate. The star ball is saved automatically and restored next time.</div>
+  <div class="note">Validation = the star ball flown every 10 generations on a fixed set of 64 scenarios it never trains on: the honest hit rate, comparable over time. The star ball is saved automatically and restored next time.</div>
   <div class="row"><button id="bSave">Save network…</button><button id="bLoad">Load network…</button><input type="file" id="fLoad" accept=".json" hidden></div>
   <div class="row"><button id="bResults">Auto-tune results</button><button id="bMath">Network math</button><button id="bGuide">Training guide</button></div>
   <div class="row"><button class="warn" id="bQuit">Quit app</button></div>
@@ -159,7 +161,7 @@ const fmt=(v,d=0)=>Number(v).toLocaleString(undefined,{maximumFractionDigits:d,m
 
 /* ---------------- settings (remembered in this window) ---------------- */
 const S={ backend:'auto', layers:1, width:32, K:0, mem:0, cma:1, pop:256, scen:16, reuse:5, islands:0, nIsl:8, migrate:10,
-  decayOn:1, decay:0.995, lrMin:1e-4, speedOn:0, speedW:3, dt:0.02, everyStep:0, tw:2.5, wg:64, chunkMs:40,
+  decayOn:1, decay:0.995, lrMin:1e-4, speedOn:0, speedW:3, altOn:0, dt:0.02, everyStep:0, tw:2.5, wg:64, chunkMs:40,
   mode:0, fair:1, range:7000, evade:0, noise:0, delayMs:0, detect:0, twRunner:2.5 };   // mode 0 = reach target, 1 = intercept
 try{ Object.assign(S, JSON.parse(localStorage.getItem('brt-settings')||'{}')); }catch(e){}
 const save=()=>{ try{ localStorage.setItem('brt-settings',JSON.stringify(S)); }catch(e){} };
@@ -175,7 +177,7 @@ bind('sPop','vPop','pop',v=>v); bind('sScen','vScen','scen',v=>v); bind('sReuse'
 check('cIsl','islands',syncDis); bind('sIsl','vIsl','nIsl',v=>v); bind('sMig','vMig','migrate',v=>v+' gens');
 check('cDecay','decayOn',syncDis); bind('sDecay','vDecay','decay',v=>'×'+v.toFixed(3));
 bind('sLrMin','vLrMin','lrMin',v=>{ const x=10**v; return x>=0.01?x.toFixed(2):x.toExponential(0); },v=>10**v,v=>Math.log10(v));
-check('cSpeed','speedOn',syncDis); bind('sSpw','vSpw','speedW',v=>v);
+check('cAlt','altOn'); check('cSpeed','speedOn',syncDis); bind('sSpw','vSpw','speedW',v=>v);
 bind('sDt','vDt','dt',v=>v+' ms',v=>v/1000,v=>Math.round(v*1000)); check('cEvery','everyStep'); bind('sTw','vTw','tw',v=>v.toFixed(1)+'×');
 bind('sRange','vRange','range',v=>fmt(v/1000,v>=20000?0:1)+' km'); bind('sEvade','vEvade','evade',v=>v?'×'+v.toFixed(1):'off');
 bind('sNoise','vNoise','noise',v=>v?'±'+v+' m':'off'); bind('sDelay','vDelay','delayMs',v=>v?v+' ms':'off');
@@ -300,11 +302,13 @@ function openDlg(which){
   if(which==='guide'){ $('dlgTitle').textContent='Training guide';
     b.innerHTML=`<ul>
       <li><b>Start with Auto-tune.</b> It measures this computer and sets compute, population, scenarios and islands for the fastest training.</li>
-      <li><b>Watch Validation, not Star hits.</b> Star hits is the best of many networks on this generation's tests, so it is often lucky. Validation flies the star ball on 64 fresh scenarios.</li>
+      <li><b>Watch Validation, not Star hits.</b> Star hits is the best of many networks on this generation's tests, so it is often lucky. Validation flies the star ball on a fixed set of 64 scenarios it never trains on.</li>
       <li><b>CMA-ES</b> learns a step size per weight: the best default, especially for memory neurons. The genetic algorithm needs decay to fine-tune.</li>
       <li><b>Islands</b> run many small populations side by side and swap their best every few generations. On a GPU that needs huge batches, islands turn the capacity into more learning.</li>
       <li><b>Scenarios per network:</b> 16–32 once it hits; keep scenarios 5–10 generations so networks are compared on the same tests.</li>
       <li><b>Memory neurons and past frames</b> help when the task needs history; start with K = 1–2 before memory neurons.</li>
+      <li><b>Intercept:</b> start with no noise, delay or weaving and a 7 km runner range; add difficulty once Validation is high. Each mode keeps its own network.</li>
+      <li><b>Reward staying above 5 m</b> discourages skimming the ground in mid-flight; it is a small bonus, so hitting still matters most.</li>
       <li><b>Pitfalls:</b> decay ×0.9 freezes training within ~60 generations; speed reward too early makes it rush and miss; changing the network shape starts a fresh network.</li></ul>`;
   }
 }

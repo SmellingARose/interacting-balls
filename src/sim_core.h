@@ -108,9 +108,12 @@ typedef struct { float tx, ty, tz, wx, wy, wz, sx, sy, sz, q0, trajOff, trajLen,
 #define S_U1 20
 #define S_U2 21
 #define S_CLOSE 22          // tag: the chaser has started closing in on the runner
-#define S_HIST 23
+#define S_MID 23            // mid-flight steps (≥ 3 s after launch, > 300 m from the target)
+#define S_LOW 24            // ... of which below 5 m (for the optional altitude reward)
+#define S_HIST 25
+#define BR_OUT 5            // floats per flight result: closest approach, hit, flight time, physics steps, low fraction
 
-typedef struct { float px, py, pz, vx, vy, vz, qx, qy, qz, qw, ox, oy, oz, t, minD, u0, u1, u2; int k, k0, alive, hit, closing; } BrState;
+typedef struct { float px, py, pz, vx, vy, vz, qx, qy, qz, qw, ox, oy, oz, t, minD, u0, u1, u2; int k, k0, alive, hit, closing, mid, low; } BrState;
 
 // What the ball aims at this step: true position now and one step ago, true velocity, and what its sensors report.
 typedef struct { float x, y, z, px, py, pz, vx, vy, vz, sx, sy, sz, svx, svy, svz; } BrTgt;
@@ -133,12 +136,14 @@ FN void br_load(BR_PP BrState* s, BR_GP const float* g) {
   s->qx = g[S_QX]; s->qy = g[S_QY]; s->qz = g[S_QZ]; s->qw = g[S_QW]; s->ox = g[S_OX]; s->oy = g[S_OY]; s->oz = g[S_OZ];
   s->t = g[S_T]; s->k = (int)g[S_K]; s->k0 = (int)g[S_K0]; s->minD = g[S_MIND]; s->alive = (int)g[S_ALIVE]; s->hit = (int)g[S_HIT];
   s->u0 = g[S_U0]; s->u1 = g[S_U1]; s->u2 = g[S_U2]; s->closing = (int)g[S_CLOSE];
+  s->mid = (int)g[S_MID]; s->low = (int)g[S_LOW];
 }
 FN void br_store(BR_PP const BrState* s, BR_GP float* g) {
   g[S_PX] = s->px; g[S_PY] = s->py; g[S_PZ] = s->pz; g[S_VX] = s->vx; g[S_VY] = s->vy; g[S_VZ] = s->vz;
   g[S_QX] = s->qx; g[S_QY] = s->qy; g[S_QZ] = s->qz; g[S_QW] = s->qw; g[S_OX] = s->ox; g[S_OY] = s->oy; g[S_OZ] = s->oz;
   g[S_T] = s->t; g[S_K] = (float)s->k; g[S_K0] = (float)s->k0; g[S_MIND] = s->minD; g[S_ALIVE] = (float)s->alive; g[S_HIT] = (float)s->hit;
   g[S_U0] = s->u0; g[S_U1] = s->u1; g[S_U2] = s->u2; g[S_CLOSE] = (float)s->closing;
+  g[S_MID] = (float)s->mid; g[S_LOW] = (float)s->low;
 }
 
 // Fresh flight on the pad (history and memory zeroed).
@@ -299,6 +304,8 @@ FN void br_step(BR_PP BrState* s, BR_PP const BrParams* P, BR_PP const BrScen* s
     d = SQRT(ex * ex + ey * ey + ez * ez);
   }
   if (d < s->minD) s->minD = d;
+  // mid-flight (not the launch, not the final approach): how long it hugs the ground
+  if (s->t - (float)s->k0 * dt > 3 && d > 300) { s->mid++; if (s->py < 5) s->low++; }
   if (d < (P->mode ? P->ballD : P->hitR)) { s->alive = 0; s->hit = 1; return; }
   if (P->mode) {   // once it has closed in, the moment the gap starts widening it has passed the runner: a miss, no second try
     float rx = s->px - tg->x, ry = s->py - tg->y, rz = s->pz - tg->z;

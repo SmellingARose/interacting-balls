@@ -30,5 +30,8 @@ the runner's site. "Only reachable tags" keeps a setup only if the algorithm as 
 within 20 m (up to 30 tries). Runner paths are built in parallel on all cores.
 
 **Fitness:** `−ln(max(closest, floor)/30 m)` with floor 30 m (reach) or 2 m (tag); a hit adds `+5` (and an optional
-speed bonus, else −0.01·t). Tag: −2 when the runner reached its defended point. Validation uses a fixed seed, so
+speed bonus, else −0.01·t). Tag: −2 when the runner reached its defended point. Optional altitude reward: up to +0.5 when the ball stays
+above 5 m through mid-flight (the backends report, per flight, the fraction of mid-flight steps below 5 m).
+
+**Flight results:** `BR_OUT` = 5 floats per flight: closest approach, hit, flight time, physics steps, low fraction. Validation uses a fixed seed, so
 its hit rate is comparable between generations.

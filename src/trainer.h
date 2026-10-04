@@ -11,6 +11,7 @@ typedef struct {
   int pop, scen, reuse, islands, nIsl, migrate;
   int cma, decayOn; double decay, lrMin;
   double dt, tw, speedW; int everyStep;
+  int altOn;                          // small reward for staying above 5 m through mid-flight
   int valEvery, valScen;
   // tag mode: chase a runner ball that launches `range`–(`range`+1.5 km) out and flies at a defended point
   int mode, fair;                     // mode 0 = reach goal, 1 = tag; fair = keep only tags the algorithm can reach

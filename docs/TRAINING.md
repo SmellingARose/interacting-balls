@@ -20,6 +20,7 @@ them.
 | Scenarios / reuse | 16–32 scenarios, kept 5–10 generations, for fair comparisons. |
 | Past frames K, memory neurons | History for noisy tasks. Change the network shape (fresh network). |
 | Physics step, decide every step | Smaller step = finer control, slower training. |
+| Reward staying above 5 m | Optional: up to +0.5 for flying above 5 m through mid-flight (from 3 s after launch until 300 m from the target); 0 at half the time, full at 80%. Discourages skimming the ground. |
 | Mode | Reach target or Intercept. Each mode trains and saves its own network; a saved network only loads in its own mode. |
 | Only reachable tags | Drops setups the algorithm itself cannot reach with perfect sensors (they only add noise). Keep on. |
 | Runner launch range | 4–100 km. Longer runs take longer to fly and simulate. |
