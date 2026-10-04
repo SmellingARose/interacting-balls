@@ -54,6 +54,9 @@
 #define BR_NI 29            // sensor features per decision
 #define BR_G 9.81f
 #define BR_MAXL 12          // max layers incl. input and output
+#define BR_MODE_REACH 0
+#define BR_MODE_TAG 1
+#define BR_MODE_SWARM 2
 
 // Everything a flight needs to know, identical layout in C, Metal and OpenCL (only 4-byte scalars).
 typedef struct {
@@ -70,7 +73,7 @@ typedef struct {
   int chunk;     // physics steps per GPU dispatch
   int nRoll;     // flights in this batch
   int nActive;   // flights still in the air (GPU: compacted list)
-  int mode;      // 0 = reach goal, 1 = tag (chase the recorded runner)
+  int mode;      // BR_MODE_REACH, BR_MODE_TAG (chase the recorded runner) or BR_MODE_SWARM
   int delay;     // tag: the chaser's sensors report the runner as it was this many physics steps ago
   float ballD;   // tag: centres this close = touching = tagged (balls are 2 m across)
   float noise;   // tag: sensor noise σ in metres (uniform, ±√3·σ on position, half that on velocity)
@@ -157,7 +160,7 @@ FN void br_init(BR_GP float* g, BR_PP const BrParams* P, BR_PP const BrScen* sc)
 // balls are compared at the same instant), and, on decision steps, what the sensors report: the runner `delay` steps
 // earlier plus noise. Returns 0 when the runner's path has ended (it landed, crashed or reached its goal).
 FN int br_target(BR_PP const BrState* s, BR_PP const BrParams* P, BR_PP const BrScen* sc, BR_GP const float* traj, BR_PP BrTgt* tg) {
-  if (!P->mode) {
+  if (P->mode != BR_MODE_TAG) {
     tg->x = tg->px = tg->sx = sc->tx; tg->y = tg->py = tg->sy = sc->ty; tg->z = tg->pz = tg->sz = sc->tz;
     tg->vx = tg->vy = tg->vz = tg->svx = tg->svy = tg->svz = 0.0f;
     return 1;
@@ -249,7 +252,7 @@ FN void br_control(BR_PP BrState* s, BR_PP const BrParams* P, BR_PP const BrTgt*
 FN void br_step(BR_PP BrState* s, BR_PP const BrParams* P, BR_PP const BrScen* sc, BR_PP const BrTgt* tg) {
   float dt = P->dt;
   // Tag, launch on detection: sit on the pad until the runner comes within detection range.
-  if (P->mode && P->detect > 0 && s->vx == 0 && s->vy == 0 && s->vz == 0) {
+  if (P->mode == BR_MODE_TAG && P->detect > 0 && s->vx == 0 && s->vy == 0 && s->vz == 0) {
     float ddx = tg->x - s->px, ddy = tg->y - s->py, ddz = tg->z - s->pz;
     if (SQRT(ddx * ddx + ddy * ddy + ddz * ddz) > P->detect) { s->t += dt; s->k0 = (int)(s->t / dt + 0.5f); return; }
   }
@@ -293,7 +296,7 @@ FN void br_step(BR_PP BrState* s, BR_PP const BrParams* P, BR_PP const BrScen* s
   s->t += dt;
   if (s->py < 1.6f && s->t - (float)s->k0 * dt < 4) { s->py = 1.6f; if (s->vy < 0) s->vy = 0; s->vx *= 0.9f; s->vz *= 0.9f; }
   float d;
-  if (P->mode) {   // closest approach during this step (both balls move in straight lines), so fast passes can't tunnel
+  if (P->mode == BR_MODE_TAG) {   // closest approach during this step (both balls move in straight lines), so fast passes can't tunnel
     float a0 = p0x - tg->px, a1 = p0y - tg->py, a2 = p0z - tg->pz;
     float e0 = s->px - tg->x - a0, e1 = s->py - tg->y - a1, e2 = s->pz - tg->z - a2, dd = e0 * e0 + e1 * e1 + e2 * e2;
     float u = dd > 0 ? br_clamp(-(a0 * e0 + a1 * e1 + a2 * e2) / dd, 0, 1) : 0;
@@ -306,8 +309,8 @@ FN void br_step(BR_PP BrState* s, BR_PP const BrParams* P, BR_PP const BrScen* s
   if (d < s->minD) s->minD = d;
   // mid-flight (not the launch, not the final approach): how long it hugs the ground
   if (s->t - (float)s->k0 * dt > 3 && d > 300) { s->mid++; if (s->py < 5) s->low++; }
-  if (d < (P->mode ? P->ballD : P->hitR)) { s->alive = 0; s->hit = 1; return; }
-  if (P->mode) {   // once it has closed in, the moment the gap starts widening it has passed the runner: a miss, no second try
+  if (d < (P->mode == BR_MODE_TAG ? P->ballD : P->hitR)) { s->alive = 0; s->hit = 1; return; }
+  if (P->mode == BR_MODE_TAG) {   // once it has closed in, the moment the gap starts widening it has passed the runner: a miss, no second try
     float rx = s->px - tg->x, ry = s->py - tg->y, rz = s->pz - tg->z;
     float rr = rx * (s->vx - tg->vx) + ry * (s->vy - tg->vy) + rz * (s->vz - tg->vz);
     if (rr < 0 && SQRT(rx * rx + ry * ry + rz * rz) < 3000) s->closing = 1;
@@ -327,7 +330,7 @@ FN void br_algo_control(BR_PP const BrState* s, BR_PP const BrParams* P, BR_PP c
   float r0 = tg->sx - s->px, r1 = tg->sy - s->py, r2 = tg->sz - s->pz, R = SQRT(r0 * r0 + r1 * r1 + r2 * r2);
   float hd = SQRT(r0 * r0 + r2 * r2); if (hd == 0) hd = 1;
   float dh0 = r0 / hd, dh2 = r2 / hd;
-  int mov = P->mode || tg->svx != 0 || tg->svy != 0 || tg->svz != 0;
+  int mov = P->mode == BR_MODE_TAG || tg->svx != 0 || tg->svy != 0 || tg->svz != 0;
   float tl = s->t - (float)s->k0 * dt;   // time since this ball's own launch
   float d0, d1, d2, thr = 1;   // never cut
   if (!mov && hd > 9000 && !(V < 90 && tl < 15)) {   // long-range cruise: head level toward ~2 km

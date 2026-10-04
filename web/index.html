@@ -167,7 +167,7 @@ const fmt=(v,d=0)=>Number(v).toLocaleString(undefined,{maximumFractionDigits:d,m
 /* ---------------- settings (remembered in this window) ---------------- */
 const S={ backend:'auto', layers:1, width:32, K:0, mem:0, cma:1, pop:256, scen:16, reuse:5, islands:0, nIsl:8, migrate:10,
   decayOn:1, decay:0.995, lrMin:1e-4, speedOn:0, speedW:3, altOn:0, dt:0.02, everyStep:0, tw:2.5, wg:64, chunkMs:40,
-  mode:0, blast:0, reachMax:7000, range:7000, evade:0, noise:0, delayMs:0, detect:0, twRunner:2.5 };   // mode 0 = reach target, 1 = intercept
+  mode:0, blast:0, reachMax:7000, range:7000, evade:0, noise:0, delayMs:0, detect:0, twRunner:2.5 };   // mode 0 = reach target, 1 = intercept, 2 = swarm
 try{ Object.assign(S, JSON.parse(localStorage.getItem('brt-settings')||'{}')); }catch(e){}
 const save=()=>{ try{ localStorage.setItem('brt-settings',JSON.stringify(S)); }catch(e){} };
 const cfg=()=>({ ...S, speedW:S.speedOn?S.speedW:0 });
@@ -191,8 +191,8 @@ bind('sNoise','vNoise','noise',v=>v?'±'+v+' m':'off'); bind('sDelay','vDelay','
 bind('sDetect','vDetect','detect',v=>v?fmt(v/1000,v>=10000?0:1)+' km':'off (launch at once)'); bind('sTwR','vTwR','twRunner',v=>v.toFixed(1)+'×');
 const MODE_TEXT=[()=>`Fly the ball from the pad to a goal 1.5–${fmt(S.reachMax/1000,0)} km away.`,
   'A red runner ball, flown by the guidance algorithm, launches far out and heads for a defended point. Your ball launches from a nearby site and must catch it first.'];
-function syncMode(){ const on=!!S.mode;
-  $('mReach').classList.toggle('on',!on); $('mInt').classList.toggle('on',on); $('modeText').textContent=S.mode?MODE_TEXT[1].replace('catch it',S.blast>2?`get within ${S.blast} m of it`:'touch it (2 m)'):MODE_TEXT[0]();
+function syncMode(){ const on=S.mode===1;
+  $('mReach').classList.toggle('on',!on); $('mInt').classList.toggle('on',on); $('modeText').textContent=on?MODE_TEXT[1].replace('catch it',S.blast>2?`get within ${S.blast} m of it`:'touch it (2 m)'):MODE_TEXT[0]();
   $('tagOpts').hidden=!on; $('reachOpts').hidden=on; $('distRow').hidden=on;
   $('physNote').textContent=on?'Your ball launches from the ground 0.5–3 km from the defended point, with up to 15 m/s of wind. Each mode keeps its own trained network.'
     :`The ball starts 10 m above the pad, pointing straight up. Targets are 1.5–${fmt(S.reachMax/1000,0)} km away with up to 15 m/s of wind.`; }

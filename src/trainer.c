@@ -56,6 +56,8 @@ static double gauss(Rng* r) { if (r->have) { r->have = 0; return r->spare; } dou
 static void rng_seed(Rng* r, unsigned s) { for (int i = 0; i < 4; i++) { s += 0x9E3779B9u; unsigned z = s; z = (z ^ (z >> 16)) * 0x85EBCA6Bu; z = (z ^ (z >> 13)) * 0xC2B2AE35u; r->s[i] = z ^ (z >> 16); } r->have = 0; }
 
 // ---------------- settings
+static const char* mode_name(int m) { return m == BR_MODE_SWARM ? "swarm" : m == BR_MODE_TAG ? "tag" : "reach"; }
+static const char* mode_label(int m) { return m == BR_MODE_SWARM ? "swarm" : m == BR_MODE_TAG ? "intercept" : "reach"; }
 // Tag mode's catch distance: the balls touch (2 m) or the runner is inside the blast radius.
 static double tag_r(const TrainCfg* c) { return fmax(2, c->blast); }
 void cfg_defaults(TrainCfg* c) {
@@ -80,7 +82,7 @@ void cfg_from_json(TrainCfg* c, const char* j) {
   c->tw = jnum(j, "tw", c->tw); c->speedW = jnum(j, "speedW", c->speedW); c->everyStep = jnum(j, "everyStep", c->everyStep) != 0;
   c->altOn = jnum(j, "altOn", c->altOn) != 0;
   c->valEvery = clampi((int)jnum(j, "valEvery", c->valEvery), 1, 1000); c->valScen = clampi((int)jnum(j, "valScen", c->valScen), 8, 512);
-  c->mode = jnum(j, "mode", c->mode) != 0;
+  c->mode = clampi((int)jnum(j, "mode", c->mode), BR_MODE_REACH, BR_MODE_SWARM);
   c->reachMax = fmin(100000, fmax(2000, jnum(j, "reachMax", c->reachMax))); c->blast = fmin(10, fmax(0, jnum(j, "blast", c->blast)));
   c->range = fmin(100000, fmax(4000, jnum(j, "range", c->range))); c->evade = fmin(1, fmax(0, jnum(j, "evade", c->evade)));
   c->noise = fmin(200, fmax(0, jnum(j, "noise", c->noise))); c->delayMs = fmin(2000, fmax(0, jnum(j, "delayMs", c->delayMs)));
@@ -102,7 +104,7 @@ void setup_params(BrParams* P, const TrainCfg* c, int S) {
   P->dt = (float)c->dt; P->maxT = 120; P->hitR = 30;
   P->mode = c->mode; P->ballD = (float)tag_r(c); P->noise = (float)c->noise; P->detect = (float)c->detect;
   P->delay = (int)lround(c->delayMs / (c->dt * 1000));
-  if (c->mode) P->maxT = (float)fmax(120, ceil((c->range + 1500) / 150) + 60);   // long runs need time to arrive
+  if (c->mode != BR_MODE_REACH) P->maxT = (float)fmax(120, ceil((c->range + 1500) / 150) + 60);   // long runs need time to arrive
   else P->maxT = (float)fmax(120, ceil(c->reachMax / 150) + 60);
   P->ctrl = c->everyStep ? 1 : 2; P->K = c->K; P->rec = c->mem; P->memN = c->mem ? c->width : 0;
   P->nin = BR_NI * (c->K + 1) + P->memN;
@@ -154,7 +156,7 @@ static void gen_scen(BrScen* s, Rng* r, double dist, double maxD) {
 #define RUNNER_CTRL 2
 static int br_make_attack(const float def[3], const float wind[3], const float start[3], const BrParams* P0, float thrustAtk, double evade,
                           Rng* r, float* traj, int maxSteps, int* atkHit) {
-  BrParams P = *P0; P.mode = 0; P.detect = 0; P.thrust = thrustAtk;   // the runner chases a fixed goal with its own engine
+  BrParams P = *P0; P.mode = BR_MODE_REACH; P.detect = 0; P.thrust = thrustAtk;   // the runner chases a fixed goal with its own engine
   P.stride = S_HIST;
   BrScen sc; memset(&sc, 0, sizeof sc);
   sc.tx = def[0]; sc.ty = def[1]; sc.tz = def[2]; sc.wx = wind[0]; sc.wy = wind[1]; sc.wz = wind[2];
@@ -187,7 +189,7 @@ static void ring_pt(const float c[3], double a, double b, Rng* r, float o[3]) {
 }
 // The algorithm chasing a recorded runner (tag rules, P's detect, no noise/delay). Returns the closest approach.
 static float algo_tag_rollout(const BrParams* P0, const BrScen* sc, const float* traj) {
-  BrParams P = *P0; P.mode = 1; P.noise = 0; P.delay = 0; P.stride = S_HIST;
+  BrParams P = *P0; P.mode = BR_MODE_TAG; P.noise = 0; P.delay = 0; P.stride = S_HIST;
   float g[S_HIST]; br_init(g, &P, sc);
   BrState s; br_load(&s, g);
   BrTgt tg; memset(&tg, 0, sizeof tg);
@@ -249,9 +251,9 @@ static size_t gen_tag_batch(BrScen* sc, int S, Rng* r, const TrainCfg* c, const 
 // runner reached its defended point (atkHit comes from the scenario, which the host already knows).
 // Altitude reward (when on): up to +0.5, from 0 when half of mid-flight is above 5 m to full at 80% or more.
 static double fitness(const float* o, double speedW, int mode, float atkHit, int altOn, double tagR) {
-  double f = -log(fmax(o[0], mode ? tagR : 30.0) / 30.0);
+  double f = -log(fmax(o[0], mode == BR_MODE_TAG ? tagR : 30.0) / 30.0);
   if (o[1] > 0.5f) f += 5 + (speedW > 0 ? speedW * fmax(0, 1 - o[2] / 60.0) : -0.01 * o[2]);
-  else if (mode && atkHit > 0.5f) f -= 2;
+  else if (mode == BR_MODE_TAG && atkHit > 0.5f) f -= 2;
   if (altOn) f += 0.5 * fmin(1, fmax(0, (1 - o[4] - 0.5) / 0.3));
   return f;
 }
@@ -261,7 +263,7 @@ typedef struct { BrScen* sc; int n, cap; float* traj; size_t trajFloats, trajCap
 static void scen_make(ScenSet* s, int S, Rng* r, const TrainCfg* c, const BrParams* P) {
   if (S > s->cap) { s->sc = (BrScen*)realloc(s->sc, sizeof(BrScen) * S); s->cap = S; }
   s->n = S; s->trajFloats = 0;
-  if (!c->mode) { for (int i = 0; i < S; i++) gen_scen(&s->sc[i], r, 0, c->reachMax); return; }
+  if (c->mode == BR_MODE_REACH) { for (int i = 0; i < S; i++) gen_scen(&s->sc[i], r, 0, c->reachMax); return; }
   size_t need = (size_t)S * tag_max_steps(P) * 6;
   if (need > s->trajCap) { s->traj = (float*)realloc(s->traj, sizeof(float) * need); s->trajCap = need; }
   s->trajFloats = gen_tag_batch(s->sc, S, r, c, P, s->traj);
@@ -269,7 +271,7 @@ static void scen_make(ScenSet* s, int S, Rng* r, const TrainCfg* c, const BrPara
 static void scen_free(ScenSet* s) { free(s->sc); free(s->traj); memset(s, 0, sizeof *s); }
 // Settings that change what a scenario is (when they change, scenarios are rebuilt).
 static int scen_same(const TrainCfg* a, const TrainCfg* b) {
-  return a->mode == b->mode && (a->mode || a->reachMax == b->reachMax) && (!a->mode || (a->range == b->range && a->evade == b->evade && a->blast == b->blast &&
+  return a->mode == b->mode && (a->mode != BR_MODE_REACH || a->reachMax == b->reachMax) && (a->mode == BR_MODE_REACH || (a->range == b->range && a->evade == b->evade && a->blast == b->blast &&
          a->twRunner == b->twRunner && a->detect == b->detect && a->dt == b->dt && a->everyStep == b->everyStep));
 }
 static int eval_set(Backend* b, const float* g, int n, const ScenSet* s, BrParams* P, float* out) {
@@ -369,7 +371,7 @@ static struct {
   BrParams P; Island* isl; int nIsl; int structKey[8];
   Rng rng; ScenSet scen; int scenAge; TrainCfg scenCfg;
   ScenSet val; TrainCfg valCfg; int valReady;   // fixed validation set (same seed every time, rebuilt when settings change)
-  int starMode;   // mode the current star was trained in (0 reach, 1 tag); each mode keeps its own save file
+  int starMode;   // mode the current star was trained in (BR_MODE_*); each mode keeps its own save file
   float* star; int starNw; int starArch[BR_MAXL]; int starNl; int starK, starMem; double starDt, starTw; int starEvery; int starVersion; double starFit;
   int gen; double best, mean, sigma, genTime, flightsPerS, stepsPerS, starHits, starMiss, valHit; int valGen;
   Hist* hist; int histN;
@@ -384,7 +386,7 @@ static void set_msg(const char* fmt, ...) { va_list ap; va_start(ap, fmt); br_lo
 // (mode -1: BallArena-star.json, -2: BallisticRange-champion.json) are read as the reach star if no reach file exists.
 static const char* save_path_mode(int mode) {
   static char p[1024]; const char* h = getenv("HOME");
-  const char* name = mode == -2 ? "BallisticRange-champion.json" : mode < 0 ? "BallArena-star.json" : mode ? "BallArena-star-tag.json" : "BallArena-star-reach.json";
+  const char* name = mode == -2 ? "BallisticRange-champion.json" : mode < 0 ? "BallArena-star.json" : mode == BR_MODE_SWARM ? "BallArena-star-swarm.json" : mode == BR_MODE_TAG ? "BallArena-star-tag.json" : "BallArena-star-reach.json";
 #ifdef _WIN32
   if (!h) h = getenv("USERPROFILE");
   snprintf(p, sizeof p, "%s\\%s", h ? h : ".", name);
@@ -396,7 +398,7 @@ static const char* save_path_mode(int mode) {
 static const char* save_path(void) { return save_path_mode(T.starMode); }
 
 static void star_json_locked(Sb* o) {
-  sb_printf(o, "{\"format\":\"ball-arena-network\",\"mode\":\"%s\",\"arch\":[", T.starMode ? "tag" : "reach");
+  sb_printf(o, "{\"format\":\"ball-arena-network\",\"mode\":\"%s\",\"arch\":[", mode_name(T.starMode));
   for (int l = 0; l <= T.starNl; l++) sb_printf(o, "%s%d", l ? "," : "", T.starArch[l]);
   sb_printf(o, "],\"K\":%d,\"memory\":%s,\"dt\":%g,\"ctrlEvery\":%d,\"thrustToWeight\":%g,\"generation\":%d,\"fitness\":%.4f,\"validationHitRate\":%.4f,\"version\":%d,\"weights\":[",
     T.starK, T.starMem ? "true" : "false", T.starDt, T.starEvery ? 1 : 2, T.starTw, T.gen, T.starFit, T.valHit, T.starVersion);
@@ -417,8 +419,9 @@ static int load_json_mode(const char* json, char* msg, int len, int wantMode) {
   while (*p && *p != ']' && nl < BR_MAXL - 1) { arch[++nl] = (int)strtol(p, (char**)&p, 10); while (*p == ',' || *p == ' ') p++; }
   if (nl < 1) { snprintf(msg, len, "bad arch"); return -1; }
   // mode: "tag", or "reach" ("mission" and a missing field are older reach saves). A star from the other mode is refused.
-  int fmode = 0; { const char* m = strstr(json, "\"mode\""); const char* t = m ? strstr(m, "\"tag\"") : NULL; if (t && t - m < 16) fmode = 1; }
-  if (wantMode >= 0 && fmode != wantMode) { snprintf(msg, len, "this network was trained in %s mode; switch to that mode to load it", fmode ? "intercept" : "reach"); return -1; }
+  int fmode = BR_MODE_REACH; { const char* m = strstr(json, "\"mode\""); const char* t = m ? strstr(m, "\"tag\"") : NULL; const char* w = m ? strstr(m, "\"swarm\"") : NULL;
+    if (t && t - m < 16) fmode = BR_MODE_TAG; else if (w && w - m < 16) fmode = BR_MODE_SWARM; }
+  if (wantMode >= 0 && fmode != wantMode) { snprintf(msg, len, "this network was trained in %s mode; switch to that mode to load it", mode_label(fmode)); return -1; }
   int nw = 0; for (int l = 0; l < nl; l++) nw += arch[l + 1] * arch[l] + arch[l + 1];
   float* g = (float*)malloc(sizeof(float) * nw); p = strchr(w, '['); if (!p) { free(g); return -1; } p++;
   int n = 0; while (n < nw && *p && *p != ']') { g[n++] = strtof(p, (char**)&p); while (*p == ',' || *p == ' ') p++; }
@@ -443,15 +446,15 @@ static void load_mode_star(int mode) {
   br_lock(&T.mx); free(T.star); T.star = NULL; T.starNw = 0; T.starMode = mode; T.starVersion++; T.gen = 0; T.histN = 0;
   T.best = T.mean = T.starHits = T.starMiss = T.valHit = 0; T.valGen = 0; br_unlock(&T.mx);
   const char* p = save_path_mode(mode); FILE* f = fopen(p, "rb");
-  for (int old = -1; !f && !mode && old >= -2; old--) { p = save_path_mode(old); f = fopen(p, "rb"); }
+  for (int old = -1; !f && mode == BR_MODE_REACH && old >= -2; old--) { p = save_path_mode(old); f = fopen(p, "rb"); }
   if (f) { fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET); char* b = (char*)malloc(len + 1); len = (long)fread(b, 1, len, f); b[len] = 0; fclose(f);
-    char m[200]; if (!load_json_mode(b, m, sizeof m, mode)) set_msg("restored your last %s star (%s)", mode ? "intercept" : "reach", p); free(b); }
-  else set_msg("no saved %s star yet", mode ? "intercept" : "reach");
+    char m[200]; if (!load_json_mode(b, m, sizeof m, mode)) set_msg("restored your last %s star (%s)", mode_label(mode), p); free(b); }
+  else set_msg("no saved %s star yet", mode_label(mode));
 }
 // Select a mode: saves the current star, then makes that mode's saved star current. Called with training stopped
 // (the interface's mode switch) or from the training thread between generations.
 void trainer_set_mode(int mode) {
-  mode = mode != 0;
+  mode = clampi(mode, BR_MODE_REACH, BR_MODE_SWARM);
   if (mode == T.starMode && T.cfg.mode == mode) return;
   autosave(); T.cfg.mode = mode; load_mode_star(mode);
   free_islands();
@@ -699,7 +702,7 @@ static void tune_thread(void* arg) {
   int useN = c.cma ? 512 : 256;   // one CMA-ES gains little beyond ~512 networks per generation (GA: ~256)
   ScenSet scs = {0}; double tg0 = br_now(); scen_make(&scs, P.S, &r, &c, &P);
   g_tuneGenSec = (br_now() - tg0) / (c.reuse > 1 ? c.reuse : 1);
-  if (c.mode) tlog("Building %d tag scenarios takes %.0f ms on the CPU (counted in every timing below)", P.S, (br_now() - tg0) * 1000);
+  if (c.mode == BR_MODE_TAG) tlog("Building %d tag scenarios takes %.0f ms on the CPU (counted in every timing below)", P.S, (br_now() - tg0) * 1000);
   const ScenSet* sc = &scs;
   Meas rows[200]; int nRows = 0; Meas bestOpt[40]; int nBest = 0;
   for (int oi = 0; oi < nOpt; oi++) {
@@ -829,8 +832,8 @@ void fly_json(const char* req, Sb* o) {
   static unsigned flyCount = 0;   // (unsigned) of the raw clock overflows to a constant: wrap it, and count presses
   Rng r; rng_seed(&r, (unsigned)fmod(br_now() * 1e6, 4294967296.0) ^ (++flyCount * 2654435761u));
   int every = (int)fmax(1, lround(0.05 / c.dt));   // ~20 samples per second
-  sb_printf(o, "{\"dt\":%g,\"mode\":\"%s\",\"radar\":%g,\"flights\":[", every * c.dt, c.mode ? "tag" : "reach", c.mode ? c.detect : 0);
-  if (c.mode) {
+  sb_printf(o, "{\"dt\":%g,\"mode\":\"%s\",\"radar\":%g,\"flights\":[", every * c.dt, mode_name(c.mode), c.mode == BR_MODE_TAG ? c.detect : 0);
+  if (c.mode == BR_MODE_TAG) {
     // Tag demo: one runner path (as in training), the star chasing it. Each sample is taken at the same physics step
     // for both balls: runner [x,y,z], chaser [x,y,z,throttle]. The runner keeps flying after the chaser ends
     // (unless it was tagged), so a miss shows it getting through.
@@ -891,7 +894,7 @@ static void cli_cfg(TrainCfg* c, int argc, char** argv, int* mode, int* gens, ch
     else if (!strcmp(a, "--gens")) { *gens = atoi(v); i++; } else if (!strcmp(a, "--load")) { *load = (char*)v; i++; }
     else if (!strcmp(a, "--wg")) { c->wg = atoi(v); i++; } else if (!strcmp(a, "--threads")) { c->threads = atoi(v); i++; }
     // intercept (tag) mode
-    else if (!strcmp(a, "--mode")) { c->mode = !strcmp(v, "tag") || !strcmp(v, "intercept"); i++; }
+    else if (!strcmp(a, "--mode")) { c->mode = !strcmp(v, "tag") || !strcmp(v, "intercept") ? BR_MODE_TAG : !strcmp(v, "swarm") ? BR_MODE_SWARM : BR_MODE_REACH; i++; }
     else if (!strcmp(a, "--ceiling")) *mode = 6;
     else if (!strcmp(a, "--tw")) { c->tw = atof(v); i++; }
     else if (!strcmp(a, "--blast")) { c->blast = fmin(10, fmax(0, atof(v))); i++; }
@@ -912,7 +915,7 @@ int cli_main(int argc, char** argv) {
   cli_cfg(&c, argc, argv, &mode, &gens, &load);
   if (mode == 5) { printf("Double-click the app to open the interface. Developer options: --bench, --compare, --train [--gens N], --list-devices,\n"
                           "with --backend cpu|metal|opencl:N --pop --scen --layers --width --K --mem --opt cma|ga --dt --every-step --alt-reward --islands N --wg --load FILE\n"
-                          "Intercept (tag) mode: --mode reach|tag  --atk-range M (runner launch distance, 4000-100000 m)  --evade 0-1 (runner weave)\n"
+                          "Intercept (tag) mode: --mode reach|tag|swarm  --atk-range M (runner launch distance, 4000-100000 m)  --evade 0-1 (runner weave)\n"
                           "  --noise M (sensor noise sigma)  --delay MS (sensor delay)  --detect M (radar range: launch when the runner comes this close, 0 = launch at once)\n"
                           "  --tw-runner X (runner thrust-to-weight)\n"); return 0; }
   if (mode == 4) {
@@ -956,7 +959,8 @@ int cli_main(int argc, char** argv) {
     eval_set(be, G, c.pop < 32 ? c.pop : 32, sc, &P, dst);
     double best = 1e9; for (int k = 0; k < 2; k++) { double t0 = br_now(); eval_set(be, G, c.pop, sc, &P, dst); double t = br_now() - t0; if (t < best) best = t; }
     double steps = 0, hits = 0; for (size_t k = 0; k < n; k++) { steps += dst[k * BR_OUT + 3]; hits += dst[k * BR_OUT + 1]; }
-    printf("  %-9s %-36s %7.1f M steps/s  %5.0f hits", ids[b], be->info, steps / best / 1e6, hits);
+    double sumD = 0; for (size_t k = 0; k < n; k++) sumD += dst[k * BR_OUT + 0];   // regression fingerprint
+    printf("  %-9s %-36s %7.1f M steps/s  %5.0f hits  steps %.0f  sum closest %.1f", ids[b], be->info, steps / best / 1e6, hits, steps, sumD);
     if (mode == 2 && b > 0) { int same = 0; for (size_t k = 0; k < n; k++) same += dst[k * BR_OUT + 1] == ref[k * BR_OUT + 1]; printf("  same hit/miss as CPU: %d/%lu", same, (unsigned long)n); }
     printf("\n"); be->destroy(be);
   }
