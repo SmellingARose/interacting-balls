@@ -32,6 +32,7 @@ them.
 | Runner thrust-to-weight | The runner's engine, separate from yours (swarm: the attackers'). |
 | Swarm: Algorithm / AI | Per side. AI vs AI trains both together (self-play); Algorithm vs Algorithm only shows battles. |
 | Swarm: Nearest-K / Commander | Nearest-K: one small brain per ball, sees K nearest enemies and K nearest teammates, works at any count. Commander: one brain steers the whole side and is saved per attacker/defender count. |
+| Swarm: launch range | Attackers launch anywhere between the minimum and maximum distance, from any direction. |
 | Swarm: counts, K | 1–32 attackers and defenders; K = 1–8 (more context per ball, more weights). |
 
 ## Tips

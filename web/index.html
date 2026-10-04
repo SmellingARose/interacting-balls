@@ -100,7 +100,8 @@ body:not(.help) .note:not(#netNote):not(#tuneNote):not(#modeText),body:not(.help
     <h2 id="tagTitle">Intercept</h2>
     <label>Blast radius <b id="vBlast"></b><input id="sBlast" type="range" min="0" max="10" step="0.5" value="0"></label>
     <div class="note">Off: your ball must touch the runner (2 m). On: getting this close counts as a catch, like a proximity warhead.</div>
-    <label>Runner launch range <b id="vRange"></b><input id="sRange" type="range" min="4000" max="100000" step="500" value="7000"></label>
+    <label id="rangeLbl">Runner launch range <b id="vRange"></b><input id="sRange" type="range" min="4000" max="100000" step="500" value="7000"></label>
+    <label id="rangeMaxRow">Attackers launch up to <b id="vRangeMax"></b><input id="sRangeMax" type="range" min="4000" max="100000" step="500" value="8500"></label>
     <label>Runner weaving <b id="vEvade"></b><input id="sEvade" type="range" min="0" max="1" step="0.1" value="0"></label>
     <label>Sensor noise <b id="vNoise"></b><input id="sNoise" type="range" min="0" max="50" step="1" value="0"></label>
     <label id="delayRow">Sensor delay <b id="vDelay"></b><input id="sDelay" type="range" min="0" max="400" step="20" value="0"></label>
@@ -215,7 +216,7 @@ for(const b of document.querySelectorAll('[data-min]')){ const p=$(b.dataset.min
 /* ---------------- settings (remembered in this window) ---------------- */
 const S={ backend:'auto', layers:1, width:32, K:0, mem:0, cma:1, pop:256, scen:16, reuse:5, islands:0, nIsl:8, migrate:10,
   decayOn:1, decay:0.995, lrMin:1e-4, speedOn:0, speedW:3, altOn:0, dt:0.02, everyStep:0, tw:2.5, wg:64, chunkMs:40,
-  mode:0, attN:4, defN:4, attAI:0, defAI:1, attCmd:0, defCmd:0, swK:2, swLayout:0, blast:0, reachMax:7000, range:7000, evade:0, noise:0, delayMs:0, detect:0, twRunner:2.5 };   // mode 0 = reach target, 1 = intercept, 2 = swarm
+  mode:0, attN:4, defN:4, attAI:0, defAI:1, attCmd:0, defCmd:0, swK:2, swLayout:0, rangeMax:8500, blast:0, reachMax:7000, range:7000, evade:0, noise:0, delayMs:0, detect:0, twRunner:2.5 };   // mode 0 = reach target, 1 = intercept, 2 = swarm
 try{ Object.assign(S, JSON.parse(localStorage.getItem('brt-settings')||'{}')); }catch(e){}
 const save=()=>{ try{ localStorage.setItem('brt-settings',JSON.stringify(S)); }catch(e){} };
 const cfg=()=>({ ...S, speedW:S.speedOn?S.speedW:0 });
@@ -234,7 +235,10 @@ check('cAlt','altOn'); check('cSpeed','speedOn',syncDis); bind('sSpw','vSpw','sp
 bind('sDt','vDt','dt',v=>v+' ms',v=>v/1000,v=>Math.round(v*1000)); check('cEvery','everyStep'); bind('sTw','vTw','tw',v=>v.toFixed(1)+'×');
 bind('sReachMax','vReachMax','reachMax',v=>fmt(v/1000,0)+' km'); $('sReachMax').addEventListener('input',()=>syncMode());
 bind('sBlast','vBlast','blast',v=>v>2?v+' m':'off (touch)'); $('sBlast').addEventListener('input',()=>syncMode());
-bind('sRange','vRange','range',v=>fmt(v/1000,v>=20000?0:1)+' km'); bind('sEvade','vEvade','evade',v=>v?'×'+v.toFixed(1):'off');
+bind('sRange','vRange','range',v=>fmt(v/1000,v>=20000?0:1)+' km'); bind('sRangeMax','vRangeMax','rangeMax',v=>fmt(v/1000,v>=20000?0:1)+' km');
+// swarm: keep min ≤ max (moving one pushes the other)
+$('sRange').addEventListener('input',()=>{ if(S.mode===2&&S.rangeMax<S.range){ $('sRangeMax').value=S.range; $('sRangeMax').dispatchEvent(new Event('input')); } syncMode(); });
+$('sRangeMax').addEventListener('input',()=>{ if(S.rangeMax<S.range){ $('sRange').value=S.rangeMax; $('sRange').dispatchEvent(new Event('input')); } syncMode(); }); bind('sEvade','vEvade','evade',v=>v?'×'+v.toFixed(1):'off');
 bind('sNoise','vNoise','noise',v=>v?'±'+v+' m':'off'); bind('sDelay','vDelay','delayMs',v=>v?v+' ms':'off');
 bind('sDetect','vDetect','detect',v=>v?fmt(v/1000,v>=10000?0:1)+' km':'off (launch at once)'); bind('sTwR','vTwR','twRunner',v=>v.toFixed(1)+'×');
 bind('sAttN','vAttN','attN',v=>v); bind('sDefN','vDefN','defN',v=>v); bind('sSwK','vSwK','swK',v=>v+' + '+v);
@@ -247,7 +251,7 @@ function syncMode(){ const m=S.mode, on=m===1, sw=m===2, catchTxt=S.blast>2?`get
   $('mReach').classList.toggle('on',m===0); $('mInt').classList.toggle('on',on); $('mSwarm').classList.toggle('on',sw);
   $('modeText').textContent=sw?`${S.attN} attacker${S.attN>1?'s':''} fly at a defended point; ${S.defN} defender${S.defN>1?'s':''} must ${catchTxt} them first. A catch removes both balls.`
     :on?MODE_TEXT[1].replace('catch it',S.blast>2?`get within ${S.blast} m of it`:'touch it (2 m)'):MODE_TEXT[0]();
-  $('tagOpts').hidden=!(on||sw); $('swarmOpts').hidden=!sw; $('reachOpts').hidden=m!==0; $('distRow').hidden=m!==0; $('delayRow').hidden=sw;
+  $('tagOpts').hidden=!(on||sw); $('swarmOpts').hidden=!sw; $('reachOpts').hidden=m!==0; $('distRow').hidden=m!==0; $('delayRow').hidden=sw; $('rangeMaxRow').hidden=!sw; $('rangeLbl').firstChild.textContent=sw?'Attackers launch from ':'Runner launch range ';
   $('tagTitle').textContent=sw?'Engagement':'Intercept'; $('kRow').hidden=$('memRow').hidden=sw;
   for(const [a,b,k] of [['aAlgo','aAI','attAI'],['dAlgo','dAI','defAI'],['aNK','aCmd','attCmd'],['dNK','dCmd','defCmd']]){ $(a).classList.toggle('on',!S[k]); $(b).classList.toggle('on',!!S[k]); }
   $('aBrain').hidden=!S.attAI; $('dBrain').hidden=!S.defAI;
@@ -259,7 +263,7 @@ function syncMode(){ const m=S.mode, on=m===1, sw=m===2, catchTxt=S.blast>2?`get
   $('lSps').textContent=sw?'M ball-steps/s':'M steps/s'; $('lFps').textContent=sw?'Battles/s':'Flights/s';
   $('valNote').textContent=sw?'Validation = each trained side against the guidance algorithm every 10 generations on a fixed set of 64 battles: defenders show their catch rate, attackers their leak rate. Stars are saved per side and matchup.'
     :'Validation = the star ball flown every 10 generations on a fixed set of 64 scenarios it never trains on: the honest hit rate, comparable over time. The star ball is saved automatically and restored next time.';
-  $('physNote').textContent=sw?'Attackers launch from the ground at the runner launch range, spread ±30° around one bearing; defenders launch 0.5–3 km from the defended point once their radar sees an attacker. Thrust-to-weight is the defenders\' engine; runner thrust-to-weight is the attackers\'.'
+  $('physNote').textContent=sw?`Attackers launch from the ground ${fmt(S.range/1000,1)}–${fmt(S.rangeMax/1000,1)} km from the defended point, from any direction; defenders launch 0.5–3 km from the defended point once their radar sees an attacker. Thrust-to-weight is the defenders\' engine; runner thrust-to-weight is the attackers\'.`
     :on?'Your ball launches from the ground 0.5–3 km from the defended point, with up to 15 m/s of wind. Each mode keeps its own trained network.'
     :`The ball starts 10 m above the pad, pointing straight up. Targets are 1.5–${fmt(S.reachMax/1000,0)} km away with up to 15 m/s of wind.`;
   netNote(); }

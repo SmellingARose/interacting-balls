@@ -39,7 +39,7 @@ its hit rate is comparable between generations.
 **Swarm mode:** a battle is one float block: a header (step, catches, leaks, done, ball-steps) and `SW_B` floats per
 ball (the per-flight `S_*` fields plus target, weave, launched, fate, start-of-step position, nearest attacker).
 Attackers are balls `0 .. attN−1`, defenders follow. Start positions are built on the CPU (`sw_gen_scen`: attackers on the
-ground at the runner launch range, ±30° around one bearing; defenders 0.5–3 km from the defended point) and passed in a
+ground between the minimum and maximum launch range, from any direction; defenders 0.5–3 km from the defended point) and passed in a
 buffer, so every backend starts from identical states. Each step runs in phases:
 1. **decide** (every `ctrl` steps): defenders are assigned targets (nearest unclaimed live attacker, in index order);
    commander sides run one network pass for the whole side; other balls run nearest-K networks (29 own-target sensors +
