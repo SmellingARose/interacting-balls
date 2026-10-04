@@ -180,7 +180,7 @@ const fmt=(v,d=0)=>Number(v).toLocaleString(undefined,{maximumFractionDigits:d,m
 /* ---------------- settings (remembered in this window) ---------------- */
 const S={ backend:'auto', layers:1, width:32, K:0, mem:0, cma:1, pop:256, scen:16, reuse:5, islands:0, nIsl:8, migrate:10,
   decayOn:1, decay:0.995, lrMin:1e-4, speedOn:0, speedW:3, altOn:0, dt:0.02, everyStep:0, tw:2.5, wg:64, chunkMs:40,
-  mode:0, attN:4, defN:4, attAI:0, defAI:1, attCmd:0, defCmd:0, swK:2, blast:0, reachMax:7000, range:7000, evade:0, noise:0, delayMs:0, detect:0, twRunner:2.5 };   // mode 0 = reach target, 1 = intercept, 2 = swarm
+  mode:0, attN:4, defN:4, attAI:0, defAI:1, attCmd:0, defCmd:0, swK:2, swLayout:0, blast:0, reachMax:7000, range:7000, evade:0, noise:0, delayMs:0, detect:0, twRunner:2.5 };   // mode 0 = reach target, 1 = intercept, 2 = swarm
 try{ Object.assign(S, JSON.parse(localStorage.getItem('brt-settings')||'{}')); }catch(e){}
 const save=()=>{ try{ localStorage.setItem('brt-settings',JSON.stringify(S)); }catch(e){} };
 const cfg=()=>({ ...S, speedW:S.speedOn?S.speedW:0 });
@@ -263,7 +263,7 @@ $('bTune').onclick=async()=>{
     if(st.running){ setTimeout(poll,400); return; }
     $('bTune').disabled=false; TUNE=st.result;
     if(TUNE&&TUNE.ok){ const b=TUNE.best;
-      Object.assign(S,{backend:b.backend,wg:b.wg,chunkMs:b.chunkMs,pop:b.pop,scen:b.scen,islands:b.islands,nIsl:b.nIsl}); save();
+      Object.assign(S,{backend:b.backend,wg:b.wg,chunkMs:b.chunkMs,pop:b.pop,scen:b.scen,islands:b.islands,nIsl:b.nIsl}); if(S.mode===2) S.swLayout=b.swLayout||0; save();
       for(const [id,k] of [['sPop','pop'],['sScen','scen'],['sIsl','nIsl']]){ $(id).value=S[k]; $(id).dispatchEvent(new Event('input')); }
       $('cIsl').checked=!!S.islands; syncDis(); $('selBackend').value=S.backend;
       $('tuneNote').textContent=`Best: ${b.label} at ${fmt(1/b.secPerGen,1)} generations/s. Applied: population ${b.pop}${b.islands?` in ${b.nIsl} islands`:''}, ${b.scen} scenarios, work-group ${b.wg}, ${b.chunkMs} ms dispatches. ${TUNE.note}`;
@@ -338,11 +338,11 @@ function openDlg(which){
     const best=TUNE.best;
     b.innerHTML=`<p>Measured on this machine with your current network (${arch().join(' → ')}). Options are ranked by generations per second at a population the optimizer can use well; peak speed is physics steps per second at the best batch size.</p>
       <table><tr><th>Compute option</th><th>Generations/s</th><th>Peak speed</th><th>Batch (networks)</th><th>Work-group</th><th>Dispatch</th></tr>
-      ${TUNE.options.map(o=>`<tr class="${o.backend===best.backend?'best':''}"><td>${o.label}</td><td>${fmt(1/o.secPerGen,1)}</td><td>${fmt(o.stepsPerS/1e6,1)} M/s</td><td>${o.batchNetworks}</td><td>${o.backend==='cpu'?'—':o.wg}</td><td>${o.backend==='cpu'?'—':o.chunkMs+' ms'}</td></tr>`).join('')}</table>
+      ${TUNE.options.map(o=>`<tr class="${o.backend===best.backend?'best':''}"><td>${o.label}</td><td>${fmt(1/o.secPerGen,1)}</td><td>${fmt(o.stepsPerS/1e6,1)} M/s</td><td>${o.batchNetworks}</td><td>${o.backend==='cpu'?'—':o.wg<0?'per battle':o.wg}</td><td>${o.backend==='cpu'?'—':o.chunkMs+' ms'}</td></tr>`).join('')}</table>
       <p><b style="color:var(--ok)">Applied:</b> ${best.label}, population ${best.pop}${best.islands?` in ${best.nIsl} islands`:''}, ${best.scen} scenarios per network. ${TUNE.note}</p>
       <p>A bigger population makes each generation only slightly better while making it slower, so the population stays near 512 (CMA-ES) or 256 (GA). Spare capacity that costs at most 25% more time per generation goes into more scenarios per network, or into more islands when islands are on.</p>
       <details><summary class="note">Every measurement</summary><table><tr><th>Option</th><th>Networks</th><th>Flights</th><th>Work-group</th><th>Dispatch</th><th>Speed</th><th>Batch time</th></tr>
-      ${TUNE.rows.map(r=>`<tr><td>${r.label}</td><td>${r.networks}</td><td>${r.flights}</td><td>${r.backend==='cpu'?'—':r.wg}</td><td>${r.backend==='cpu'?'—':r.chunkMs+' ms'}</td><td>${fmt(r.stepsPerS/1e6,1)} M/s</td><td>${fmt(r.sec,3)} s</td></tr>`).join('')}</table></details>`;
+      ${TUNE.rows.map(r=>`<tr><td>${r.label}</td><td>${r.networks}</td><td>${r.flights}</td><td>${r.backend==='cpu'?'—':r.wg<0?'per battle':r.wg}</td><td>${r.backend==='cpu'?'—':r.chunkMs+' ms'}</td><td>${fmt(r.stepsPerS/1e6,1)} M/s</td><td>${fmt(r.sec,3)} s</td></tr>`).join('')}</table></details>`;
   }
   if(which==='math'){ $('dlgTitle').textContent='Network math'; const a=arch(), H=a.slice(1,-1), mem=S.mem?S.width:0;
     b.innerHTML=`<table><tr><th>Network input</th><th>Numbers</th></tr><tr><td>Sensors now</td><td>29</td></tr>${S.K?`<tr><td>Past frames (K = ${S.K})</td><td>${29*S.K}</td></tr>`:''}${mem?`<tr><td>Memory from last decision</td><td>${mem}</td></tr>`:''}<tr><td><b>Total</b></td><td><b>${a[0]}</b></td></tr></table>

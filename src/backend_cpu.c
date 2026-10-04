@@ -106,6 +106,13 @@ void br_init_states(float* state, const BrParams* P, const BrScen* scen) {
 void br_collect(const float* state, const BrParams* P, float* out) {
   for (int r = 0; r < P->nRoll; r++) br_result(state + (size_t)r * P->stride, out + (size_t)r * BR_OUT);
 }
+// Small battles keep one GPU thread each (many battles per SIMD group); from about 12 balls a battle gets a
+// work-group with a thread per ball (unless a side uses a commander brain).
+int br_sw_group_layout(const Backend* b, const BrParams* P, int* threads) {
+  int nB = P->attN + P->defN, t = (nB + 31) / 32 * 32; *threads = t > 64 ? 64 : t;
+  if (b->swLayout) return b->swLayout == 2;
+  return nB >= 12 && !(P->attAI && P->attCmd) && !(P->defAI && P->defCmd);   // a commander pass runs on one thread: per-battle threads suit it better
+}
 void br_sw_init_states(float* state, const BrParams* P, const BrScen* scen, const int* bat, int n, const float* start) {
   for (int r = 0; r < n; r++) br_sw_init(state + (size_t)r * P->stride, P, &scen[bat[r * 3 + 2]], start);
 }

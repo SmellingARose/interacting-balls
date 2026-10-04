@@ -92,7 +92,7 @@ void cfg_from_json(TrainCfg* c, const char* j) {
   c->attN = clampi((int)jnum(j, "attN", c->attN), 1, BR_SW_MAXA); c->defN = clampi((int)jnum(j, "defN", c->defN), 1, BR_SW_MAXD);
   c->attAI = jnum(j, "attAI", c->attAI) != 0; c->defAI = jnum(j, "defAI", c->defAI) != 0;
   c->attCmd = jnum(j, "attCmd", c->attCmd) != 0; c->defCmd = jnum(j, "defCmd", c->defCmd) != 0;
-  c->swK = clampi((int)jnum(j, "swK", c->swK), 1, BR_SW_MAXK);
+  c->swK = clampi((int)jnum(j, "swK", c->swK), 1, BR_SW_MAXK); c->swLayout = clampi((int)jnum(j, "swLayout", c->swLayout), 0, 2);
 }
 void cfg_to_json(const TrainCfg* c, char* o, int len) {
   snprintf(o, len, "{\"backend\":\"%s\",\"wg\":%d,\"chunkMs\":%g,\"layers\":%d,\"width\":%d,\"K\":%d,\"mem\":%d,\"pop\":%d,\"scen\":%d,\"reuse\":%d,"
@@ -555,12 +555,12 @@ static int needs_rebuild(const TrainCfg* c) {
 }
 static int ensure_backend(void) {
   const char* want = strcmp(T.cfg.backend, "auto") ? T.cfg.backend : default_backend_id();
-  if (T.be && !strcmp(T.beId, want) && T.beThreads == T.cfg.threads) { T.be->wg = T.cfg.wg; T.be->chunkMs = T.cfg.chunkMs; return 0; }
+  if (T.be && !strcmp(T.beId, want) && T.beThreads == T.cfg.threads) { T.be->wg = T.cfg.wg; T.be->chunkMs = T.cfg.chunkMs; T.be->swLayout = T.cfg.swLayout; return 0; }
   if (T.be) { T.be->destroy(T.be); T.be = NULL; }
   char err[256] = "";
   T.be = make_backend(want, &T.cfg, err, sizeof err);
   if (!T.be) { set_msg("cannot start %s: %s", want, err); return -1; }
-  snprintf(T.beId, sizeof T.beId, "%s", want); T.beThreads = T.cfg.threads;
+  snprintf(T.beId, sizeof T.beId, "%s", want); T.beThreads = T.cfg.threads; T.be->swLayout = T.cfg.swLayout;
   br_lock(&T.mx); snprintf(T.beInfo, sizeof T.beInfo, "%s", T.be->info); br_unlock(&T.mx);
   return 0;
 }
@@ -905,17 +905,18 @@ static void sw_tune(const TrainCfg* cin) {
 #endif
   Meas rows[200]; int nRows = 0, best = -1;
   for (int oi = 0; oi < nOpt; oi++) {
-    int wgs[4] = { 0, 32, 64, 128 }, nwg = strcmp(ids[oi], "cpu") ? 4 : 1;
-    for (int wi = nwg > 1 ? 1 : 0; wi < nwg; wi++) {
+    int gpu = strcmp(ids[oi], "cpu") != 0;
+    int wgs[5] = { 0, 32, 64, 128, -1 }, nwg = gpu ? 5 : 1;   // -1: one work-group per battle (a thread per ball)
+    for (int wi = gpu ? 1 : 0; wi < nwg; wi++) {
       char err[256] = ""; TrainCfg cc = c; Backend* be = make_backend(ids[oi], &cc, err, sizeof err); if (!be) { tlog("%s: not available (%s)", ids[oi], err); break; }
       if (!be->evalBattles) { be->destroy(be); break; }
-      be->wg = wgs[wi]; be->chunkMs = 40;
+      be->wg = wgs[wi] > 0 ? wgs[wi] : 64; be->swLayout = wgs[wi] < 0 ? 2 : gpu ? 1 : 0; be->chunkMs = 40;
       double sec = 1e9, bs = 0;
       for (int k = 0; k < 2; k++) { double t0 = br_now(); if (be->evalBattles(be, w[0], w[1], bat, nb, scs.sc, scs.traj, scs.trajFloats, &P, out)) { sec = 1e9; break; } double t = br_now() - t0; if (t < sec) sec = t; }
       for (int i = 0; i < nb; i++) bs += out[i * BR_SWOUT + 4];
       Meas* m = &rows[nRows++]; snprintf(m->id, sizeof m->id, "%s", ids[oi]); snprintf(m->label, sizeof m->label, "%s", be->info);
-      m->n = lam; m->wg = wgs[wi]; m->chunk = 40; m->sps = bs / sec; m->sec = sec;
-      char wl[32] = ""; if (wgs[wi]) snprintf(wl, sizeof wl, " · work-group %d", wgs[wi]);
+      m->n = lam; m->wg = wgs[wi]; m->chunk = 40; m->sps = bs / sec; m->sec = sec;   // wg −1: work-group per battle
+      char wl[48] = ""; if (wgs[wi] > 0) snprintf(wl, sizeof wl, " · thread per battle, work-group %d", wgs[wi]); else if (wgs[wi] < 0) snprintf(wl, sizeof wl, " · work-group per battle");
       tlog("%s%s: %.0f battles/s (%.2f s per generation)", be->info, wl, nb / sec, sec);
       if (best < 0 || sec < rows[best].sec) best = nRows - 1;
       be->destroy(be);
@@ -925,8 +926,8 @@ static void sw_tune(const TrainCfg* cin) {
   if (best < 0) sb_printf(&res, "{\"ok\":false}");
   else { Meas* m = &rows[best];
     sb_printf(&res, "{\"ok\":true,\"best\":{\"backend\":\"%s\",\"label\":", m->id); sb_jstr(&res, m->label);
-    sb_printf(&res, ",\"wg\":%d,\"chunkMs\":40,\"stepsPerS\":%.0f,\"secPerGen\":%.4f,\"batchNetworks\":%d,\"pop\":%d,\"scen\":%d,\"islands\":0,\"nIsl\":%d},\"note\":",
-      m->wg ? m->wg : 64, m->sps, m->sec, m->n, c.pop, c.scen, c.nIsl);
+    sb_printf(&res, ",\"wg\":%d,\"swLayout\":%d,\"chunkMs\":40,\"stepsPerS\":%.0f,\"secPerGen\":%.4f,\"batchNetworks\":%d,\"pop\":%d,\"scen\":%d,\"islands\":0,\"nIsl\":%d},\"note\":",
+      m->wg > 0 ? m->wg : 64, m->wg < 0 ? 2 : strcmp(m->id, "cpu") ? 1 : 0, m->sps, m->sec, m->n, c.pop, c.scen, c.nIsl);
     sb_jstr(&res, "Swarm: measured in battles per generation with your current matchup; population and scenarios are unchanged.");
     sb_printf(&res, ",\"options\":[");
     for (int i = 0, first = 1; i < nRows; i++) { int top = 1; for (int j = 0; j < nRows; j++) if (!strcmp(rows[j].id, rows[i].id) && rows[j].sec < rows[i].sec) top = 0;
@@ -1308,9 +1309,10 @@ int cli_main(int argc, char** argv) {
       printf("  (%s: the saved star, with small variations)\n", side ? "defenders" : "attackers"); free(st); }
     int* bat = (int*)malloc(sizeof(int) * 3 * N); for (int i = 0; i < N; i++) { bat[i * 3] = i / S; bat[i * 3 + 1] = (i / S + 7) % G; bat[i * 3 + 2] = i % S; }
     float* ref = (float*)malloc(sizeof(float) * BR_SWOUT * N); float* out = (float*)malloc(sizeof(float) * BR_SWOUT * N);
-    const char* ids[3] = { "cpu", "metal", "opencl:0" };
-    for (int bi = 0; bi < 3; bi++) {
+    const char* ids[5] = { "cpu", "metal", "metal", "opencl:0", "opencl:0" }; const int lay[5] = { 0, 1, 2, 1, 2 };
+    for (int bi = 0; bi < 5; bi++) {
       char err[256] = ""; Backend* be = make_backend(ids[bi], &c, err, sizeof err); if (!be) { printf("  %-9s not available (%s)\n", ids[bi], err); continue; }
+      be->swLayout = lay[bi]; if (lay[bi]) { char t[300]; snprintf(t, sizeof t, "%s, %s", be->info, lay[bi] == 2 ? "group per battle" : "thread per battle"); snprintf(be->info, sizeof be->info, "%s", t); }
       if (!be->evalBattles) { printf("  %-9s %-36s cannot fly battles\n", ids[bi], be->info); be->destroy(be); continue; }
       float* dst = bi == 0 ? ref : out; double best = 1e9;
       for (int k = 0; k < 2; k++) { double t0 = br_now(); if (be->evalBattles(be, wA, wD, bat, N, scs.sc, scs.traj, scs.trajFloats, &P, dst)) { best = -1; break; } double t = br_now() - t0; if (t < best) best = t; }

@@ -32,6 +32,7 @@ typedef struct _cl_event* cl_event;
 #define CL_DEVICE_NAME 0x102B
 #define CL_DEVICE_VENDOR 0x102C
 #define CL_PROGRAM_BUILD_LOG 0x1183
+#define CL_KERNEL_WORK_GROUP_SIZE 0x11B0
 #define CL_MEM_READ_WRITE (1 << 0)
 #define CL_MEM_READ_ONLY (1 << 2)
 
@@ -56,6 +57,7 @@ typedef struct {
   cl_int (CL_CALL *ReleaseProgram)(cl_program);
   cl_int (CL_CALL *ReleaseCommandQueue)(cl_command_queue);
   cl_int (CL_CALL *ReleaseContext)(cl_context);
+  cl_int (CL_CALL *GetKernelWorkGroupInfo)(cl_kernel, cl_device_id, cl_uint, size_t, void*, size_t*);
 } BrCL;
 
 extern BrCL CL;

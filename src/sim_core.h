@@ -447,7 +447,7 @@ FN void br_run(BR_GP float* g, BR_PP const BrParams* P, BR_PP const BrScen* sc, 
 #define SWH_LEAK 2
 #define SWH_DONE 3
 #define SWH_BSTEPS 4        // ball-steps flown (for throughput)
-#define SW_B 32             // floats per ball
+#define SW_B 40             // floats per ball
 #define SB_TGT 25           // defender: the attacker it is assigned to (−1: none)
 #define SB_W1 26            // algorithm attacker weave: frequencies and phases
 #define SB_F1 27
@@ -455,6 +455,9 @@ FN void br_run(BR_GP float* g, BR_PP const BrParams* P, BR_PP const BrScen* sc, 
 #define SB_F2 29
 #define SB_UP 30            // 1 once launched
 #define SB_FATE 31          // 0 flying; 1 leaked (attacker) or made a catch (defender); 2 caught; 3 crashed
+#define SB_P0 32            // position at the start of this step (3 floats, for the swept catch test)
+#define SB_NEAR 35          // defender: nearest live attacker this step (index) and its swept distance
+#define SB_NEARD 36
 #define SW_START 8          // start floats per ball: x, y, z, start tilt, w1, f1, w2, f2
 #define SW_NF_CMD_OWN 13    // commander features per own ball
 #define SW_NF_CMD_ENEMY 7   // ... per enemy ball
@@ -593,86 +596,119 @@ FN float br_sw_swept(BR_PP const float* a0, BR_GP const float* a, BR_PP const fl
   return SQRT(x * x + y * y + z * z);
 }
 
-// Fly a battle up to `steps` physics steps (or until it ends). wA / wD: the attackers' / defenders' network (unused
-// for a side the algorithm flies).
+// One battle step in phases. The CPU runs them in order; a GPU work-group runs one ball per thread with a barrier
+// between phases (each phase only writes its own ball, or runs on one thread), so both give the same battle.
+// Decisions for ball bi (nearest-K network or the algorithm; commander sides are decided by br_sw_decide_cmd).
+FN void br_sw_decide_ball(BR_GP float* g, BR_PP const BrParams* P, BR_PP const BrParams* PA, BR_PP const BrScen* sc, BR_GP const float* wA, BR_GP const float* wD,
+                          int bi, BR_U32 seed, int k, float nz, BR_PP float* a, BR_PP float* b) {
+  int nA = P->attN; BR_GP float* q = g + SW_H + bi * SW_B; if (q[S_ALIVE] == 0) return;
+  int att = bi < nA, ai = att ? P->attAI : P->defAI, cmd = att ? P->attCmd : P->defCmd;
+  if (ai && cmd) return;
+  BrState s; br_load(&s, q); BrTgt tg;
+  tg.x = tg.px = tg.sx = sc->tx; tg.y = tg.py = tg.sy = sc->ty; tg.z = tg.pz = tg.sz = sc->tz;
+  tg.vx = tg.vy = tg.vz = tg.svx = tg.svy = tg.svz = 0.0f;
+  int t = att ? -1 : (int)q[SB_TGT];
+  if (t >= 0) { float v[6]; br_sw_seen(g + SW_H + t * SW_B, seed, (BR_U32)k, t, nz, v);
+    tg.sx = v[0]; tg.sy = v[1]; tg.sz = v[2]; tg.svx = v[3]; tg.svy = v[4]; tg.svz = v[5]; }
+  if (ai) {
+    br_inputs(&s, &tg, a); br_sw_neighbours(&s, g, P, bi, seed, (BR_U32)k, nz, a + BR_NI);
+    BR_PP float* o = att ? br_sw_forward(wA, P, P->attNin, P->attNout, a, b) : br_sw_forward(wD, P, P->defNin, P->defNout, a, b);
+    q[S_U0] = (o[0] + 1) * 0.5f; q[S_U1] = o[1]; q[S_U2] = o[2];
+  } else {
+    float u[3];
+    if (att) br_evader_control(&s, PA, sc, &tg, P->evade, q[SB_W1], q[SB_F1], q[SB_W2], q[SB_F2], u);
+    else br_algo_control(&s, P, sc, &tg, u);
+    q[S_U0] = u[0]; q[S_U1] = u[1]; q[S_U2] = u[2];
+  }
+}
+// A commander side's decision: one pass steers every ball on that side (0 = attackers, 1 = defenders).
+FN void br_sw_decide_cmd(BR_GP float* g, BR_PP const BrParams* P, BR_PP const BrScen* sc, BR_GP const float* wA, BR_GP const float* wD,
+                         int side, BR_U32 seed, int k, float nz, BR_PP float* a, BR_PP float* b) {
+  if (!(side ? P->defAI && P->defCmd : P->attAI && P->attCmd)) return;
+  int nA = P->attN, nB = nA + P->defN;
+  br_sw_cmd_inputs(g, P, sc, side, seed, (BR_U32)k, nz, a);
+  BR_PP float* o = side ? br_sw_forward(wD, P, P->defNin, P->defNout, a, b) : br_sw_forward(wA, P, P->attNin, P->attNout, a, b);
+  int o0 = side ? nA : 0, o1 = side ? nB : nA;
+  for (int bi = o0; bi < o1; bi++) { BR_GP float* q = g + SW_H + bi * SW_B; int j = (bi - o0) * 3;
+    q[S_U0] = (o[j] + 1) * 0.5f; q[S_U1] = o[j + 1]; q[S_U2] = o[j + 2]; }
+}
+// Physics for ball bi; a defender still on its pad (radar has not seen an attacker yet) just waits.
+FN void br_sw_move_ball(BR_GP float* g, BR_PP const BrParams* P, BR_PP const BrParams* PA, BR_PP const BrScen* sc, int bi) {
+  BR_GP float* q = g + SW_H + bi * SW_B; if (q[S_ALIVE] == 0) return;
+  q[SB_P0] = q[S_PX]; q[SB_P0 + 1] = q[S_PY]; q[SB_P0 + 2] = q[S_PZ];
+  int att = bi < P->attN; BrState s; br_load(&s, q);
+  if (q[SB_UP] == 0) { float dt = P->dt; s.t += dt; s.k0 = (int)(s.t / dt + 0.5f); s.k++; br_store(&s, q); return; }
+  br_move(&s, att ? PA : P, sc, att ? P->thrustAtk : P->thrust);
+  s.k++; br_store(&s, q);
+}
+// Defender d's nearest live attacker during this step (swept distance), skipping attackers already caught.
+FN int br_sw_nearest_att(BR_GP const float* g, BR_PP const BrParams* P, int d, BR_PP float* bd) {
+  BR_GP const float* q = g + SW_H + d * SW_B; int best = -1; *bd = 1e30f;
+  float a0[3] = { q[SB_P0], q[SB_P0 + 1], q[SB_P0 + 2] };
+  for (int o = 0; o < P->attN; o++) { BR_GP const float* e = g + SW_H + o * SW_B; if (e[S_ALIVE] == 0) continue;
+    float b0[3] = { e[SB_P0], e[SB_P0 + 1], e[SB_P0 + 2] }; float dd = br_sw_swept(a0, q, b0, e); if (dd < *bd) { *bd = dd; best = o; } }
+  return best;
+}
+// Catch search for one defender (any thread, in parallel): its nearest live attacker this step.
+FN void br_sw_scan(BR_GP float* g, BR_PP const BrParams* P, int d) {
+  BR_GP float* q = g + SW_H + d * SW_B; if (q[S_ALIVE] == 0 || q[SB_UP] == 0) return;
+  float bd; q[SB_NEAR] = (float)br_sw_nearest_att(g, P, d, &bd); q[SB_NEARD] = bd;
+}
+// After the scans (one thread): catches (defenders in index order, each takes its nearest live attacker; a defender
+// whose scanned attacker was just caught by an earlier one searches again), leaks, crashes, radar launches for the
+// next step, the step counter and the end of the battle.
+FN void br_sw_resolve(BR_GP float* g, BR_PP const BrParams* P, BR_PP const BrScen* sc) {
+  int nA = P->attN, nB = nA + P->defN;
+  for (int bi = 0; bi < nB; bi++) { BR_GP const float* q = g + SW_H + bi * SW_B; if (q[S_ALIVE] != 0 && q[SB_UP] != 0) g[SWH_BSTEPS] += 1.0f; }
+  for (int d = nA; d < nB; d++) {
+    BR_GP float* q = g + SW_H + d * SW_B; if (q[S_ALIVE] == 0 || q[SB_UP] == 0) continue;
+    int best = (int)q[SB_NEAR]; float bd = q[SB_NEARD];
+    if (best >= 0 && g[SW_H + best * SW_B + S_ALIVE] == 0) best = br_sw_nearest_att(g, P, d, &bd);
+    if (bd < q[S_MIND]) q[S_MIND] = bd;
+    if (best >= 0 && bd < P->ballD) {
+      BR_GP float* e = g + SW_H + best * SW_B;
+      q[S_ALIVE] = 0.0f; q[S_HIT] = 1.0f; q[SB_FATE] = 1.0f; e[S_ALIVE] = 0.0f; e[SB_FATE] = 2.0f;
+      g[SWH_CATCH] += 1.0f;
+    }
+  }
+  int left = 0;
+  for (int bi = 0; bi < nB; bi++) {
+    BR_GP float* q = g + SW_H + bi * SW_B; if (q[S_ALIVE] == 0) continue;
+    if (bi < nA) {
+      float dx = q[S_PX] - sc->tx, dy = q[S_PY] - sc->ty, dz = q[S_PZ] - sc->tz, dd = SQRT(dx * dx + dy * dy + dz * dz);
+      if (dd < q[S_MIND]) q[S_MIND] = dd;
+      if (dd < P->leakR) { q[S_ALIVE] = 0.0f; q[S_HIT] = 1.0f; q[SB_FATE] = 1.0f; g[SWH_LEAK] += 1.0f; continue; }
+    }
+    if (q[S_PY] < 0) { q[S_ALIVE] = 0.0f; q[SB_FATE] = 3.0f; continue; }
+    if (bi < nA) left++;
+  }
+  for (int d = nA; d < nB; d++) {   // radar: a defender on its pad launches once an attacker is within range
+    BR_GP float* q = g + SW_H + d * SW_B; if (q[S_ALIVE] == 0 || q[SB_UP] != 0) continue;
+    for (int o = 0; o < nA; o++) { BR_GP const float* e = g + SW_H + o * SW_B; if (e[S_ALIVE] == 0) continue;
+      float dx = e[S_PX] - q[S_PX], dy = e[S_PY] - q[S_PY], dz = e[S_PZ] - q[S_PZ];
+      if (dx * dx + dy * dy + dz * dz <= P->detect * P->detect) { q[SB_UP] = 1.0f; break; } }
+  }
+  float k1 = g[SWH_K] + 1.0f; g[SWH_K] = k1;
+  if (left == 0 || k1 * P->dt > P->maxT) g[SWH_DONE] = 1.0f;
+}
+
+// Fly a battle up to `steps` physics steps (or until it ends), one thread. wA / wD: the attackers' / defenders' network
+// (unused for a side the algorithm flies).
 FN void br_sw_run(BR_GP float* g, BR_PP const BrParams* P, BR_PP const BrScen* sc, BR_GP const float* wA, BR_GP const float* wD, int steps) {
-  int nA = P->attN, nB = nA + P->defN; float dt = P->dt, nz = P->noise * 1.732f;
+  int nB = P->attN + P->defN; float nz = P->noise * 1.732f;
   BrParams PA = *P; PA.thrust = P->thrustAtk;   // attackers fly (and the algorithm steers them) with their own engine
   BR_U32 seed = (BR_U32)sc->seed;
-  float a[SW_MAXW], b[SW_MAXW], p0[BR_SW_MAXB * 3];
+  float a[SW_MAXW], b[SW_MAXW];
   for (int it = 0; it < steps && g[SWH_DONE] == 0; it++) {
     int k = (int)g[SWH_K];
-    if (k % P->ctrl == 0) {   // decisions
+    if (k % P->ctrl == 0) {
       br_sw_assign(g, P);
-      for (int side = 0; side < 2; side++) {   // commanders: one pass steers the whole side
-        if (!(side ? P->defAI && P->defCmd : P->attAI && P->attCmd)) continue;
-        br_sw_cmd_inputs(g, P, sc, side, seed, (BR_U32)k, nz, a);
-        BR_PP float* o = side ? br_sw_forward(wD, P, P->defNin, P->defNout, a, b) : br_sw_forward(wA, P, P->attNin, P->attNout, a, b);
-        int o0 = side ? nA : 0, o1 = side ? nB : nA;
-        for (int bi = o0; bi < o1; bi++) { BR_GP float* q = g + SW_H + bi * SW_B; int j = (bi - o0) * 3;
-          q[S_U0] = (o[j] + 1) * 0.5f; q[S_U1] = o[j + 1]; q[S_U2] = o[j + 2]; }
-      }
-      for (int bi = 0; bi < nB; bi++) {
-        BR_GP float* q = g + SW_H + bi * SW_B; if (q[S_ALIVE] == 0) continue;
-        int att = bi < nA, ai = att ? P->attAI : P->defAI, cmd = att ? P->attCmd : P->defCmd;
-        if (ai && cmd) continue;
-        BrState s; br_load(&s, q); BrTgt tg;
-        tg.x = tg.px = tg.sx = sc->tx; tg.y = tg.py = tg.sy = sc->ty; tg.z = tg.pz = tg.sz = sc->tz;
-        tg.vx = tg.vy = tg.vz = tg.svx = tg.svy = tg.svz = 0.0f;
-        int t = att ? -1 : (int)q[SB_TGT];
-        if (t >= 0) { float v[6]; br_sw_seen(g + SW_H + t * SW_B, seed, (BR_U32)k, t, nz, v);
-          tg.sx = v[0]; tg.sy = v[1]; tg.sz = v[2]; tg.svx = v[3]; tg.svy = v[4]; tg.svz = v[5]; }
-        if (ai) {
-          br_inputs(&s, &tg, a); br_sw_neighbours(&s, g, P, bi, seed, (BR_U32)k, nz, a + BR_NI);
-          BR_PP float* o = att ? br_sw_forward(wA, P, P->attNin, P->attNout, a, b) : br_sw_forward(wD, P, P->defNin, P->defNout, a, b);
-          q[S_U0] = (o[0] + 1) * 0.5f; q[S_U1] = o[1]; q[S_U2] = o[2];
-        } else {
-          float u[3];
-          if (att) br_evader_control(&s, &PA, sc, &tg, P->evade, q[SB_W1], q[SB_F1], q[SB_W2], q[SB_F2], u);
-          else br_algo_control(&s, P, sc, &tg, u);
-          q[S_U0] = u[0]; q[S_U1] = u[1]; q[S_U2] = u[2];
-        }
-      }
+      for (int side = 0; side < 2; side++) br_sw_decide_cmd(g, P, sc, wA, wD, side, seed, k, nz, a, b);
+      for (int bi = 0; bi < nB; bi++) br_sw_decide_ball(g, P, &PA, sc, wA, wD, bi, seed, k, nz, a, b);
     }
-    for (int bi = 0; bi < nB; bi++) {   // physics
-      BR_GP float* q = g + SW_H + bi * SW_B; if (q[S_ALIVE] == 0) continue;
-      p0[bi * 3] = q[S_PX]; p0[bi * 3 + 1] = q[S_PY]; p0[bi * 3 + 2] = q[S_PZ];
-      int att = bi < nA; BrState s; br_load(&s, q);
-      if (q[SB_UP] == 0) {   // defender on its pad: launch once its radar sees an attacker
-        float best = 1e30f;
-        for (int o = 0; o < nA; o++) { BR_GP const float* e = g + SW_H + o * SW_B; if (e[S_ALIVE] == 0) continue;
-          float dx = e[S_PX] - s.px, dy = e[S_PY] - s.py, dz = e[S_PZ] - s.pz; best = FMIN(best, dx * dx + dy * dy + dz * dz); }
-        if (best > P->detect * P->detect) { s.t += dt; s.k0 = (int)(s.t / dt + 0.5f); s.k++; br_store(&s, q); continue; }
-        q[SB_UP] = 1.0f;
-      }
-      br_move(&s, att ? &PA : P, sc, att ? P->thrustAtk : P->thrust);
-      s.k++; br_store(&s, q); g[SWH_BSTEPS] += 1.0f;
-    }
-    for (int d = nA; d < nB; d++) {   // catches, defenders in index order: each takes its nearest live attacker
-      BR_GP float* q = g + SW_H + d * SW_B; if (q[S_ALIVE] == 0 || q[SB_UP] == 0) continue;
-      int best = -1; float bd = 1e30f;
-      for (int o = 0; o < nA; o++) { BR_GP float* e = g + SW_H + o * SW_B; if (e[S_ALIVE] == 0) continue;
-        float dd = br_sw_swept(p0 + d * 3, q, p0 + o * 3, e); if (dd < bd) { bd = dd; best = o; } }
-      if (bd < q[S_MIND]) q[S_MIND] = bd;
-      if (best >= 0 && bd < P->ballD) {
-        BR_GP float* e = g + SW_H + best * SW_B;
-        q[S_ALIVE] = 0.0f; q[S_HIT] = 1.0f; q[SB_FATE] = 1.0f; e[S_ALIVE] = 0.0f; e[SB_FATE] = 2.0f;
-        g[SWH_CATCH] += 1.0f;
-      }
-    }
-    int left = 0;
-    for (int bi = 0; bi < nB; bi++) {   // leaks, crashes
-      BR_GP float* q = g + SW_H + bi * SW_B; if (q[S_ALIVE] == 0) continue;
-      if (bi < nA) {
-        float dx = q[S_PX] - sc->tx, dy = q[S_PY] - sc->ty, dz = q[S_PZ] - sc->tz, dd = SQRT(dx * dx + dy * dy + dz * dz);
-        if (dd < q[S_MIND]) q[S_MIND] = dd;
-        if (dd < P->leakR) { q[S_ALIVE] = 0.0f; q[S_HIT] = 1.0f; q[SB_FATE] = 1.0f; g[SWH_LEAK] += 1.0f; continue; }
-      }
-      if (q[S_PY] < 0) { q[S_ALIVE] = 0.0f; q[SB_FATE] = 3.0f; continue; }
-      if (bi < nA) left++;
-    }
-    g[SWH_K] = (float)(k + 1);
-    if (left == 0 || (float)(k + 1) * dt > P->maxT) g[SWH_DONE] = 1.0f;
+    for (int bi = 0; bi < nB; bi++) br_sw_move_ball(g, P, &PA, sc, bi);
+    for (int d = P->attN; d < nB; d++) br_sw_scan(g, P, d);
+    br_sw_resolve(g, P, sc);
   }
 }
 

@@ -8,7 +8,7 @@
 
 typedef struct {
   id<MTLDevice> dev; id<MTLCommandQueue> q;
-  id<MTLComputePipelineState> pipe, swPipe; int pipeMaxW, pipeSwW;
+  id<MTLComputePipelineState> pipe, swPipe, swGroupPipe; int pipeMaxW, pipeSwW;
   id<MTLBuffer> state, weights, scen, params, alive, idx, flags, traj, wD, bat;
   double chunkMs;   // target GPU time per dispatch
   int chunk;
@@ -34,6 +34,8 @@ static int build_pipeline(MetalImpl* m, int maxW, int swW, char* err, int errLen
   if (!m->pipe) { snprintf(err, errLen, "Metal pipeline failed: %s", e.localizedDescription.UTF8String); return -1; }
   m->swPipe = [m->dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"br_sw_kernel"] error:&e];
   if (!m->swPipe) { snprintf(err, errLen, "Metal swarm pipeline failed: %s", e.localizedDescription.UTF8String); return -1; }
+  m->swGroupPipe = [m->dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"br_sw_group_kernel"] error:&e];
+  if (!m->swGroupPipe) { snprintf(err, errLen, "Metal swarm group pipeline failed: %s", e.localizedDescription.UTF8String); return -1; }
   m->pipeMaxW = maxW; m->pipeSwW = swW;
   return 0;
 }
@@ -122,8 +124,10 @@ static int metal_eval_battles(Backend* b, const float* attW, const float* defW, 
     for (int r = 0; r < nBattles; r++) idx[r] = r;
     P->nActive = nBattles;
     br_sw_init_states((float*)m->state.contents, P, scen, bat, nBattles, start);
-    NSUInteger tg = m->swPipe.maxTotalThreadsPerThreadgroup;
-    NSUInteger want = b->wg > 0 ? (NSUInteger)b->wg : 64; if (tg > want) tg = want;
+    int gThreads = 32, group = br_sw_group_layout(b, P, &gThreads);
+    id<MTLComputePipelineState> pipe = group ? m->swGroupPipe : m->swPipe;
+    NSUInteger tg = pipe.maxTotalThreadsPerThreadgroup;
+    NSUInteger want = group ? (NSUInteger)gThreads : b->wg > 0 ? (NSUInteger)b->wg : 64; if (tg > want) tg = want;
     double target = b->chunkMs > 0 ? b->chunkMs : 40; int chunk = 64;
     int maxSteps = (int)(P->maxT / P->dt) + 8, done = 0;
     while (done < maxSteps) {
@@ -132,11 +136,12 @@ static int metal_eval_battles(Backend* b, const float* attW, const float* defW, 
       *(uint32_t*)m->alive.contents = 0;
       id<MTLCommandBuffer> cb = [m->q commandBuffer];
       id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
-      [enc setComputePipelineState:m->swPipe];
+      [enc setComputePipelineState:pipe];
       [enc setBuffer:m->state offset:0 atIndex:0]; [enc setBuffer:m->weights offset:0 atIndex:1]; [enc setBuffer:m->wD offset:0 atIndex:2];
       [enc setBuffer:m->scen offset:0 atIndex:3]; [enc setBuffer:m->params offset:0 atIndex:4]; [enc setBuffer:m->alive offset:0 atIndex:5];
       [enc setBuffer:m->idx offset:0 atIndex:6]; [enc setBuffer:m->flags offset:0 atIndex:7]; [enc setBuffer:m->bat offset:0 atIndex:8];
-      [enc dispatchThreads:MTLSizeMake((NSUInteger)P->nActive, 1, 1) threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+      if (group) [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)P->nActive, 1, 1) threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+      else [enc dispatchThreads:MTLSizeMake((NSUInteger)P->nActive, 1, 1) threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
       [enc endEncoding];
       NSDate* t0 = [NSDate date];
       [cb commit]; [cb waitUntilCompleted];
@@ -156,7 +161,7 @@ static int metal_eval_battles(Backend* b, const float* attW, const float* defW, 
 }
 
 static void metal_destroy(Backend* b) { MetalImpl* m = (MetalImpl*)b->impl;
-  m->dev = nil; m->q = nil; m->pipe = m->swPipe = nil; m->state = m->weights = m->scen = m->params = m->alive = m->idx = m->flags = m->traj = m->wD = m->bat = nil; free(m); free(b); }
+  m->dev = nil; m->q = nil; m->pipe = m->swPipe = m->swGroupPipe = nil; m->state = m->weights = m->scen = m->params = m->alive = m->idx = m->flags = m->traj = m->wD = m->bat = nil; free(m); free(b); }
 
 Backend* metal_backend_create(char* err, int errLen) {
   @autoreleasepool {

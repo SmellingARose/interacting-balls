@@ -21,6 +21,7 @@ typedef struct Backend {
   double chunkMs;   // GPU time per dispatch
   int maxWg;        // largest work-group size the device allows
   double memBytes;  // device memory (0 = unknown)
+  int swLayout;     // GPU swarm layout: 0 = automatic, 1 = one thread per battle, 2 = one work-group per battle (a thread per ball)
 } Backend;
 
 Backend* cpu_backend_create(int threads);
@@ -41,6 +42,7 @@ void br_init_states(float* state, const BrParams* P, const BrScen* scen);
 void br_collect(const float* state, const BrParams* P, float* out);
 void br_sw_init_states(float* state, const BrParams* P, const BrScen* scen, const int* bat, int n, const float* start);
 void br_sw_collect(const float* state, const BrParams* P, int n, float* out);
+int  br_sw_group_layout(const Backend* b, const BrParams* P, int* threads);   // 1: use the work-group layout (threads per group)
 extern const char* BR_SRC_SIM_CORE;
 extern const char* BR_SRC_METAL;
 extern const char* BR_SRC_OPENCL;

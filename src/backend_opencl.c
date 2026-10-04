@@ -33,14 +33,14 @@ int br_cl_load(void) {
   void** f = (void**)&CL; const char* names[] = { "clGetPlatformIDs", "clGetDeviceIDs", "clGetDeviceInfo", "clCreateContext", "clCreateCommandQueue",
     "clCreateProgramWithSource", "clBuildProgram", "clGetProgramBuildInfo", "clCreateKernel", "clCreateBuffer", "clSetKernelArg",
     "clEnqueueWriteBuffer", "clEnqueueReadBuffer", "clEnqueueNDRangeKernel", "clFinish", "clReleaseMemObject", "clReleaseKernel",
-    "clReleaseProgram", "clReleaseCommandQueue", "clReleaseContext" };
+    "clReleaseProgram", "clReleaseCommandQueue", "clReleaseContext", "clGetKernelWorkGroupInfo" };
   for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) { f[i] = (void*)SYM(names[i]); if (!f[i]) return clLoaded = 0; }
   return clLoaded = 1;
 }
 
 typedef struct {
   cl_context ctx; cl_command_queue q; cl_device_id dev;
-  cl_program prog; cl_kernel k, swk; int progMaxW, progSwW;
+  cl_program prog; cl_kernel k, swk, swgk; int progMaxW, progSwW;
   cl_mem state, weights, scen, params, alive, idx, flags, traj, wD, bat; size_t capState, capW, capScen, capIdx, capFlags, capTraj, capWD, capBat;
   int chunk;
 } ClImpl;
@@ -79,8 +79,9 @@ static int build_program(ClImpl* c, int maxW, int swW) {
   if (c->prog && c->progMaxW == maxW && c->progSwW == swW) return 0;
   if (c->k) CL.ReleaseKernel(c->k);
   if (c->swk) CL.ReleaseKernel(c->swk);
+  if (c->swgk) CL.ReleaseKernel(c->swgk);
   if (c->prog) CL.ReleaseProgram(c->prog);
-  c->k = c->swk = NULL; c->prog = NULL;
+  c->k = c->swk = c->swgk = NULL; c->prog = NULL;
   const char* parts[2] = { BR_SRC_SIM_CORE, BR_SRC_OPENCL };
   cl_int e; c->prog = CL.CreateProgramWithSource(c->ctx, 2, parts, NULL, &e);
   char opts[160]; snprintf(opts, sizeof opts, "-DBR_OPENCL=1 -DMAXW=%d -DSW_MAXW=%d -cl-fast-relaxed-math -cl-mad-enable", maxW, swW);
@@ -94,6 +95,8 @@ static int build_program(ClImpl* c, int maxW, int swW) {
   if (e != CL_SUCCESS) { fprintf(stderr, "OpenCL kernel create failed (%d)\n", e); return -1; }
   c->swk = CL.CreateKernel(c->prog, "br_sw_kernel", &e);
   if (e != CL_SUCCESS) { fprintf(stderr, "OpenCL swarm kernel create failed (%d)\n", e); return -1; }
+  c->swgk = CL.CreateKernel(c->prog, "br_sw_group_kernel", &e);
+  if (e != CL_SUCCESS) { fprintf(stderr, "OpenCL swarm group kernel create failed (%d)\n", e); return -1; }
   c->progMaxW = maxW; c->progSwW = swW; return 0;
 }
 
@@ -192,7 +195,10 @@ static int opencl_eval_battles(Backend* b, const float* attW, const float* defW,
   if (P->defAI) CL.EnqueueWriteBuffer(c->q, c->wD, CL_FALSE, 0, dBytes, defW, 0, NULL, NULL);
   CL.EnqueueWriteBuffer(c->q, c->scen, CL_FALSE, 0, sizeof(BrScen) * (size_t)nS, scen, 0, NULL, NULL);
   CL.EnqueueWriteBuffer(c->q, c->bat, CL_FALSE, 0, sizeof(int) * 3 * (size_t)nBattles, bat, 0, NULL, NULL);
-  size_t local = (size_t)(b->wg > 0 ? b->wg : 64); if ((int)local > b->maxWg) local = (size_t)b->maxWg;
+  int gThreads = 32, group = br_sw_group_layout(b, P, &gThreads);
+  cl_kernel kern = group ? c->swgk : c->swk;
+  size_t local = group ? (size_t)gThreads : (size_t)(b->wg > 0 ? b->wg : 64); if ((int)local > b->maxWg) local = (size_t)b->maxWg;
+  { size_t kmax = 0; if (CL.GetKernelWorkGroupInfo(kern, c->dev, CL_KERNEL_WORK_GROUP_SIZE, sizeof kmax, &kmax, NULL) == CL_SUCCESS && kmax && local > kmax) local = kmax; }
   double target = b->chunkMs > 0 ? b->chunkMs : 40; int chunk = 64;
   int maxSteps = (int)(P->maxT / P->dt) + 8, done = 0; cl_uint alive = 0, zero = 0;
   while (done < maxSteps) {
@@ -200,10 +206,10 @@ static int opencl_eval_battles(Backend* b, const float* attW, const float* defW,
     CL.EnqueueWriteBuffer(c->q, c->params, CL_FALSE, 0, sizeof(BrParams), P, 0, NULL, NULL);
     CL.EnqueueWriteBuffer(c->q, c->alive, CL_FALSE, 0, sizeof zero, &zero, 0, NULL, NULL);
     cl_mem args[9] = { c->state, c->weights, c->wD, c->scen, c->params, c->alive, c->idx, c->flags, c->bat };
-    for (int i = 0; i < 9; i++) CL.SetKernelArg(c->swk, i, sizeof(cl_mem), &args[i]);
-    size_t global = ((size_t)P->nActive + local - 1) / local * local;
+    for (int i = 0; i < 9; i++) CL.SetKernelArg(kern, i, sizeof(cl_mem), &args[i]);
+    size_t global = group ? (size_t)P->nActive * local : ((size_t)P->nActive + local - 1) / local * local;
     double t0 = br_now();
-    cl_int e = CL.EnqueueNDRangeKernel(c->q, c->swk, 1, NULL, &global, &local, 0, NULL, NULL);
+    cl_int e = CL.EnqueueNDRangeKernel(c->q, kern, 1, NULL, &global, &local, 0, NULL, NULL);
     if (e != CL_SUCCESS) { fprintf(stderr, "OpenCL launch failed (%d)\n", e); free(host); free(idx); free(flags); return -1; }
     CL.EnqueueReadBuffer(c->q, c->alive, CL_TRUE, 0, sizeof alive, &alive, 0, NULL, NULL);
     double ms = (br_now() - t0) * 1000;
@@ -230,6 +236,7 @@ static void opencl_destroy(Backend* b) { ClImpl* c = (ClImpl*)b->impl;
   for (int i = 0; i < 10; i++) if (ms[i]) CL.ReleaseMemObject(ms[i]);
   if (c->k) CL.ReleaseKernel(c->k);
   if (c->swk) CL.ReleaseKernel(c->swk);
+  if (c->swgk) CL.ReleaseKernel(c->swgk);
   if (c->prog) CL.ReleaseProgram(c->prog);
   CL.ReleaseCommandQueue(c->q); CL.ReleaseContext(c->ctx); free(c); free(b); }
 
