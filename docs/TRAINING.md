@@ -29,7 +29,10 @@ them.
 | Runner weaving | Sine weaves on the runner's steering after 6 s (0–1). |
 | Sensor noise / delay | What your ball's sensors see of the runner: uniform noise σ in metres, and a delay in ms. |
 | Radar range | 0–100 km. Your ball waits on its pad until its radar sees the runner within this range (0 = launch at once). Short ranges make many setups impossible (see `--ceiling`). |
-| Runner thrust-to-weight | The runner's engine, separate from yours. |
+| Runner thrust-to-weight | The runner's engine, separate from yours (swarm: the attackers'). |
+| Swarm: Algorithm / AI | Per side. AI vs AI trains both together (self-play); Algorithm vs Algorithm only shows battles. |
+| Swarm: Nearest-K / Commander | Nearest-K: one small brain per ball, sees K nearest enemies and K nearest teammates, works at any count. Commander: one brain steers the whole side and is saved per attacker/defender count. |
+| Swarm: counts, K | 1–32 attackers and defenders; K = 1–8 (more context per ball, more weights). |
 
 ## Tips
 - Watch Validation, not Star hits (best-of-population is often lucky).
@@ -38,3 +41,8 @@ them.
 - The replay (Fly 1 / Fly 5) always flies the star with the physics it was trained with (time step, thrust-to-weight, control rate), whatever the panel says. Training uses the panel's physics: change them and the star relearns.
 - Intercept: `brtrain --ceiling --mode tag ...` measures how often the guidance algorithm (perfect sensors) tags on your settings: a practical ceiling.
 - Intercept: start with no noise, delay or weaving and a short range (7 km); add difficulty once Validation is high.
+- Swarm: start with AI defenders vs algorithm attackers, 3 vs 3, Nearest-K with K = 2, 7 km and no radar delay; once
+  the validation catch rate is high, add attackers, radar range or weaving. Nearest-K brains carry over to other counts.
+- Swarm AI vs AI: watch the validation rates (each side against the algorithm), not the training scores, which move as
+  the opponents change. Commander brains have many more weights and learn much more slowly.
+- Swarm auto-tune measures battles per generation on every backend and both GPU layouts with your current matchup.

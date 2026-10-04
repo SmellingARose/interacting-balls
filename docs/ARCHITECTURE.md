@@ -2,11 +2,11 @@
 
 | File | Role |
 |---|---|
-| `src/sim_core.h` | Physics, 29 sensor inputs, past frames, memory neurons, network, the guidance algorithm (`br_algo_control`, runner weave). Compiles as C, Metal and OpenCL. |
+| `src/sim_core.h` | Physics, 29 sensor inputs, past frames, memory neurons, network, the guidance algorithm (`br_algo_control`, runner weave), swarm battles (`br_sw_*`). Compiles as C, Metal and OpenCL. |
 | `src/backend_cpu.c` | Threaded CPU evaluation (transposed weights for vectorisation). |
 | `src/backend_metal.m` | Metal host: chunked dispatches, compaction of finished flights. |
 | `src/backend_opencl.c`, `src/br_cl.h` | OpenCL host; library loaded at runtime, no SDK needed. |
-| `src/trainer.c` | Training service: scenarios (reach goals; tag setups with recorded runner paths), CMA-ES / GA, islands, validation, per-mode autosave, auto-tune, flight playback. |
+| `src/trainer.c` | Training service: scenarios (reach goals; tag setups with recorded runner paths; swarm battle setups), CMA-ES / GA, islands, validation, per-mode autosave, swarm self-play, auto-tune, flight and battle playback. |
 | `src/server.c` | Local HTTP server (127.0.0.1 only, Host-checked) and app window launch. |
 | `web/index.html` | UI. Displays only; never simulates. |
 | `cmake/embed.cmake` | Embeds kernels and UI into the binary. |
@@ -35,3 +35,29 @@ above 5 m through mid-flight (the backends report, per flight, the fraction of m
 
 **Flight results:** `BR_OUT` = 5 floats per flight: closest approach, hit, flight time, physics steps, low fraction. Validation uses a fixed seed, so
 its hit rate is comparable between generations.
+
+**Swarm mode:** a battle is one float block: a header (step, catches, leaks, done, ball-steps) and `SW_B` floats per
+ball (the per-flight `S_*` fields plus target, weave, launched, fate, start-of-step position, nearest attacker).
+Attackers are balls `0 .. attN−1`, defenders follow. Start positions are built on the CPU (`sw_gen_scen`: attackers on the
+ground at the runner launch range, ±30° around one bearing; defenders 0.5–3 km from the defended point) and passed in a
+buffer, so every backend starts from identical states. Each step runs in phases:
+1. **decide** (every `ctrl` steps): defenders are assigned targets (nearest unclaimed live attacker, in index order);
+   commander sides run one network pass for the whole side; other balls run nearest-K networks (29 own-target sensors +
+   7 features for each of K nearest enemies and K nearest teammates) or the algorithm (attackers: `br_evader_control`
+   toward the defended point; defenders: `br_algo_control` toward their target);
+2. **move**: `br_move` (the same physics as flights; attackers use the runner thrust);
+3. **scan**: each defender's nearest live attacker during the step (swept, so fast passes can't tunnel);
+4. **resolve** (one thread): catches in defender index order (within max(2 m, blast radius): both removed), leaks
+   (attacker within 30 m of the defended point), crashes, radar launches for the next step, the end of the battle.
+
+The CPU runs the phases in order (one battle per core). GPUs either give each battle one thread (`br_sw_kernel`, best for
+small swarms) or a work-group with a thread per ball and barriers between phases (`br_sw_group_kernel`, best from about
+12 balls); both produce the same battle. Swarm networks have no past frames or memory. Sensors report the present plus
+noise (no delay). Per-battle results (`BR_SWOUT`): catches, leaks, closeness scores for each side, ball-steps, time,
+crashes.
+
+**Swarm training:** one CMA-ES per AI side. AI vs algorithm trains against the algorithm; AI vs AI trains each side
+against a pool of the other side's last 8 stars (refreshed every 5 generations). Scores, normalised by the counts:
+defenders `(5·catches − 5·leaks)/attackers + 0.5·closeness/defenders`; attackers `(5·leaks − 2·losses)/attackers +
+0.5·closeness/attackers`. Validation flies each AI star against the algorithm on 64 fixed battles. `/api/battle` flies
+one battle natively (each side's star with its saved physics) and returns every ball's path and the catch/leak events.

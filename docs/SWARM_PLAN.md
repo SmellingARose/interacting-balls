@@ -1,5 +1,18 @@
 # Swarm mode: build plan
 
+> **Status: built** (October 2026, commits `775ab28` … Phase 6). The plan below is kept as written; these are the
+> places where the build differs from it, and why:
+>
+> | Plan | What was built | Why |
+> |---|---|---|
+> | Phase 0/1: Reach and Intercept results byte-identical | Hits, CPU/GPU agreement and guidance ceilings unchanged; float sums differ in the last digits (one ceiling moved by 1 flight in 400) | Splitting the ball physics into `br_move` (shared with battles) changes how the compiler orders float operations. Keeping two copies of the physics was the alternative. |
+> | Step 17: move the single population into `Side side[2]` | Swarm has its own `SwSide` state; Reach/Intercept training is untouched | No risk to the existing modes |
+> | Swarm networks | No past frames, memory neurons or sensor delay in swarm | Each ball already sees its neighbours (or the whole battle) every step; delay would need a position history per ball |
+> | Radar | A defender launches one step after its radar sees an attacker | Radar is checked after every ball has moved, so no GPU thread reads a position another is writing |
+> | Step 35, layout B | Built for nearest-K and algorithm sides; a commander pass runs on one thread, so commander battles use layout A | Splitting a commander's layers across threads was not needed for speed at the measured sizes |
+> | Step 38: 100% match | 100% for algorithm and random brains; ~99% with trained brains | GPU fast-math flips rare borderline 2 m catches (as in Intercept at high thrust) |
+> | Auto backend | Auto-tune measures battles (both GPU layouts and work-group sizes) | On Apple M4 the GPU wins at generation-size batches (3v3: Metal 8,400 battles/s vs CPU 5,600; 16v16: Metal group 720 vs CPU 571) |
+
 A third mode, **Swarm**: N attacker balls fly at a defended point while M defender balls try to catch them. Either
 side can be an AI brain or the built-in guidance algorithm, so the app can train AI vs algorithm or AI vs AI
 (self-play). Everything stays native (CPU, Metal, OpenCL), compiled from the one shared simulation source.

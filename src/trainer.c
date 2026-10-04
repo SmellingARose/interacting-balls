@@ -1254,7 +1254,9 @@ int cli_main(int argc, char** argv) {
                           "with --backend cpu|metal|opencl:N --pop --scen --layers --width --K --mem --opt cma|ga --dt --every-step --alt-reward --islands N --wg --load FILE\n"
                           "Intercept (tag) mode: --mode reach|tag|swarm  --atk-range M (runner launch distance, 4000-100000 m)  --evade 0-1 (runner weave)\n"
                           "  --noise M (sensor noise sigma)  --delay MS (sensor delay)  --detect M (radar range: launch when the runner comes this close, 0 = launch at once)\n"
-                          "  --tw-runner X (runner thrust-to-weight)\n"); return 0; }
+                          "  --tw-runner X (runner thrust-to-weight)  --blast M (catch radius, 0-10 m)\n"
+                          "Swarm mode: --mode swarm  --attackers N --defenders M (1-32)  --att ai|algo --def ai|algo  --att-brain nk|cmd --def-brain nk|cmd  --k K (nearest-K, 1-8)\n"
+                          "  --ceiling --mode swarm: algorithm vs algorithm battles;  --compare --mode swarm: the same battles on every backend and GPU layout\n"); return 0; }
   if (mode == 4) {
 #ifdef BR_HAVE_OPENCL
     opencl_list_devices();
