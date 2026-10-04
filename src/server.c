@@ -79,6 +79,7 @@ static void handle(sock_t s) {
     cfg_defaults(&c); cfg_from_json(&c, body ? body : ""); if (!trainer_busy()) trainer_set_mode(c.mode);
     sb_printf(&out, "{\"ok\":true}"); reply_sb(s, &out); }
   else if (!strcmp(path, "/api/fly")) { fly_json(body ? body : "", &out); reply_sb(s, &out); }
+  else if (!strcmp(path, "/api/battle")) { battle_json(body ? body : "", &out); reply_sb(s, &out); }
   else if (!strcmp(path, "/api/quit")) { sb_printf(&out, "{\"ok\":true}"); reply_sb(s, &out); quitReq = 1; }
   else reply(s, 404, "text/plain", "not found", 9);
   free(buf);

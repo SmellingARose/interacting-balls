@@ -47,6 +47,7 @@ void hardware_json(Sb* out);
 void autotune_start(const TrainCfg* c);
 void autotune_status_json(Sb* out);
 void fly_json(const char* req, Sb* out);
+void battle_json(const char* req, Sb* out);   // swarm: one battle, every ball's path and the catches and leaks
 
 // headless helpers (command-line testing)
 int  cli_main(int argc, char** argv);

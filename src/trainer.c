@@ -12,6 +12,7 @@
 #endif
 
 void br_transpose_genome(const float* g, float* t, const BrParams* P);   // backend_cpu.c
+void br_transpose_layers(const float* g, float* t, int nl, const int* arch);
 
 // ---------------- string builder
 void sb_printf(Sb* b, const char* fmt, ...) {
@@ -495,6 +496,7 @@ int trainer_load_json(const char* json, char* msg, int len) { return load_json_m
 static void load_mode_star(int mode) {
   br_lock(&T.mx); free(T.star); T.star = NULL; T.starNw = 0; T.starMode = mode; T.starVersion++; T.gen = 0; T.histN = 0;
   T.best = T.mean = T.starHits = T.starMiss = T.valHit = 0; T.valGen = 0; br_unlock(&T.mx);
+  if (mode == BR_MODE_SWARM) { set_msg("swarm: each side's star is kept per matchup and loaded when training starts"); return; }
   const char* p = save_path_mode(mode); FILE* f = fopen(p, "rb");
   for (int old = -1; !f && mode == BR_MODE_REACH && old >= -2; old--) { p = save_path_mode(old); f = fopen(p, "rb"); }
   if (f) { fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET); char* b = (char*)malloc(len + 1); len = (long)fread(b, 1, len, f); b[len] = 0; fclose(f);
@@ -1087,6 +1089,62 @@ void fly_json(const char* req, Sb* o) {
   }
   sb_printf(o, "]}");
   free(g); free(wt); free(st);
+}
+
+// ---------------- swarm playback: fly one battle natively and return every ball's path and the catches and leaks
+// A side flown by a network uses its saved star (or the one training right now); physics come from the defenders'
+// star when they are AI, else the attackers', else the panel.
+static float* sw_star_for(const TrainCfg* c, const BrParams* P, int side) {
+  SwSide* S = &SW.side[side]; float* g = NULL;
+  br_lock(&T.mx);
+  if (S->ai && S->star && S->nw == (side ? P->defNw : P->attNw) && S->nin == (side ? P->defNin : P->attNin)) { g = (float*)malloc(sizeof(float) * S->nw); memcpy(g, S->star, sizeof(float) * S->nw); }
+  br_unlock(&T.mx);
+  return g ? g : sw_load(c, P, side);
+}
+static void sw_star_physics(const TrainCfg* c, int side, TrainCfg* out) {
+  FILE* f = fopen(sw_save_path(c, side), "rb"); if (!f) return;
+  char b[512]; size_t n = fread(b, 1, sizeof b - 1, f); b[n] = 0; fclose(f);   // the physics fields come before the weights
+  out->dt = jnum(b, "dt", out->dt); out->tw = jnum(b, "thrustToWeight", out->tw); out->everyStep = jnum(b, "ctrlEvery", out->everyStep ? 1 : 2) == 1;
+  out->twRunner = jnum(b, "runnerThrustToWeight", out->twRunner);
+}
+void battle_json(const char* req, Sb* o) {
+  TrainCfg c; cfg_defaults(&c); cfg_from_json(&c, req); c.mode = BR_MODE_SWARM;
+  if (c.defAI) sw_star_physics(&c, 1, &c); else if (c.attAI) sw_star_physics(&c, 0, &c);
+  BrParams P; setup_params(&P, &c, 1);
+  float *wA = NULL, *wD = NULL;
+  if (c.attAI && !(wA = sw_star_for(&c, &P, 0))) { sb_printf(o, "{\"error\":\"no trained attackers for this matchup yet\"}"); return; }
+  if (c.defAI && !(wD = sw_star_for(&c, &P, 1))) { free(wA); sb_printf(o, "{\"error\":\"no trained defenders for this matchup yet\"}"); return; }
+  int aA[BR_MAXL + 1], aD[BR_MAXL + 1]; sw_arch(&P, 0, aA); sw_arch(&P, 1, aD);
+  float* tA = NULL; float* tD = NULL;
+  if (wA) { tA = (float*)malloc(sizeof(float) * P.attNw); br_transpose_layers(wA, tA, P.nl, aA); }
+  if (wD) { tD = (float*)malloc(sizeof(float) * P.defNw); br_transpose_layers(wD, tD, P.nl, aD); }
+  static unsigned count = 0; Rng r; rng_seed(&r, (unsigned)fmod(br_now() * 1e6, 4294967296.0) ^ (++count * 2654435761u));
+  int nA = c.attN, nB = nA + c.defN;
+  float* st = (float*)malloc(sizeof(float) * SW_START * nB); BrScen sc; sw_gen_scen(&sc, &r, &c, st, 0);
+  float* g = (float*)malloc(sizeof(float) * br_sw_stride(&P)); br_sw_init(g, &P, &sc, st);
+  int every = (int)fmax(1, lround(0.05 / c.dt));
+  // per ball: sampled points [x, y, z, throttle] while it flies; events as they happen
+  Sb* pts = (Sb*)calloc(nB, sizeof(Sb)); Sb ev = {0}; int* fate = (int*)calloc(nB, sizeof(int)); int nev = 0;
+  for (int b = 0; b < nB; b++) { const float* q = g + SW_H + b * SW_B; sb_printf(&pts[b], "[%.1f,%.1f,%.1f,0]", q[S_PX], q[S_PY], q[S_PZ]); }
+  for (int guard = 0; g[SWH_DONE] == 0 && guard < 1000000; guard++) {
+    br_sw_run(g, &P, &sc, tA, tD, every);
+    float t = g[SWH_K] * P.dt;
+    for (int b = 0; b < nB; b++) {
+      const float* q = g + SW_H + b * SW_B; int f = (int)q[SB_FATE];
+      if (q[S_ALIVE] != 0 || f != fate[b]) sb_printf(&pts[b], ",[%.1f,%.1f,%.1f,%.2f]", q[S_PX], q[S_PY], q[S_PZ], q[S_U0]);
+      if (f != fate[b]) {
+        const char* type = b < nA ? (f == 1 ? "leak" : f == 2 ? "caught" : "crash") : (f == 1 ? "catch" : "crash");
+        if (!(b < nA && f == 2))   // a catch is reported once, by the defender
+          sb_printf(&ev, "%s{\"t\":%.2f,\"type\":\"%s\",\"ball\":%d,\"pos\":[%.1f,%.1f,%.1f]}", nev++ ? "," : "", t, type, b, q[S_PX], q[S_PY], q[S_PZ]);
+        fate[b] = f;
+      }
+    }
+  }
+  sb_printf(o, "{\"dt\":%g,\"mode\":\"swarm\",\"attN\":%d,\"defN\":%d,\"target\":[%.1f,%.1f,%.1f],\"radar\":%g,\"catchR\":%g,\"catches\":%d,\"leaks\":%d,\"t\":%.2f,\"balls\":[",
+    every * c.dt, nA, c.defN, sc.tx, sc.ty, sc.tz, c.detect, P.ballD, (int)g[SWH_CATCH], (int)g[SWH_LEAK], g[SWH_K] * P.dt);
+  for (int b = 0; b < nB; b++) { sb_printf(o, "%s{\"side\":\"%s\",\"fate\":%d,\"points\":[%s]}", b ? "," : "", b < nA ? "att" : "def", fate[b], pts[b].s ? pts[b].s : ""); free(pts[b].s); }
+  sb_printf(o, "],\"events\":[%s]}", ev.s ? ev.s : "");
+  free(ev.s); free(pts); free(fate); free(st); free(g); free(wA); free(wD); free(tA); free(tD);
 }
 
 // ---------------- developer command line (testing only; the app itself is used through the interface)
