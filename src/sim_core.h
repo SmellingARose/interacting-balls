@@ -318,7 +318,7 @@ FN void br_step(BR_PP BrState* s, BR_PP const BrParams* P, BR_PP const BrScen* s
 }
 
 // Guidance algorithm: pitch-over boost, long-range cruise for fixed goals, then
-// zero-effort-miss guidance; coasts on fins when on course. Aims at what the sensors report (tg->s*); a target is
+// zero-effort-miss guidance. Always full throttle. Aims at what the sensors report (tg->s*); a target is
 // "moving" in tag mode or whenever its reported velocity is non-zero. Writes throttle, pitch, yaw into u.
 FN void br_algo_control(BR_PP const BrState* s, BR_PP const BrParams* P, BR_PP const BrScen* sc, BR_PP const BrTgt* tg, BR_PP float* u) {
   float qx = s->qx, qy = s->qy, qz = s->qz, qw = s->qw, dt = P->dt;
@@ -329,11 +329,10 @@ FN void br_algo_control(BR_PP const BrState* s, BR_PP const BrParams* P, BR_PP c
   float dh0 = r0 / hd, dh2 = r2 / hd;
   int mov = P->mode || tg->svx != 0 || tg->svy != 0 || tg->svz != 0;
   float tl = s->t - (float)s->k0 * dt;   // time since this ball's own launch
-  float d0, d1, d2, thr = 1;
-  if (!mov && hd > 9000 && !(V < 90 && tl < 15)) {   // long-range cruise: level at ~2 km, ~250 m/s
+  float d0, d1, d2, thr = 1;   // never cut
+  if (!mov && hd > 9000 && !(V < 90 && tl < 15)) {   // long-range cruise: head level toward ~2 km
     float climb = br_clamp((2000 - s->py) / 1500, -0.35f, 0.35f) - vy / V * 0.6f, n = SQRT(1 + climb * climb);
     d0 = dh0 / n; d1 = climb / n; d2 = dh2 / n;
-    thr = br_clamp(0.55f + (250 - V) / 60, 0, 1);
   } else if (V < 90 && tl < 15) {                      // climb-out
     float lean = mov ? 0.35f : 0.55f, n = SQRT(lean * lean + 1);
     d0 = dh0 * lean / n; d1 = 1 / n; d2 = dh2 * lean / n;
@@ -353,19 +352,18 @@ FN void br_algo_control(BR_PP const BrState* s, BR_PP const BrParams* P, BR_PP c
     float p0 = a0 - h0 * ad, p1 = a1 - h1 * ad, p2 = a2 - h2 * ad, apm = SQRT(p0 * p0 + p1 * p1 + p2 * p2);
     float Ta = P->thrust / P->mass, zm = SQRT(z0 * z0 + z1 * z1 + z2 * z2);
     if ((!mov && zm < 40 && V > 150) || V > 650) {
-      thr = 0; float g = FMIN(0.006f, 0.35f / FMAX(apm, 1e-6f));
+      float g = FMIN(0.006f, 0.35f / FMAX(apm, 1e-6f));
       d0 = h0 + p0 * g; d1 = h1 + p1 * g; d2 = h2 + p2 * g;
-    } else {   // speed governor: above cruise speed, spend thrust only on steering
+    } else {   // above cruise speed, steer only (no extra push along the flight path)
       float Vc = mov ? br_clamp(0.12f * R + 250, 300, 550) : br_clamp(SQRT(BR_G * R) * 1.3f, 160, 420);
       float along = SQRT(FMAX(Ta * Ta - apm * apm, 0.09f * Ta * Ta)) * (ad < -Ta * 0.5f ? 0.3f : 1.0f);
-      if (V > Vc) { along = 0; thr = br_clamp(apm / Ta, 0, 1); }
+      if (V > Vc) along = 0;
       if (apm > 1e-3f || along > 0) { d0 = p0 + h0 * along; d1 = p1 + h1 * along; d2 = p2 + h2 * along; }
       else { d0 = h0; d1 = h1; d2 = h2; }
     }
     float n = SQRT(d0 * d0 + d1 * d1 + d2 * d2); if (n == 0) n = 1;
     d0 /= n; d1 /= n; d2 /= n;
   }
-  if (!mov) thr = FMIN(thr, 2.6f * P->mass * BR_G / P->thrust);   // reach: cap thrust-to-weight near 2.6
   float e0 = ax1 * d2 - ax2 * d1, e1 = ax2 * d0 - ax0 * d2, e2 = ax0 * d1 - ax1 * d0;
   // dynamic pressure from the current state
   float rho = 1.225f * EXP(-FMAX(s->py, 0.0f) / 8500);
