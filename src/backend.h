@@ -9,6 +9,11 @@ typedef struct Backend {
   const char* name;
   // traj: tag-mode runner paths (6 floats per step, scenarios point into it); NULL / 0 in reach mode
   int  (*eval)(struct Backend* b, const float* weights, int nGenomes, const BrScen* scen, const float* traj, size_t trajFloats, BrParams* P, float* out);
+  // Swarm: fly nBattles battles. Battle i pits attacker genome bat[3i] (from attW) against defender genome bat[3i+1]
+  // (from defW) on scenario bat[3i+2]; a side the algorithm flies (P->attAI / P->defAI = 0) ignores its index.
+  // start: per-scenario start positions (SW_START floats per ball). out: BR_SWOUT floats per battle.
+  int  (*evalBattles)(struct Backend* b, const float* attW, const float* defW, const int* bat, int nBattles, const BrScen* scen,
+                      const float* start, size_t startFloats, BrParams* P, float* out);
   void (*destroy)(struct Backend* b);
   void* impl;
   char info[256];
@@ -30,6 +35,7 @@ int  opencl_devices(char names[][160], int isGpu[], int max);   // for the UI
 
 // Shared helpers used by the GPU hosts
 int  br_max_width(const BrParams* P);
+void br_transpose_layers(const float* g, float* t, int nl, const int* arch);
 void br_init_states(float* state, const BrParams* P, const BrScen* scen);
 void br_collect(const float* state, const BrParams* P, float* out);
 extern const char* BR_SRC_SIM_CORE;

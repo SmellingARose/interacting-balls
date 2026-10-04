@@ -16,13 +16,14 @@ static void br_result(const float* g, float* o) {
 }
 
 // Repack one genome per layer from [W out×in | b] to [b | Wᵀ in×out] for the CPU network loop.
-void br_transpose_genome(const float* g, float* t, const BrParams* P) {
+void br_transpose_layers(const float* g, float* t, int nl, const int* arch) {
   int off = 0;
-  for (int l = 0; l < P->nl; l++) { int ni = P->arch[l], no = P->arch[l + 1];
+  for (int l = 0; l < nl; l++) { int ni = arch[l], no = arch[l + 1];
     for (int j = 0; j < no; j++) t[off + j] = g[off + no * ni + j];
     for (int j = 0; j < no; j++) for (int i = 0; i < ni; i++) t[off + no + i * no + j] = g[off + j * ni + i];
     off += no * ni + no; }
 }
+void br_transpose_genome(const float* g, float* t, const BrParams* P) { br_transpose_layers(g, t, P->nl, P->arch); }
 
 static void cpu_worker(void* arg) {
   CpuJob* j = (CpuJob*)arg; const BrParams* P = j->P;
@@ -48,13 +49,46 @@ static int cpu_eval(Backend* b, const float* weights, int nGenomes, const BrScen
   br_run_threads(c->threads, cpu_worker, &job);
   return 0;
 }
+// ---- swarm: every core flies whole battles, handed out one at a time
+typedef struct { const float *wA, *wD; const int* bat; int n; const BrScen* scen; const float* start; const BrParams* P; float* out; br_atomic_int next; } CpuBattleJob;
+// A side's layer sizes: its own inputs and outputs around the shared hidden layers.
+static void side_arch(const BrParams* P, int nin, int nout, int* arch) {
+  for (int l = 0; l <= P->nl; l++) arch[l] = P->arch[l];
+  arch[0] = nin; arch[P->nl] = nout;
+}
+static void cpu_battle_worker(void* arg) {
+  CpuBattleJob* j = (CpuBattleJob*)arg; const BrParams* P = j->P;
+  int aA[BR_MAXL + 1], aD[BR_MAXL + 1]; side_arch(P, P->attNin, P->attNout, aA); side_arch(P, P->defNin, P->defNout, aD);
+  float* st = (float*)malloc(sizeof(float) * (size_t)br_sw_stride(P));
+  float* tA = (float*)malloc(sizeof(float) * (size_t)(P->attNw > 0 ? P->attNw : 1));
+  float* tD = (float*)malloc(sizeof(float) * (size_t)(P->defNw > 0 ? P->defNw : 1));
+  int haveA = -1, haveD = -1;
+  for (;;) {
+    int r = br_atomic_fetch_add(&j->next, 1); if (r >= j->n) break;
+    int ga = j->bat[r * 3], gd = j->bat[r * 3 + 1], si = j->bat[r * 3 + 2];
+    if (P->attAI && ga != haveA) { br_transpose_layers(j->wA + (size_t)ga * P->attNw, tA, P->nl, aA); haveA = ga; }
+    if (P->defAI && gd != haveD) { br_transpose_layers(j->wD + (size_t)gd * P->defNw, tD, P->nl, aD); haveD = gd; }
+    br_sw_init(st, P, &j->scen[si], j->start);
+    br_sw_run(st, P, &j->scen[si], tA, tD, 1 << 30);
+    br_sw_result(st, P, j->out + (size_t)r * BR_SWOUT);
+  }
+  free(st); free(tA); free(tD);
+}
+static int cpu_eval_battles(Backend* b, const float* attW, const float* defW, const int* bat, int nBattles, const BrScen* scen,
+                            const float* start, size_t startFloats, BrParams* P, float* out) {
+  (void)startFloats;
+  CpuImpl* c = (CpuImpl*)b->impl;
+  CpuBattleJob job = { attW, defW, bat, nBattles, scen, start, P, out, 0 };
+  br_run_threads(c->threads, cpu_battle_worker, &job);
+  return 0;
+}
 static void cpu_destroy(Backend* b) { free(b->impl); free(b); }
 
 Backend* cpu_backend_create(int threads) {
   Backend* b = (Backend*)calloc(1, sizeof(Backend));
   CpuImpl* c = (CpuImpl*)calloc(1, sizeof(CpuImpl));
   c->threads = threads > 0 ? threads : br_cpu_count();
-  b->name = "cpu"; b->eval = cpu_eval; b->destroy = cpu_destroy; b->impl = c;
+  b->name = "cpu"; b->eval = cpu_eval; b->evalBattles = cpu_eval_battles; b->destroy = cpu_destroy; b->impl = c;
   snprintf(b->info, sizeof b->info, "CPU, %d threads", c->threads);
   return b;
 }

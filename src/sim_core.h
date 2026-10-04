@@ -79,6 +79,14 @@ typedef struct {
   float noise;   // tag: sensor noise σ in metres (uniform, ±√3·σ on position, half that on velocity)
   float detect;  // tag: radar range: the chaser waits on its pad until the runner is this close (0 = launch at once)
   float pad1;
+  // swarm (attackers vs defenders); the hidden layers come from arch[1 .. nl-1], each side has its own in/out sizes
+  int attN, defN;            // ball counts (attackers are balls 0 .. attN-1, defenders follow)
+  int attAI, defAI;          // 1 = a network flies that side, 0 = the guidance algorithm
+  int attCmd, defCmd;        // brain: 1 = commander (one network steers the whole side), 0 = nearest-K (one per ball)
+  int swK;                   // nearest-K: enemies and teammates each ball sees
+  int attNin, attNout, defNin, defNout, attNw, defNw;   // network inputs, outputs and weights per side
+  float thrustAtk;           // attackers' engine (N); defenders use `thrust`
+  float evade, leakR, pad2;  // algorithm attackers' weave amplitude; an attacker this close to the defended point leaks
   int arch[BR_MAXL];
 } BrParams;
 
@@ -247,16 +255,10 @@ FN void br_control(BR_PP BrState* s, BR_PP const BrParams* P, BR_PP const BrTgt*
   s->u0 = (src[0] + 1) * 0.5f; s->u1 = src[1]; s->u2 = src[2];
 }
 
-// One physics step: thrust, gravity, drag with transonic rise, lift, weathercock torque, controls; then the hit test
-// (reach: within hitR of the goal; tag: the balls touch at any moment of the step) and the end conditions.
-FN void br_step(BR_PP BrState* s, BR_PP const BrParams* P, BR_PP const BrScen* sc, BR_PP const BrTgt* tg) {
+// Rigid-body motion for one physics step with engine thrust `thrust` (N): thrust, gravity, drag with transonic rise,
+// lift, weathercock torque, controls; ground hold during the first 4 s after launch. No hit tests.
+FN void br_move(BR_PP BrState* s, BR_PP const BrParams* P, BR_PP const BrScen* sc, float thrust) {
   float dt = P->dt;
-  // Tag, launch on detection: sit on the pad until the runner comes within detection range.
-  if (P->mode == BR_MODE_TAG && P->detect > 0 && s->vx == 0 && s->vy == 0 && s->vz == 0) {
-    float ddx = tg->x - s->px, ddy = tg->y - s->py, ddz = tg->z - s->pz;
-    if (SQRT(ddx * ddx + ddy * ddy + ddz * ddz) > P->detect) { s->t += dt; s->k0 = (int)(s->t / dt + 0.5f); return; }
-  }
-  float p0x = s->px, p0y = s->py, p0z = s->pz;
   float qx = s->qx, qy = s->qy, qz = s->qz, qw = s->qw, m = P->mass;
   float ax0 = 2 * (qx * qy - qw * qz), ax1 = 1 - 2 * (qx * qx + qz * qz), ax2 = 2 * (qy * qz + qw * qx);
   float rho = 1.225f * EXP(-FMAX(s->py, 0.0f) / 8500);
@@ -264,7 +266,7 @@ FN void br_step(BR_PP BrState* s, BR_PP const BrParams* P, BR_PP const BrScen* s
   float V = SQRT(vrx * vrx + vry * vry + vrz * vrz), qd = 0.5f * rho * V * V;
   float mach = V / (340 - 0.004f * FMAX(s->py, 0.0f));
   float fx = 0, fy = -BR_G * m, fz = 0, Tx = 0, Ty = 0, Tz = 0, T = 0;
-  if (s->u0 > 0) T = P->thrust * s->u0;
+  if (s->u0 > 0) T = thrust * s->u0;
   fx += ax0 * T; fy += ax1 * T; fz += ax2 * T;
   if (V > 0.5f) {
     float hx = vrx / V, hy = vry / V, hz = vrz / V, ca = ax0 * hx + ax1 * hy + ax2 * hz;
@@ -295,6 +297,19 @@ FN void br_step(BR_PP BrState* s, BR_PP const BrParams* P, BR_PP const BrScen* s
   s->px += s->vx * dt; s->py += s->vy * dt; s->pz += s->vz * dt;
   s->t += dt;
   if (s->py < 1.6f && s->t - (float)s->k0 * dt < 4) { s->py = 1.6f; if (s->vy < 0) s->vy = 0; s->vx *= 0.9f; s->vz *= 0.9f; }
+}
+
+// One physics step: thrust, gravity, drag with transonic rise, lift, weathercock torque, controls; then the hit test
+// (reach: within hitR of the goal; tag: the balls touch at any moment of the step) and the end conditions.
+FN void br_step(BR_PP BrState* s, BR_PP const BrParams* P, BR_PP const BrScen* sc, BR_PP const BrTgt* tg) {
+  float dt = P->dt;
+  // Tag, launch on detection: sit on the pad until the runner comes within detection range.
+  if (P->mode == BR_MODE_TAG && P->detect > 0 && s->vx == 0 && s->vy == 0 && s->vz == 0) {
+    float ddx = tg->x - s->px, ddy = tg->y - s->py, ddz = tg->z - s->pz;
+    if (SQRT(ddx * ddx + ddy * ddy + ddz * ddz) > P->detect) { s->t += dt; s->k0 = (int)(s->t / dt + 0.5f); return; }
+  }
+  float p0x = s->px, p0y = s->py, p0z = s->pz;
+  br_move(s, P, sc, P->thrust);
   float d;
   if (P->mode == BR_MODE_TAG) {   // closest approach during this step (both balls move in straight lines), so fast passes can't tunnel
     float a0 = p0x - tg->px, a1 = p0y - tg->py, a2 = p0z - tg->pz;
@@ -406,6 +421,269 @@ FN void br_run(BR_GP float* g, BR_PP const BrParams* P, BR_PP const BrScen* sc, 
     br_step(&s, P, sc, &tg);
   }
   br_store(&s, g);
+}
+
+
+// ================================ Swarm: attackers vs defenders ================================
+// One battle: attN attackers launch from a ring at the runner launch range and fly at the defended point (sc->t*);
+// defN defenders launch from 0.5–3 km around it (each waits on its pad until an attacker is within radar range) and try
+// to catch them. A defender within ballD (touch or blast radius) of an attacker at any moment of a step catches it:
+// both are removed. An attacker within leakR of the defended point leaks (removed, scores for the attackers).
+// Each side is flown by the guidance algorithm or by a network: nearest-K (every ball runs its own copy of one small
+// network that sees its own target plus its swK nearest enemies and teammates) or commander (one network sees every
+// ball and steers every ball on its side). The battle state is one float block: a header, then SW_B floats per ball
+// (the per-flight S_* fields, then the SB_* fields). Start positions come from the host (SW_START floats per ball at
+// sc->trajOff in the `start` buffer), so CPU and GPU begin from bit-identical states.
+#define BR_SW_MAXA 32
+#define BR_SW_MAXD 32
+#define BR_SW_MAXB 64
+#define BR_SW_MAXK 8
+#define SW_MAXW 704         // widest swarm layer: commander inputs 13·32 own + 7·32 enemy = 640
+#define SW_H 8              // header floats
+#define SWH_K 0             // physics steps done
+#define SWH_CATCH 1
+#define SWH_LEAK 2
+#define SWH_DONE 3
+#define SWH_BSTEPS 4        // ball-steps flown (for throughput)
+#define SW_B 32             // floats per ball
+#define SB_TGT 25           // defender: the attacker it is assigned to (−1: none)
+#define SB_W1 26            // algorithm attacker weave: frequencies and phases
+#define SB_F1 27
+#define SB_W2 28
+#define SB_F2 29
+#define SB_UP 30            // 1 once launched
+#define SB_FATE 31          // 0 flying; 1 leaked (attacker) or made a catch (defender); 2 caught; 3 crashed
+#define SW_START 8          // start floats per ball: x, y, z, start tilt, w1, f1, w2, f2
+#define SW_NF_CMD_OWN 13    // commander features per own ball
+#define SW_NF_CMD_ENEMY 7   // ... per enemy ball
+#define SW_NF_NB 7          // nearest-K features per neighbour
+#define BR_SWOUT 8          // per battle: catches, leaks, attackers' closeness, defenders' closeness, ball-steps, time, attackers crashed, defenders crashed
+
+FN int br_sw_stride(BR_PP const BrParams* P) { return SW_H + (P->attN + P->defN) * SW_B; }
+FN int br_sw_nin_nk(int K) { return BR_NI + 2 * K * SW_NF_NB; }
+FN int br_sw_nin_cmd(int own, int enemy) { return own * SW_NF_CMD_OWN + enemy * SW_NF_CMD_ENEMY; }
+
+FN void br_sw_init(BR_GP float* g, BR_PP const BrParams* P, BR_PP const BrScen* sc, BR_GP const float* start) {
+  int nA = P->attN, nB = nA + P->defN;
+  for (int i = 0; i < SW_H + nB * SW_B; i++) g[i] = 0.0f;
+  BR_GP const float* st = start + (long)sc->trajOff;
+  for (int b = 0; b < nB; b++) {
+    BR_GP float* q = g + SW_H + b * SW_B; BR_GP const float* p = st + b * SW_START;
+    q[S_PX] = p[0]; q[S_PY] = p[1]; q[S_PZ] = p[2]; q[S_QX] = p[3]; q[S_QW] = 1.0f; q[S_MIND] = 1e30f; q[S_ALIVE] = 1.0f;
+    q[SB_TGT] = -1.0f; q[SB_W1] = p[4]; q[SB_F1] = p[5]; q[SB_W2] = p[6]; q[SB_F2] = p[7];
+    q[SB_UP] = (b < nA || P->detect <= 0) ? 1.0f : 0.0f;
+  }
+}
+
+// What every sensor reports about ball `oi` at step k: its position and velocity plus noise (one shared track picture).
+FN void br_sw_seen(BR_GP const float* q, BR_U32 seed, BR_U32 k, int oi, float n, BR_PP float* v) {
+  BR_U32 c = 64u + (BR_U32)oi * 8u;
+  v[0] = q[S_PX] + br_noise(seed, k, c) * n; v[1] = q[S_PY] + br_noise(seed, k, c + 1u) * n; v[2] = q[S_PZ] + br_noise(seed, k, c + 2u) * n;
+  v[3] = q[S_VX] + br_noise(seed, k, c + 3u) * n * 0.5f; v[4] = q[S_VY] + br_noise(seed, k, c + 4u) * n * 0.5f; v[5] = q[S_VZ] + br_noise(seed, k, c + 5u) * n * 0.5f;
+}
+
+// Defenders pick targets in index order: the nearest live attacker nobody has claimed yet, else the nearest live one.
+FN void br_sw_assign(BR_GP float* g, BR_PP const BrParams* P) {
+  int nA = P->attN, nB = nA + P->defN; int claimed[BR_SW_MAXA];
+  for (int a = 0; a < nA; a++) claimed[a] = 0;
+  for (int d = nA; d < nB; d++) {
+    BR_GP float* q = g + SW_H + d * SW_B; if (q[S_ALIVE] == 0) continue;
+    int free_ = -1, any = -1; float fd = 1e30f, ad = 1e30f;
+    for (int a = 0; a < nA; a++) {
+      BR_GP const float* e = g + SW_H + a * SW_B; if (e[S_ALIVE] == 0) continue;
+      float dx = e[S_PX] - q[S_PX], dy = e[S_PY] - q[S_PY], dz = e[S_PZ] - q[S_PZ], dd = dx * dx + dy * dy + dz * dz;
+      if (dd < ad) { ad = dd; any = a; }
+      if (!claimed[a] && dd < fd) { fd = dd; free_ = a; }
+    }
+    int t = free_ >= 0 ? free_ : any; if (t >= 0) claimed[t] = 1;
+    q[SB_TGT] = (float)t;
+  }
+}
+
+// Body-frame rotation rows of a ball (world → body), as in br_inputs.
+FN void br_sw_rot(BR_PP const BrState* s, BR_PP float* m) {
+  float qx = s->qx, qy = s->qy, qz = s->qz, qw = s->qw;
+  m[0] = 1 - 2 * (qy * qy + qz * qz); m[1] = 2 * (qx * qy + qw * qz); m[2] = 2 * (qx * qz - qw * qy);
+  m[3] = 2 * (qx * qy - qw * qz); m[4] = 1 - 2 * (qx * qx + qz * qz); m[5] = 2 * (qy * qz + qw * qx);
+  m[6] = 2 * (qx * qz + qw * qy); m[7] = 2 * (qy * qz - qw * qx); m[8] = 1 - 2 * (qx * qx + qy * qy);
+}
+
+// Nearest-K extras after the 29 own-target features: the swK nearest live enemies, then the swK nearest live teammates,
+// each as position and velocity relative to the ball in its body frame plus a "present" flag (empty slots stay zero).
+// Ties go to the lower ball index, so every backend picks the same neighbours.
+FN void br_sw_neighbours(BR_PP const BrState* s, BR_GP const float* g, BR_PP const BrParams* P, int self, BR_U32 seed, BR_U32 k, float n, BR_PP float* x) {
+  int nA = P->attN, nB = nA + P->defN, K = P->swK, att = self < nA;
+  float m[9]; br_sw_rot(s, m);
+  for (int grp = 0; grp < 2; grp++) {
+    int enemy = grp == 0, lo = (att == enemy) ? nA : 0, hi = (att == enemy) ? nB : nA;
+    int bi[BR_SW_MAXK]; float bd[BR_SW_MAXK]; int cnt = 0;
+    for (int o = lo; o < hi; o++) {
+      BR_GP const float* q = g + SW_H + o * SW_B; if (o == self || q[S_ALIVE] == 0) continue;
+      float dx = q[S_PX] - s->px, dy = q[S_PY] - s->py, dz = q[S_PZ] - s->pz, dd = dx * dx + dy * dy + dz * dz;
+      if (cnt < K) cnt++; else if (dd >= bd[K - 1]) continue;
+      int j = cnt - 1; while (j > 0 && bd[j - 1] > dd) { bd[j] = bd[j - 1]; bi[j] = bi[j - 1]; j--; }
+      bd[j] = dd; bi[j] = o;
+    }
+    BR_PP float* y = x + grp * K * SW_NF_NB;
+    for (int j = 0; j < K * SW_NF_NB; j++) y[j] = 0.0f;
+    for (int j = 0; j < cnt; j++) {
+      float v[6]; br_sw_seen(g + SW_H + bi[j] * SW_B, seed, k, bi[j], n, v);
+      float dx = v[0] - s->px, dy = v[1] - s->py, dz = v[2] - s->pz, ux = v[3] - s->vx, uy = v[4] - s->vy, uz = v[5] - s->vz;
+      BR_PP float* f = y + j * SW_NF_NB;
+      f[0] = (m[0] * dx + m[1] * dy + m[2] * dz) / 3000; f[1] = (m[3] * dx + m[4] * dy + m[5] * dz) / 3000; f[2] = (m[6] * dx + m[7] * dy + m[8] * dz) / 3000;
+      f[3] = (m[0] * ux + m[1] * uy + m[2] * uz) / 300; f[4] = (m[3] * ux + m[4] * uy + m[5] * uz) / 300; f[5] = (m[6] * ux + m[7] * uy + m[8] * uz) / 300;
+      f[6] = 1.0f;
+    }
+  }
+}
+
+// Commander inputs for one side (0 = attackers, 1 = defenders), relative to the defended point. Own balls: alive,
+// position, velocity, nose direction (world), spin; enemies: alive, position and velocity as the sensors report them.
+FN void br_sw_cmd_inputs(BR_GP const float* g, BR_PP const BrParams* P, BR_PP const BrScen* sc, int side, BR_U32 seed, BR_U32 k, float n, BR_PP float* x) {
+  int nA = P->attN, nB = nA + P->defN, o0 = side ? nA : 0, o1 = side ? nB : nA, e0 = side ? 0 : nA, e1 = side ? nA : nB, j = 0;
+  for (int o = o0; o < o1; o++) {
+    BR_GP const float* q = g + SW_H + o * SW_B;
+    if (q[S_ALIVE] == 0) { for (int i = 0; i < SW_NF_CMD_OWN; i++) x[j++] = 0.0f; continue; }
+    float qx = q[S_QX], qy = q[S_QY], qz = q[S_QZ], qw = q[S_QW];
+    x[j++] = 1.0f;
+    x[j++] = (q[S_PX] - sc->tx) / 3000; x[j++] = (q[S_PY] - sc->ty) / 3000; x[j++] = (q[S_PZ] - sc->tz) / 3000;
+    x[j++] = q[S_VX] / 300; x[j++] = q[S_VY] / 300; x[j++] = q[S_VZ] / 300;
+    x[j++] = 2 * (qx * qy - qw * qz); x[j++] = 1 - 2 * (qx * qx + qz * qz); x[j++] = 2 * (qy * qz + qw * qx);
+    x[j++] = q[S_OX] / 2; x[j++] = q[S_OY] / 2; x[j++] = q[S_OZ] / 2;
+  }
+  for (int o = e0; o < e1; o++) {
+    BR_GP const float* q = g + SW_H + o * SW_B;
+    if (q[S_ALIVE] == 0) { for (int i = 0; i < SW_NF_CMD_ENEMY; i++) x[j++] = 0.0f; continue; }
+    float v[6]; br_sw_seen(q, seed, k, o, n, v);
+    x[j++] = 1.0f;
+    x[j++] = (v[0] - sc->tx) / 3000; x[j++] = (v[1] - sc->ty) / 3000; x[j++] = (v[2] - sc->tz) / 3000;
+    x[j++] = v[3] / 300; x[j++] = v[4] / 300; x[j++] = v[5] / 300;
+  }
+}
+
+// One network forward pass with a side's own input/output sizes and the shared hidden layers (same weight layouts as
+// br_control: GPU as stored, CPU repacked). Returns the buffer holding the outputs.
+FN BR_PP float* br_sw_forward(BR_GP const float* w, BR_PP const BrParams* P, int nin, int nout, BR_PP float* a, BR_PP float* b) {
+  BR_PP float* src = a; BR_PP float* dst = b; int off = 0;
+  for (int l = 0; l < P->nl; l++) {
+    int ni = l == 0 ? nin : P->arch[l], no = l == P->nl - 1 ? nout : P->arch[l + 1];
+#if defined(BR_METAL) || defined(BR_OPENCL)
+    BR_GP const float* W = w + off; BR_GP const float* B = w + off + no * ni;
+    for (int j = 0; j < no; j++) { float acc = B[j]; BR_GP const float* row = W + j * ni; for (int i = 0; i < ni; i++) acc += row[i] * src[i]; dst[j] = TANH(acc); }
+#else
+    const float* B = w + off; const float* WT = w + off + no;
+    for (int j = 0; j < no; j++) dst[j] = B[j];
+    for (int i = 0; i < ni; i++) { float xi = src[i]; const float* col = WT + i * no; for (int j = 0; j < no; j++) dst[j] += col[j] * xi; }
+    for (int j = 0; j < no; j++) dst[j] = TANH(dst[j]);
+#endif
+    off += no * ni + no;
+    BR_PP float* tmp = src; src = dst; dst = tmp;
+  }
+  return src;
+}
+
+// Closest distance between two balls during one step (both move in straight lines), so fast passes can't tunnel.
+FN float br_sw_swept(BR_PP const float* a0, BR_GP const float* a, BR_PP const float* b0, BR_GP const float* b) {
+  float c0 = a0[0] - b0[0], c1 = a0[1] - b0[1], c2 = a0[2] - b0[2];
+  float e0 = a[S_PX] - b[S_PX] - c0, e1 = a[S_PY] - b[S_PY] - c1, e2 = a[S_PZ] - b[S_PZ] - c2, dd = e0 * e0 + e1 * e1 + e2 * e2;
+  float u = dd > 0 ? br_clamp(-(c0 * e0 + c1 * e1 + c2 * e2) / dd, 0, 1) : 0;
+  float x = c0 + e0 * u, y = c1 + e1 * u, z = c2 + e2 * u;
+  return SQRT(x * x + y * y + z * z);
+}
+
+// Fly a battle up to `steps` physics steps (or until it ends). wA / wD: the attackers' / defenders' network (unused
+// for a side the algorithm flies).
+FN void br_sw_run(BR_GP float* g, BR_PP const BrParams* P, BR_PP const BrScen* sc, BR_GP const float* wA, BR_GP const float* wD, int steps) {
+  int nA = P->attN, nB = nA + P->defN; float dt = P->dt, nz = P->noise * 1.732f;
+  BrParams PA = *P; PA.thrust = P->thrustAtk;   // attackers fly (and the algorithm steers them) with their own engine
+  BR_U32 seed = (BR_U32)sc->seed;
+  float a[SW_MAXW], b[SW_MAXW], p0[BR_SW_MAXB * 3];
+  for (int it = 0; it < steps && g[SWH_DONE] == 0; it++) {
+    int k = (int)g[SWH_K];
+    if (k % P->ctrl == 0) {   // decisions
+      br_sw_assign(g, P);
+      for (int side = 0; side < 2; side++) {   // commanders: one pass steers the whole side
+        if (!(side ? P->defAI && P->defCmd : P->attAI && P->attCmd)) continue;
+        br_sw_cmd_inputs(g, P, sc, side, seed, (BR_U32)k, nz, a);
+        BR_PP float* o = side ? br_sw_forward(wD, P, P->defNin, P->defNout, a, b) : br_sw_forward(wA, P, P->attNin, P->attNout, a, b);
+        int o0 = side ? nA : 0, o1 = side ? nB : nA;
+        for (int bi = o0; bi < o1; bi++) { BR_GP float* q = g + SW_H + bi * SW_B; int j = (bi - o0) * 3;
+          q[S_U0] = (o[j] + 1) * 0.5f; q[S_U1] = o[j + 1]; q[S_U2] = o[j + 2]; }
+      }
+      for (int bi = 0; bi < nB; bi++) {
+        BR_GP float* q = g + SW_H + bi * SW_B; if (q[S_ALIVE] == 0) continue;
+        int att = bi < nA, ai = att ? P->attAI : P->defAI, cmd = att ? P->attCmd : P->defCmd;
+        if (ai && cmd) continue;
+        BrState s; br_load(&s, q); BrTgt tg;
+        tg.x = tg.px = tg.sx = sc->tx; tg.y = tg.py = tg.sy = sc->ty; tg.z = tg.pz = tg.sz = sc->tz;
+        tg.vx = tg.vy = tg.vz = tg.svx = tg.svy = tg.svz = 0.0f;
+        int t = att ? -1 : (int)q[SB_TGT];
+        if (t >= 0) { float v[6]; br_sw_seen(g + SW_H + t * SW_B, seed, (BR_U32)k, t, nz, v);
+          tg.sx = v[0]; tg.sy = v[1]; tg.sz = v[2]; tg.svx = v[3]; tg.svy = v[4]; tg.svz = v[5]; }
+        if (ai) {
+          br_inputs(&s, &tg, a); br_sw_neighbours(&s, g, P, bi, seed, (BR_U32)k, nz, a + BR_NI);
+          BR_PP float* o = att ? br_sw_forward(wA, P, P->attNin, P->attNout, a, b) : br_sw_forward(wD, P, P->defNin, P->defNout, a, b);
+          q[S_U0] = (o[0] + 1) * 0.5f; q[S_U1] = o[1]; q[S_U2] = o[2];
+        } else {
+          float u[3];
+          if (att) br_evader_control(&s, &PA, sc, &tg, P->evade, q[SB_W1], q[SB_F1], q[SB_W2], q[SB_F2], u);
+          else br_algo_control(&s, P, sc, &tg, u);
+          q[S_U0] = u[0]; q[S_U1] = u[1]; q[S_U2] = u[2];
+        }
+      }
+    }
+    for (int bi = 0; bi < nB; bi++) {   // physics
+      BR_GP float* q = g + SW_H + bi * SW_B; if (q[S_ALIVE] == 0) continue;
+      p0[bi * 3] = q[S_PX]; p0[bi * 3 + 1] = q[S_PY]; p0[bi * 3 + 2] = q[S_PZ];
+      int att = bi < nA; BrState s; br_load(&s, q);
+      if (q[SB_UP] == 0) {   // defender on its pad: launch once its radar sees an attacker
+        float best = 1e30f;
+        for (int o = 0; o < nA; o++) { BR_GP const float* e = g + SW_H + o * SW_B; if (e[S_ALIVE] == 0) continue;
+          float dx = e[S_PX] - s.px, dy = e[S_PY] - s.py, dz = e[S_PZ] - s.pz; best = FMIN(best, dx * dx + dy * dy + dz * dz); }
+        if (best > P->detect * P->detect) { s.t += dt; s.k0 = (int)(s.t / dt + 0.5f); s.k++; br_store(&s, q); continue; }
+        q[SB_UP] = 1.0f;
+      }
+      br_move(&s, att ? &PA : P, sc, att ? P->thrustAtk : P->thrust);
+      s.k++; br_store(&s, q); g[SWH_BSTEPS] += 1.0f;
+    }
+    for (int d = nA; d < nB; d++) {   // catches, defenders in index order: each takes its nearest live attacker
+      BR_GP float* q = g + SW_H + d * SW_B; if (q[S_ALIVE] == 0 || q[SB_UP] == 0) continue;
+      int best = -1; float bd = 1e30f;
+      for (int o = 0; o < nA; o++) { BR_GP float* e = g + SW_H + o * SW_B; if (e[S_ALIVE] == 0) continue;
+        float dd = br_sw_swept(p0 + d * 3, q, p0 + o * 3, e); if (dd < bd) { bd = dd; best = o; } }
+      if (bd < q[S_MIND]) q[S_MIND] = bd;
+      if (best >= 0 && bd < P->ballD) {
+        BR_GP float* e = g + SW_H + best * SW_B;
+        q[S_ALIVE] = 0.0f; q[S_HIT] = 1.0f; q[SB_FATE] = 1.0f; e[S_ALIVE] = 0.0f; e[SB_FATE] = 2.0f;
+        g[SWH_CATCH] += 1.0f;
+      }
+    }
+    int left = 0;
+    for (int bi = 0; bi < nB; bi++) {   // leaks, crashes
+      BR_GP float* q = g + SW_H + bi * SW_B; if (q[S_ALIVE] == 0) continue;
+      if (bi < nA) {
+        float dx = q[S_PX] - sc->tx, dy = q[S_PY] - sc->ty, dz = q[S_PZ] - sc->tz, dd = SQRT(dx * dx + dy * dy + dz * dz);
+        if (dd < q[S_MIND]) q[S_MIND] = dd;
+        if (dd < P->leakR) { q[S_ALIVE] = 0.0f; q[S_HIT] = 1.0f; q[SB_FATE] = 1.0f; g[SWH_LEAK] += 1.0f; continue; }
+      }
+      if (q[S_PY] < 0) { q[S_ALIVE] = 0.0f; q[SB_FATE] = 3.0f; continue; }
+      if (bi < nA) left++;
+    }
+    g[SWH_K] = (float)(k + 1);
+    if (left == 0 || (float)(k + 1) * dt > P->maxT) g[SWH_DONE] = 1.0f;
+  }
+}
+
+// Per-battle result: catches, leaks, closeness scores (sum over balls of −ln(closest/30 m), floored at the leak or catch
+// distance and capped at 30 km), ball-steps, battle time, crashed attackers and defenders.
+FN void br_sw_result(BR_GP const float* g, BR_PP const BrParams* P, BR_GP float* out) {
+  int nA = P->attN, nB = nA + P->defN; float ac = 0, dc = 0, acr = 0, dcr = 0;
+  for (int bi = 0; bi < nB; bi++) {
+    BR_GP const float* q = g + SW_H + bi * SW_B; float m = FMIN(q[S_MIND], 30000.0f);
+    if (bi < nA) { ac -= LOG(FMAX(m, P->leakR) / 30); acr += q[SB_FATE] == 3.0f ? 1.0f : 0.0f; }
+    else { dc -= LOG(FMAX(m, P->ballD) / 30); dcr += q[SB_FATE] == 3.0f ? 1.0f : 0.0f; }
+  }
+  out[0] = g[SWH_CATCH]; out[1] = g[SWH_LEAK]; out[2] = ac; out[3] = dc; out[4] = g[SWH_BSTEPS]; out[5] = g[SWH_K] * P->dt; out[6] = acr; out[7] = dcr;
 }
 
 #endif

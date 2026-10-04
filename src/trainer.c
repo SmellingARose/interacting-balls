@@ -67,6 +67,7 @@ void cfg_defaults(TrainCfg* c) {
   c->cma = 1; c->decayOn = 1; c->decay = 0.995; c->lrMin = 1e-4;
   c->dt = 0.02; c->tw = 2.5; c->valEvery = 10; c->valScen = 64;
   c->mode = 0; c->range = 7000; c->twRunner = 2.5; c->reachMax = 7000; c->blast = 0;
+  c->attN = 4; c->defN = 4; c->attAI = 0; c->defAI = 1; c->attCmd = 0; c->defCmd = 0; c->swK = 2;
 }
 static int clampi(int v, int a, int b) { return v < a ? a : v > b ? b : v; }
 void cfg_from_json(TrainCfg* c, const char* j) {
@@ -87,16 +88,38 @@ void cfg_from_json(TrainCfg* c, const char* j) {
   c->range = fmin(100000, fmax(4000, jnum(j, "range", c->range))); c->evade = fmin(1, fmax(0, jnum(j, "evade", c->evade)));
   c->noise = fmin(200, fmax(0, jnum(j, "noise", c->noise))); c->delayMs = fmin(2000, fmax(0, jnum(j, "delayMs", c->delayMs)));
   c->detect = fmin(100000, fmax(0, jnum(j, "detect", c->detect))); c->twRunner = fmin(5, fmax(1.2, jnum(j, "twRunner", c->twRunner)));
+  c->attN = clampi((int)jnum(j, "attN", c->attN), 1, BR_SW_MAXA); c->defN = clampi((int)jnum(j, "defN", c->defN), 1, BR_SW_MAXD);
+  c->attAI = jnum(j, "attAI", c->attAI) != 0; c->defAI = jnum(j, "defAI", c->defAI) != 0;
+  c->attCmd = jnum(j, "attCmd", c->attCmd) != 0; c->defCmd = jnum(j, "defCmd", c->defCmd) != 0;
+  c->swK = clampi((int)jnum(j, "swK", c->swK), 1, BR_SW_MAXK);
 }
 void cfg_to_json(const TrainCfg* c, char* o, int len) {
   snprintf(o, len, "{\"backend\":\"%s\",\"wg\":%d,\"chunkMs\":%g,\"layers\":%d,\"width\":%d,\"K\":%d,\"mem\":%d,\"pop\":%d,\"scen\":%d,\"reuse\":%d,"
     "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d,\"altOn\":%d,"
-    "\"mode\":%d,\"blast\":%g,\"reachMax\":%g,\"range\":%g,\"evade\":%g,\"noise\":%g,\"delayMs\":%g,\"detect\":%g,\"twRunner\":%g}",
+    "\"mode\":%d,\"blast\":%g,\"reachMax\":%g,\"range\":%g,\"evade\":%g,\"noise\":%g,\"delayMs\":%g,\"detect\":%g,\"twRunner\":%g,"
+    "\"attN\":%d,\"defN\":%d,\"attAI\":%d,\"defAI\":%d,\"attCmd\":%d,\"defCmd\":%d,\"swK\":%d}",
     c->backend, c->wg, c->chunkMs, c->layers, c->width, c->K, c->mem, c->pop, c->scen, c->reuse, c->islands, c->nIsl, c->migrate,
     c->cma, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW, c->everyStep, c->altOn,
-    c->mode, c->blast, c->reachMax, c->range, c->evade, c->noise, c->delayMs, c->detect, c->twRunner);
+    c->mode, c->blast, c->reachMax, c->range, c->evade, c->noise, c->delayMs, c->detect, c->twRunner,
+    c->attN, c->defN, c->attAI, c->defAI, c->attCmd, c->defCmd, c->swK);
 }
 
+// Weights of a network with `nin` inputs, `nout` outputs and P's hidden layers.
+static int sw_nw(const BrParams* P, int nin, int nout) {
+  int nw = 0; for (int l = 0; l < P->nl; l++) { int ni = l ? P->arch[l] : nin, no = l == P->nl - 1 ? nout : P->arch[l + 1]; nw += no * ni + no; }
+  return nw;
+}
+// Swarm networks have no past frames or memory: every ball already sees its neighbours (or the whole battle) each step.
+static void sw_params(BrParams* P, const TrainCfg* c) {
+  P->K = 0; P->rec = 0; P->memN = 0;
+  P->attN = c->attN; P->defN = c->defN; P->attAI = c->attAI; P->defAI = c->defAI; P->attCmd = c->attCmd; P->defCmd = c->defCmd; P->swK = c->swK;
+  P->attNin = c->attCmd ? br_sw_nin_cmd(c->attN, c->defN) : br_sw_nin_nk(c->swK); P->attNout = c->attCmd ? 3 * c->attN : 3;
+  P->defNin = c->defCmd ? br_sw_nin_cmd(c->defN, c->attN) : br_sw_nin_nk(c->swK); P->defNout = c->defCmd ? 3 * c->defN : 3;
+  P->attNw = sw_nw(P, P->attNin, P->attNout); P->defNw = sw_nw(P, P->defNin, P->defNout);
+  P->thrustAtk = (float)(c->twRunner * P->mass * BR_G); P->evade = (float)c->evade; P->leakR = 30;
+  P->delay = 0;   // swarm sensors report the present (plus noise)
+  P->stride = br_sw_stride(P);
+}
 void setup_params(BrParams* P, const TrainCfg* c, int S) {
   memset(P, 0, sizeof *P);
   double mass = 105;
@@ -114,6 +137,7 @@ void setup_params(BrParams* P, const TrainCfg* c, int S) {
   int nw = 0; for (int l = 0; l < P->nl; l++) nw += P->arch[l + 1] * P->arch[l] + P->arch[l + 1];
   P->nw = nw; P->S = S;
   P->stride = (S_HIST + BR_NI * c->K + P->memN + 3) & ~3;
+  if (c->mode == BR_MODE_SWARM) sw_params(P, c);
 }
 
 const char* default_backend_id(void) {
@@ -258,12 +282,37 @@ static double fitness(const float* o, double speedW, int mode, float atkHit, int
   return f;
 }
 
+// Swarm battle setup: defended point 0–3 km from the origin, wind; attackers on the ground at range–(range+1.5 km)
+// from it, spread ±30° around one bearing (a raid comes from one direction); defenders 0.5–3 km from it. Writes
+// SW_START floats per ball (x, y, z, start tilt, weave w1, f1, w2, f2) into `st`; `off` is where they start.
+static void sw_gen_scen(BrScen* sc, Rng* r, const TrainCfg* c, float* st, float off) {
+  memset(sc, 0, sizeof *sc);
+  double a = urand(r) * 2 * M_PI, d = urand(r) * 3000, wa = urand(r) * 2 * M_PI, w = urand(r) * 15;
+  sc->tx = (float)(cos(a) * d); sc->ty = 0; sc->tz = (float)(sin(a) * d);
+  sc->wx = (float)(cos(wa) * w); sc->wz = (float)(sin(wa) * w);
+  sc->trajOff = off; sc->seed = (float)(int)(urand(r) * 16777216);
+  double bearing = urand(r) * 2 * M_PI;
+  for (int b = 0; b < c->attN + c->defN; b++) {
+    float* p = st + b * SW_START; double t, rr;
+    if (b < c->attN) { t = bearing + (urand(r) - 0.5) * (M_PI / 3); rr = c->range + urand(r) * 1500; }
+    else { t = urand(r) * 2 * M_PI; rr = 500 + urand(r) * 2500; }
+    p[0] = sc->tx + (float)(cos(t) * rr); p[1] = 1.6f; p[2] = sc->tz + (float)(sin(t) * rr); p[3] = (float)(urand(r) * 0.02);
+    p[4] = (float)(0.6 + urand(r) * 1.2); p[5] = (float)(urand(r) * 6.28); p[6] = (float)(0.6 + urand(r) * 1.2); p[7] = (float)(urand(r) * 6.28);
+  }
+}
+
 // A set of scenarios: reach goals, or tag setups with their runner paths packed into one buffer.
 typedef struct { BrScen* sc; int n, cap; float* traj; size_t trajFloats, trajCap; } ScenSet;
 static void scen_make(ScenSet* s, int S, Rng* r, const TrainCfg* c, const BrParams* P) {
   if (S > s->cap) { s->sc = (BrScen*)realloc(s->sc, sizeof(BrScen) * S); s->cap = S; }
   s->n = S; s->trajFloats = 0;
   if (c->mode == BR_MODE_REACH) { for (int i = 0; i < S; i++) gen_scen(&s->sc[i], r, 0, c->reachMax); return; }
+  if (c->mode == BR_MODE_SWARM) {
+    size_t per = (size_t)(c->attN + c->defN) * SW_START;
+    if ((size_t)S * per > s->trajCap) { s->traj = (float*)realloc(s->traj, sizeof(float) * S * per); s->trajCap = S * per; }
+    for (int i = 0; i < S; i++) sw_gen_scen(&s->sc[i], r, c, s->traj + i * per, (float)(i * per));
+    s->trajFloats = S * per; return;
+  }
   size_t need = (size_t)S * tag_max_steps(P) * 6;
   if (need > s->trajCap) { s->traj = (float*)realloc(s->traj, sizeof(float) * need); s->trajCap = need; }
   s->trajFloats = gen_tag_batch(s->sc, S, r, c, P, s->traj);
@@ -272,7 +321,8 @@ static void scen_free(ScenSet* s) { free(s->sc); free(s->traj); memset(s, 0, siz
 // Settings that change what a scenario is (when they change, scenarios are rebuilt).
 static int scen_same(const TrainCfg* a, const TrainCfg* b) {
   return a->mode == b->mode && (a->mode != BR_MODE_REACH || a->reachMax == b->reachMax) && (a->mode == BR_MODE_REACH || (a->range == b->range && a->evade == b->evade && a->blast == b->blast &&
-         a->twRunner == b->twRunner && a->detect == b->detect && a->dt == b->dt && a->everyStep == b->everyStep));
+         a->twRunner == b->twRunner && a->detect == b->detect && a->dt == b->dt && a->everyStep == b->everyStep &&
+         (a->mode != BR_MODE_SWARM || (a->attN == b->attN && a->defN == b->defN))));
 }
 static int eval_set(Backend* b, const float* g, int n, const ScenSet* s, BrParams* P, float* out) {
   return b->eval(b, g, n, s->sc, s->trajFloats ? s->traj : NULL, s->trajFloats, P, out);
@@ -897,6 +947,10 @@ static void cli_cfg(TrainCfg* c, int argc, char** argv, int* mode, int* gens, ch
     else if (!strcmp(a, "--mode")) { c->mode = !strcmp(v, "tag") || !strcmp(v, "intercept") ? BR_MODE_TAG : !strcmp(v, "swarm") ? BR_MODE_SWARM : BR_MODE_REACH; i++; }
     else if (!strcmp(a, "--ceiling")) *mode = 6;
     else if (!strcmp(a, "--tw")) { c->tw = atof(v); i++; }
+    else if (!strcmp(a, "--attackers")) { c->attN = clampi(atoi(v), 1, BR_SW_MAXA); i++; } else if (!strcmp(a, "--defenders")) { c->defN = clampi(atoi(v), 1, BR_SW_MAXD); i++; }
+    else if (!strcmp(a, "--att")) { c->attAI = !strcmp(v, "ai"); i++; } else if (!strcmp(a, "--def")) { c->defAI = !strcmp(v, "ai"); i++; }
+    else if (!strcmp(a, "--att-brain")) { c->attCmd = !strcmp(v, "cmd"); i++; } else if (!strcmp(a, "--def-brain")) { c->defCmd = !strcmp(v, "cmd"); i++; }
+    else if (!strcmp(a, "--k")) { c->swK = clampi(atoi(v), 1, BR_SW_MAXK); i++; }
     else if (!strcmp(a, "--blast")) { c->blast = fmin(10, fmax(0, atof(v))); i++; }
     else if (!strcmp(a, "--reach-max")) { c->reachMax = fmin(100000, fmax(2000, atof(v))); i++; }
     else if (!strcmp(a, "--atk-range")) { c->range = fmin(100000, fmax(4000, atof(v))); i++; }
@@ -935,6 +989,18 @@ int cli_main(int argc, char** argv) {
       if (g >= gens) break;
     }
     trainer_pause(); return 0;
+  }
+  if (mode == 6 && c.mode == BR_MODE_SWARM) {   // --ceiling --mode swarm: algorithm vs algorithm battles (a baseline)
+    c.attAI = c.defAI = 0; int N = 400;
+    BrParams P; setup_params(&P, &c, N); Rng r; rng_seed(&r, 777); ScenSet scs = {0}; scen_make(&scs, N, &r, &c, &P);
+    int* bat = (int*)calloc((size_t)N * 3, sizeof(int)); for (int i = 0; i < N; i++) bat[i * 3 + 2] = i;
+    float* out = (float*)malloc(sizeof(float) * BR_SWOUT * N);
+    char err[256] = ""; Backend* be = make_backend(strcmp(c.backend, "auto") ? c.backend : "cpu", &c, err, sizeof err); if (!be) { fprintf(stderr, "%s\n", err); return 1; }
+    double t0 = br_now(); be->evalBattles(be, NULL, NULL, bat, N, scs.sc, scs.traj, scs.trajFloats, &P, out); double t = br_now() - t0;
+    double ca = 0, le = 0, bs = 0, ac = 0, dc = 0; for (int i = 0; i < N; i++) { ca += out[i * BR_SWOUT]; le += out[i * BR_SWOUT + 1]; bs += out[i * BR_SWOUT + 4]; ac += out[i * BR_SWOUT + 6]; dc += out[i * BR_SWOUT + 7]; }
+    printf("swarm %d vs %d  range %.0f m  radar %.0f  blast %.1f  evade %.1f  noise %.0f  [%s]:  caught %.1f%%  leaked %.1f%%  attackers crashed %.1f%%  defenders crashed %.1f%%   %.0f battles/s  %.1f M ball-steps/s\n",
+      c.attN, c.defN, c.range, c.detect, c.blast, c.evade, c.noise, be->info, 100 * ca / (N * c.attN), 100 * le / (N * c.attN), 100 * ac / (N * c.attN), 100 * dc / (N * c.defN), N / t, bs / t / 1e6);
+    be->destroy(be); free(bat); free(out); scen_free(&scs); return 0;
   }
   if (mode == 6) {   // --ceiling: the guidance algorithm (perfect sensors) as chaser on tag setups: how often it could tag
     BrParams P; setup_params(&P, &c, 1); Rng r; rng_seed(&r, 777); int N = 400, maxS = tag_max_steps(&P);

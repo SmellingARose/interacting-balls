@@ -18,6 +18,9 @@ typedef struct {
   double blast;      // tag: blast radius (m); the runner is caught within max(2 m touch, this)
   double reachMax;   // reach: goals 1.5 km to this far (m)
   double range, evade, noise, delayMs, detect, twRunner;
+  // swarm: attN attackers vs defN defenders; each side flown by a network (AI) or the guidance algorithm; a network side
+  // uses a commander brain (one network steers the whole side) or nearest-K (one small network per ball, sees swK nearest)
+  int attN, defN, attAI, defAI, attCmd, defCmd, swK;
 } TrainCfg;
 
 void cfg_defaults(TrainCfg* c);
