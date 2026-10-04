@@ -14,7 +14,9 @@ typedef struct {
   int altOn;                          // small reward for staying above 5 m through mid-flight
   int valEvery, valScen;
   // tag mode: chase a runner ball that launches `range`–(`range`+1.5 km) out and flies at a defended point
-  int mode, fair;                     // mode 0 = reach goal, 1 = tag; fair = keep only tags the algorithm can reach
+  int mode;                           // mode 0 = reach goal, 1 = tag
+  double blast;      // tag: blast radius (m); the runner is caught within max(2 m touch, this)
+  double reachMax;   // reach: goals 1.5 km to this far (m)
   double range, evade, noise, delayMs, detect, twRunner;
 } TrainCfg;
 

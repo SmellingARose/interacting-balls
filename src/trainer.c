@@ -56,13 +56,15 @@ static double gauss(Rng* r) { if (r->have) { r->have = 0; return r->spare; } dou
 static void rng_seed(Rng* r, unsigned s) { for (int i = 0; i < 4; i++) { s += 0x9E3779B9u; unsigned z = s; z = (z ^ (z >> 16)) * 0x85EBCA6Bu; z = (z ^ (z >> 13)) * 0xC2B2AE35u; r->s[i] = z ^ (z >> 16); } r->have = 0; }
 
 // ---------------- settings
+// Tag mode's catch distance: the balls touch (2 m) or the runner is inside the blast radius.
+static double tag_r(const TrainCfg* c) { return fmax(2, c->blast); }
 void cfg_defaults(TrainCfg* c) {
   memset(c, 0, sizeof *c);
   strcpy(c->backend, "auto"); c->wg = 64; c->chunkMs = 40;
   c->layers = 1; c->width = 32; c->pop = 256; c->scen = 16; c->reuse = 5; c->nIsl = 4; c->migrate = 10;
   c->cma = 1; c->decayOn = 1; c->decay = 0.995; c->lrMin = 1e-4;
   c->dt = 0.02; c->tw = 2.5; c->valEvery = 10; c->valScen = 64;
-  c->mode = 0; c->fair = 1; c->range = 7000; c->twRunner = 2.5;
+  c->mode = 0; c->range = 7000; c->twRunner = 2.5; c->reachMax = 7000; c->blast = 0;
 }
 static int clampi(int v, int a, int b) { return v < a ? a : v > b ? b : v; }
 void cfg_from_json(TrainCfg* c, const char* j) {
@@ -78,18 +80,19 @@ void cfg_from_json(TrainCfg* c, const char* j) {
   c->tw = jnum(j, "tw", c->tw); c->speedW = jnum(j, "speedW", c->speedW); c->everyStep = jnum(j, "everyStep", c->everyStep) != 0;
   c->altOn = jnum(j, "altOn", c->altOn) != 0;
   c->valEvery = clampi((int)jnum(j, "valEvery", c->valEvery), 1, 1000); c->valScen = clampi((int)jnum(j, "valScen", c->valScen), 8, 512);
-  c->mode = jnum(j, "mode", c->mode) != 0; c->fair = jnum(j, "fair", c->fair) != 0;
+  c->mode = jnum(j, "mode", c->mode) != 0;
+  c->reachMax = fmin(100000, fmax(2000, jnum(j, "reachMax", c->reachMax))); c->blast = fmin(10, fmax(0, jnum(j, "blast", c->blast)));
   c->range = fmin(100000, fmax(4000, jnum(j, "range", c->range))); c->evade = fmin(1, fmax(0, jnum(j, "evade", c->evade)));
   c->noise = fmin(200, fmax(0, jnum(j, "noise", c->noise))); c->delayMs = fmin(2000, fmax(0, jnum(j, "delayMs", c->delayMs)));
-  c->detect = fmin(50000, fmax(0, jnum(j, "detect", c->detect))); c->twRunner = fmin(5, fmax(1.2, jnum(j, "twRunner", c->twRunner)));
+  c->detect = fmin(100000, fmax(0, jnum(j, "detect", c->detect))); c->twRunner = fmin(5, fmax(1.2, jnum(j, "twRunner", c->twRunner)));
 }
 void cfg_to_json(const TrainCfg* c, char* o, int len) {
   snprintf(o, len, "{\"backend\":\"%s\",\"wg\":%d,\"chunkMs\":%g,\"layers\":%d,\"width\":%d,\"K\":%d,\"mem\":%d,\"pop\":%d,\"scen\":%d,\"reuse\":%d,"
     "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d,\"altOn\":%d,"
-    "\"mode\":%d,\"fair\":%d,\"range\":%g,\"evade\":%g,\"noise\":%g,\"delayMs\":%g,\"detect\":%g,\"twRunner\":%g}",
+    "\"mode\":%d,\"blast\":%g,\"reachMax\":%g,\"range\":%g,\"evade\":%g,\"noise\":%g,\"delayMs\":%g,\"detect\":%g,\"twRunner\":%g}",
     c->backend, c->wg, c->chunkMs, c->layers, c->width, c->K, c->mem, c->pop, c->scen, c->reuse, c->islands, c->nIsl, c->migrate,
     c->cma, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW, c->everyStep, c->altOn,
-    c->mode, c->fair, c->range, c->evade, c->noise, c->delayMs, c->detect, c->twRunner);
+    c->mode, c->blast, c->reachMax, c->range, c->evade, c->noise, c->delayMs, c->detect, c->twRunner);
 }
 
 void setup_params(BrParams* P, const TrainCfg* c, int S) {
@@ -97,9 +100,10 @@ void setup_params(BrParams* P, const TrainCfg* c, int S) {
   double mass = 105;
   P->mass = (float)mass; P->thrust = (float)(c->tw * mass * 9.81); P->Cd = 0.32f; P->A = 0.03f; P->CNa = 4.5f; P->SM = 0.35f; P->len = 3; P->I = 40;
   P->dt = (float)c->dt; P->maxT = 120; P->hitR = 30;
-  P->mode = c->mode; P->ballD = 2; P->noise = (float)c->noise; P->detect = (float)c->detect;
+  P->mode = c->mode; P->ballD = (float)tag_r(c); P->noise = (float)c->noise; P->detect = (float)c->detect;
   P->delay = (int)lround(c->delayMs / (c->dt * 1000));
   if (c->mode) P->maxT = (float)fmax(120, ceil((c->range + 1500) / 150) + 60);   // long runs need time to arrive
+  else P->maxT = (float)fmax(120, ceil(c->reachMax / 150) + 60);
   P->ctrl = c->everyStep ? 1 : 2; P->K = c->K; P->rec = c->mem; P->memN = c->mem ? c->width : 0;
   P->nin = BR_NI * (c->K + 1) + P->memN;
   P->nl = c->layers + 1; P->arch[0] = P->nin;
@@ -137,8 +141,8 @@ Backend* make_backend(const char* id, const TrainCfg* c, char* err, int errLen) 
 }
 
 // ---------------- scenarios and scoring (reach-goal mode: ball starts 10 m up, pointing straight up)
-static void gen_scen(BrScen* s, Rng* r, double dist) {
-  double a = urand(r) * 2 * M_PI, d = dist > 0 ? dist : 1500 + urand(r) * 5500, wa = urand(r) * 2 * M_PI, w = urand(r) * 15;
+static void gen_scen(BrScen* s, Rng* r, double dist, double maxD) {
+  double a = urand(r) * 2 * M_PI, d = dist > 0 ? dist : 1500 + urand(r) * (maxD - 1500), wa = urand(r) * 2 * M_PI, w = urand(r) * 15;
   memset(s, 0, sizeof *s);
   s->tx = (float)(cos(a) * d); s->tz = (float)(sin(a) * d);
   s->wx = (float)(cos(wa) * w); s->wz = (float)(sin(wa) * w);
@@ -177,8 +181,6 @@ static int br_make_attack(const float def[3], const float wind[3], const float s
 
 // ---------------- tag scenarios: runner launches range–(range+1.5 km) from the defended
 // point and flies at it; the chaser launches 0.5–3 km from it, at least 0.7·range from the runner's launch site.
-// With `fair` on, a setup is kept only if the algorithm as chaser with perfect sensors passes within WIN_R.
-#define WIN_R 20
 static void ring_pt(const float c[3], double a, double b, Rng* r, float o[3]) {
   double t = urand(r) * 2 * M_PI, d = a + urand(r) * (b - a);
   o[0] = c[0] + (float)(cos(t) * d); o[1] = 1.6f; o[2] = c[2] + (float)(sin(t) * d);
@@ -205,28 +207,18 @@ static int gen_tag_scen(BrScen* out, Rng* r, const TrainCfg* c, const BrParams* 
   float wind[3]; { double wa = urand(r) * 2 * M_PI, w = urand(r) * 15; wind[0] = (float)(cos(wa) * w); wind[1] = 0; wind[2] = (float)(sin(wa) * w); }
   float def[3]; { double a = urand(r) * 2 * M_PI, d = urand(r) * 3000; def[0] = (float)(cos(a) * d); def[1] = 0; def[2] = (float)(sin(a) * d); }
   float thrA = (float)(c->twRunner * P->mass * BR_G);
-  // each try is recorded into tmp, then copied to the batch buffer when kept (the last try is the fallback)
-  float* tmp = (float*)malloc(sizeof(float) * 6 * (size_t)maxS);
   float* dst = traj + (size_t)off * 6;
-  int n = 0;
-  for (int tries = 0; tries < 30; tries++) {
-    float rs[3], st[3]; ring_pt(def, R, R + 1500, r, rs);
-    do ring_pt(def, 500, 3000, r, st); while (hypot(st[0] - rs[0], st[2] - rs[2]) < R * 0.7);
-    int hit, len = br_make_attack(def, wind, rs, P, thrA, c->evade, r, tmp, maxS, &hit);
-    BrScen sc; memset(&sc, 0, sizeof sc);
-    sc.tx = def[0]; sc.ty = def[1]; sc.tz = def[2]; sc.wx = wind[0]; sc.wy = wind[1]; sc.wz = wind[2];
-    sc.sx = st[0]; sc.sy = st[1]; sc.sz = st[2]; sc.q0 = (float)(urand(r) * 0.02);
-    sc.trajOff = (float)off; sc.trajLen = (float)len; sc.seed = (float)(int)(urand(r) * 16777216); sc.atkHit = (float)hit;
-    int ok = 0;
-    if (c->fair) { BrScen t0 = sc; t0.trajOff = 0; ok = algo_tag_rollout(P, &t0, tmp) <= WIN_R; sc.winnable = (float)ok; }
-    // keep this one (first try with fair off, any reachable one, else the last try as fallback)
-    *out = sc; memcpy(dst, tmp, sizeof(float) * 6 * (size_t)len); n = len;
-    if (!c->fair || ok) break;
-  }
-  free(tmp);
-  return n;
+  float rs[3], st[3]; ring_pt(def, R, R + 1500, r, rs);
+  do ring_pt(def, 500, 3000, r, st); while (hypot(st[0] - rs[0], st[2] - rs[2]) < R * 0.7);
+  int hit, len = br_make_attack(def, wind, rs, P, thrA, c->evade, r, dst, maxS, &hit);
+  BrScen sc; memset(&sc, 0, sizeof sc);
+  sc.tx = def[0]; sc.ty = def[1]; sc.tz = def[2]; sc.wx = wind[0]; sc.wy = wind[1]; sc.wz = wind[2];
+  sc.sx = st[0]; sc.sy = st[1]; sc.sz = st[2]; sc.q0 = (float)(urand(r) * 0.02);
+  sc.trajOff = (float)off; sc.trajLen = (float)len; sc.seed = (float)(int)(urand(r) * 16777216); sc.atkHit = (float)hit;
+  *out = sc;
+  return len;
 }
-// A whole generation's tag scenarios, built on all CPU cores (flying every runner and the reachability check is the
+// A whole generation's tag scenarios, built on all CPU cores (flying every runner is the
 // costly part at long range). Each scenario draws from its own generator seeded from `r`, so the result does not
 // depend on the thread count. Paths are recorded into fixed slots, then packed contiguously (offsets in steps).
 // Returns the floats used.
@@ -256,8 +248,8 @@ static size_t gen_tag_batch(BrScen* sc, int S, Rng* r, const TrainCfg* c, const 
 // size (2 m tagging, 30 m reach), +5 for a hit plus a speed bonus or a small time penalty; tag mode: −2 when the
 // runner reached its defended point (atkHit comes from the scenario, which the host already knows).
 // Altitude reward (when on): up to +0.5, from 0 when half of mid-flight is above 5 m to full at 80% or more.
-static double fitness(const float* o, double speedW, int mode, float atkHit, int altOn) {
-  double f = -log(fmax(o[0], mode ? 2.0 : 30.0) / 30.0);
+static double fitness(const float* o, double speedW, int mode, float atkHit, int altOn, double tagR) {
+  double f = -log(fmax(o[0], mode ? tagR : 30.0) / 30.0);
   if (o[1] > 0.5f) f += 5 + (speedW > 0 ? speedW * fmax(0, 1 - o[2] / 60.0) : -0.01 * o[2]);
   else if (mode && atkHit > 0.5f) f -= 2;
   if (altOn) f += 0.5 * fmin(1, fmax(0, (1 - o[4] - 0.5) / 0.3));
@@ -269,7 +261,7 @@ typedef struct { BrScen* sc; int n, cap; float* traj; size_t trajFloats, trajCap
 static void scen_make(ScenSet* s, int S, Rng* r, const TrainCfg* c, const BrParams* P) {
   if (S > s->cap) { s->sc = (BrScen*)realloc(s->sc, sizeof(BrScen) * S); s->cap = S; }
   s->n = S; s->trajFloats = 0;
-  if (!c->mode) { for (int i = 0; i < S; i++) gen_scen(&s->sc[i], r, 0); return; }
+  if (!c->mode) { for (int i = 0; i < S; i++) gen_scen(&s->sc[i], r, 0, c->reachMax); return; }
   size_t need = (size_t)S * tag_max_steps(P) * 6;
   if (need > s->trajCap) { s->traj = (float*)realloc(s->traj, sizeof(float) * need); s->trajCap = need; }
   s->trajFloats = gen_tag_batch(s->sc, S, r, c, P, s->traj);
@@ -277,7 +269,7 @@ static void scen_make(ScenSet* s, int S, Rng* r, const TrainCfg* c, const BrPara
 static void scen_free(ScenSet* s) { free(s->sc); free(s->traj); memset(s, 0, sizeof *s); }
 // Settings that change what a scenario is (when they change, scenarios are rebuilt).
 static int scen_same(const TrainCfg* a, const TrainCfg* b) {
-  return a->mode == b->mode && (!a->mode || (a->fair == b->fair && a->range == b->range && a->evade == b->evade &&
+  return a->mode == b->mode && (a->mode || a->reachMax == b->reachMax) && (!a->mode || (a->range == b->range && a->evade == b->evade && a->blast == b->blast &&
          a->twRunner == b->twRunner && a->detect == b->detect && a->dt == b->dt && a->everyStep == b->everyStep));
 }
 static int eval_set(Backend* b, const float* g, int n, const ScenSet* s, BrParams* P, float* out) {
@@ -378,7 +370,7 @@ static struct {
   Rng rng; ScenSet scen; int scenAge; TrainCfg scenCfg;
   ScenSet val; TrainCfg valCfg; int valReady;   // fixed validation set (same seed every time, rebuilt when settings change)
   int starMode;   // mode the current star was trained in (0 reach, 1 tag); each mode keeps its own save file
-  float* star; int starNw; int starArch[BR_MAXL]; int starNl; int starK, starMem; int starVersion; double starFit;
+  float* star; int starNw; int starArch[BR_MAXL]; int starNl; int starK, starMem; double starDt, starTw; int starEvery; int starVersion; double starFit;
   int gen; double best, mean, sigma, genTime, flightsPerS, stepsPerS, starHits, starMiss, valHit; int valGen;
   Hist* hist; int histN;
   char msg[256]; char beInfo[256];
@@ -407,7 +399,7 @@ static void star_json_locked(Sb* o) {
   sb_printf(o, "{\"format\":\"ball-arena-network\",\"mode\":\"%s\",\"arch\":[", T.starMode ? "tag" : "reach");
   for (int l = 0; l <= T.starNl; l++) sb_printf(o, "%s%d", l ? "," : "", T.starArch[l]);
   sb_printf(o, "],\"K\":%d,\"memory\":%s,\"dt\":%g,\"ctrlEvery\":%d,\"thrustToWeight\":%g,\"generation\":%d,\"fitness\":%.4f,\"validationHitRate\":%.4f,\"version\":%d,\"weights\":[",
-    T.starK, T.starMem ? "true" : "false", T.cfg.dt, T.cfg.everyStep ? 1 : 2, T.cfg.tw, T.gen, T.starFit, T.valHit, T.starVersion);
+    T.starK, T.starMem ? "true" : "false", T.starDt, T.starEvery ? 1 : 2, T.starTw, T.gen, T.starFit, T.valHit, T.starVersion);
   for (int i = 0; i < T.starNw; i++) sb_printf(o, "%s%.7g", i ? "," : "", T.star[i]);
   sb_printf(o, "]}");
 }
@@ -434,6 +426,8 @@ static int load_json_mode(const char* json, char* msg, int len, int wantMode) {
   br_lock(&T.mx);
   free(T.star); T.star = g; T.starNw = nw; T.starMode = fmode; T.starNl = nl; memcpy(T.starArch, arch, sizeof(int) * (nl + 1));
   T.starK = (int)jnum(json, "K", 0); T.starMem = jnum(json, "memory", 0) != 0; T.starVersion++; T.starFit = jnum(json, "fitness", 0);
+  // physics it was trained with (files without them: the current settings)
+  T.starDt = jnum(json, "dt", T.cfg.dt); T.starTw = jnum(json, "thrustToWeight", T.cfg.tw); T.starEvery = jnum(json, "ctrlEvery", T.cfg.everyStep ? 1 : 2) == 1;
   T.valHit = jnum(json, "validationHitRate", 0);
   br_unlock(&T.mx);
   snprintf(msg, len, "loaded network %d", arch[0]); for (int l = 1; l <= nl; l++) { char t[16]; snprintf(t, sizeof t, "-%d", arch[l]); strncat(msg, t, len - strlen(msg) - 1); }
@@ -538,7 +532,7 @@ static void train_thread(void* arg) {
     if (needs_rebuild(&T.cfg)) build_islands();
     TrainCfg* c = &T.cfg;
     setup_params(&T.P, c, c->scen);   // physics settings may have changed
-    double tScen = br_now();   // tag scenarios fly the runner (and the reachability check) on the CPU: count that time
+    double tScen = br_now();   // tag scenarios fly the runner on the CPU: count that time
     if (T.scen.n != c->scen || T.scenAge >= c->reuse || !scen_same(&T.scenCfg, c)) {
       scen_make(&T.scen, c->scen, &T.rng, c, &T.P); T.scenCfg = *c;
       T.scenAge = 0;
@@ -553,7 +547,7 @@ static void train_thread(void* arg) {
     double t0 = br_now();
     if (eval_set(T.be, flat, n, &T.scen, &T.P, out)) { set_msg("evaluation failed on %s", T.be->info); break; }
     double dt = br_now() - t0 + tScen, steps = 0, mean = 0; int star = 0;
-    for (int i = 0; i < n; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + ((size_t)i * c->scen + j) * BR_OUT; f += fitness(o, c->speedW, c->mode, T.scen.sc[j].atkHit, c->altOn); steps += o[3]; }
+    for (int i = 0; i < n; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + ((size_t)i * c->scen + j) * BR_OUT; f += fitness(o, c->speedW, c->mode, T.scen.sc[j].atkHit, c->altOn, tag_r(c)); steps += o[3]; }
       fit[i] = f / c->scen; mean += fit[i]; if (fit[i] > fit[star]) star = i; }
     mean /= n;
     int hits = 0; double miss = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + ((size_t)star * c->scen + j) * BR_OUT; hits += o[1] > 0.5f; miss += o[0]; }
@@ -573,7 +567,7 @@ static void train_thread(void* arg) {
     gen = ++T.gen;
     if (T.starNw != T.P.nw) { free(T.star); T.star = (float*)malloc(sizeof(float) * T.P.nw); T.starNw = T.P.nw; }
     memcpy(T.star, flat + (size_t)star * T.P.nw, sizeof(float) * T.P.nw);
-    T.starNl = T.P.nl; memcpy(T.starArch, T.P.arch, sizeof(int) * (T.P.nl + 1)); T.starK = T.P.K; T.starMem = T.P.rec; T.starVersion++; T.starFit = fit[star];
+    T.starNl = T.P.nl; memcpy(T.starArch, T.P.arch, sizeof(int) * (T.P.nl + 1)); T.starK = T.P.K; T.starMem = T.P.rec; T.starDt = c->dt; T.starTw = c->tw; T.starEvery = c->everyStep; T.starVersion++; T.starFit = fit[star];
     T.best = fit[star]; T.mean = mean; T.sigma = sig / T.nIsl; T.genTime = dt; T.flightsPerS = n * c->scen / dt; T.stepsPerS = steps / dt;
     T.starHits = (double)hits / c->scen; T.starMiss = miss / c->scen;
     if (T.histN == HIST_MAX) { memmove(T.hist, T.hist + 1, sizeof(Hist) * (HIST_MAX - 1)); T.histN--; }
@@ -657,8 +651,7 @@ static void tlog(const char* fmt, ...) {
 }
 typedef struct { char id[32], label[160]; int n, wg; double chunk, sps, sec; } Meas;
 
-// Throughput of one batch. genSec: CPU time to build a generation's scenarios (tag mode flies every runner and the
-// reachability check), spread over the generations that reuse them, counted as part of each generation.
+// Throughput of one batch. genSec: CPU time to build a generation's scenarios (tag mode flies every runner), spread over the generations that reuse them, counted as part of each generation.
 static double g_tuneGenSec;
 static double measure(Backend* b, const float* G, int n, const ScenSet* sc, BrParams* P, float* out, double* secOut) {
   eval_set(b, G, n < 32 ? n : 32, sc, P, out);   // warm-up
@@ -687,7 +680,7 @@ static void tune_thread(void* arg) {
     for (int gnr = 0; gnr < 60 && br_now() - t0 < 8; gnr++) {
       if (gnr % 5 == 0) scen_make(&sc8, 8, &r, &c, &Q);
       cma_ask(&cm, &r); eval_set(cpu, cm.X, 96, &sc8, &Q, o);
-      for (int i = 0; i < 96; i++) { double s2 = 0; for (int j = 0; j < 8; j++) s2 += fitness(o + ((size_t)i * 8 + j) * BR_OUT, 0, c.mode, sc8.sc[j].atkHit, c.altOn); f[i] = s2 / 8; }
+      for (int i = 0; i < 96; i++) { double s2 = 0; for (int j = 0; j < 8; j++) s2 += fitness(o + ((size_t)i * 8 + j) * BR_OUT, 0, c.mode, sc8.sc[j].atkHit, c.altOn, tag_r(&c)); f[i] = s2 / 8; }
       bi = 0; for (int i = 1; i < 96; i++) if (f[i] > f[bi]) bi = i;
       memcpy(base, cm.X + (size_t)bi * P.nw, sizeof(float) * P.nw);
       cma_tell(&cm, f);
@@ -822,6 +815,7 @@ void fly_json(const char* req, Sb* o) {
   br_lock(&T.mx);
   TrainCfg c; cfg_defaults(&c); cfg_from_json(&c, req);   // the UI sends its current settings
   if (!T.star || T.starMode != c.mode) { br_unlock(&T.mx); sb_printf(o, "{\"error\":\"no trained network for this mode yet\"}"); return; }
+  c.dt = T.starDt; c.tw = T.starTw; c.everyStep = T.starEvery;   // fly it with the physics it was trained with
   BrParams P; setup_params(&P, &c, 1);
   int ok = P.nw == T.starNw && T.starNl == P.nl && T.starK == P.K && T.starMem == P.rec;
   if (ok) for (int l = 0; l <= P.nl; l++) if (T.starArch[l] != P.arch[l]) ok = 0;
@@ -832,9 +826,10 @@ void fly_json(const char* req, Sb* o) {
   br_unlock(&T.mx);
   float* wt = (float*)malloc(sizeof(float) * P.nw); br_transpose_genome(g, wt, &P);
   float* st = (float*)malloc(sizeof(float) * P.stride);
-  Rng r; rng_seed(&r, (unsigned)(br_now() * 1e6));
+  static unsigned flyCount = 0;   // (unsigned) of the raw clock overflows to a constant: wrap it, and count presses
+  Rng r; rng_seed(&r, (unsigned)fmod(br_now() * 1e6, 4294967296.0) ^ (++flyCount * 2654435761u));
   int every = (int)fmax(1, lround(0.05 / c.dt));   // ~20 samples per second
-  sb_printf(o, "{\"dt\":%g,\"mode\":\"%s\",\"flights\":[", every * c.dt, c.mode ? "tag" : "reach");
+  sb_printf(o, "{\"dt\":%g,\"mode\":\"%s\",\"radar\":%g,\"flights\":[", every * c.dt, c.mode ? "tag" : "reach", c.mode ? c.detect : 0);
   if (c.mode) {
     // Tag demo: one runner path (as in training), the star chasing it. Each sample is taken at the same physics step
     // for both balls: runner [x,y,z], chaser [x,y,z,throttle]. The runner keeps flying after the chaser ends
@@ -858,13 +853,15 @@ void fly_json(const char* req, Sb* o) {
       sb_printf(o, "],\"runner\":[");
       for (int j = 0, n = 0; ; j += every, n++) { if (j > endK) j = endK; const float* a = tr + (size_t)j * 6;
         sb_printf(o, "%s[%.2f,%.2f,%.2f]", n ? "," : "", a[0], a[1], a[2]); if (j == endK) break; }
-      sb_printf(o, "],\"hit\":%s,\"escaped\":%s,\"runnerHit\":%s,\"winnable\":%s,\"t\":%.2f,\"closest\":%.1f}",
-        hit ? "true" : "false", escaped ? "true" : "false", sc.atkHit > 0.5f && !hit ? "true" : "false", sc.winnable > 0.5f ? "true" : "false", st[S_T], st[S_MIND]);
+      sb_printf(o, "],\"hit\":%s,\"escaped\":%s,\"runnerHit\":%s,\"t\":%.2f,\"closest\":%.1f}",
+        hit ? "true" : "false", escaped ? "true" : "false", sc.atkHit > 0.5f && !hit ? "true" : "false", st[S_T], st[S_MIND]);
     }
     free(tr); sb_printf(o, "]}"); free(g); free(wt); free(st); return;
   }
+  // each press launches from a new spot on the range (the ball only sees the goal relative to itself)
+  double oa = urand(&r) * 2 * M_PI, od = urand(&r) * 15000; float ox = (float)(cos(oa) * od), oz = (float)(sin(oa) * od);
   for (int f = 0; f < count; f++) {
-    BrScen sc; gen_scen(&sc, &r, dist);
+    BrScen sc; gen_scen(&sc, &r, dist, c.reachMax); sc.sx += ox; sc.sz += oz; sc.tx += ox; sc.tz += oz;
     br_init(st, &P, &sc);
     sb_printf(o, "%s{\"target\":[%.1f,%.1f,%.1f],\"wind\":[%.2f,0,%.2f],\"points\":[[%.2f,%.2f,%.2f,0]", f ? "," : "", sc.tx, sc.ty, sc.tz, sc.wx, sc.wz, sc.sx, sc.sy, sc.sz);
     while (st[S_ALIVE] != 0) {
@@ -895,13 +892,16 @@ static void cli_cfg(TrainCfg* c, int argc, char** argv, int* mode, int* gens, ch
     else if (!strcmp(a, "--wg")) { c->wg = atoi(v); i++; } else if (!strcmp(a, "--threads")) { c->threads = atoi(v); i++; }
     // intercept (tag) mode
     else if (!strcmp(a, "--mode")) { c->mode = !strcmp(v, "tag") || !strcmp(v, "intercept"); i++; }
+    else if (!strcmp(a, "--ceiling")) *mode = 6;
+    else if (!strcmp(a, "--tw")) { c->tw = atof(v); i++; }
+    else if (!strcmp(a, "--blast")) { c->blast = fmin(10, fmax(0, atof(v))); i++; }
+    else if (!strcmp(a, "--reach-max")) { c->reachMax = fmin(100000, fmax(2000, atof(v))); i++; }
     else if (!strcmp(a, "--atk-range")) { c->range = fmin(100000, fmax(4000, atof(v))); i++; }
     else if (!strcmp(a, "--evade")) { c->evade = fmin(1, fmax(0, atof(v))); i++; }
     else if (!strcmp(a, "--noise")) { c->noise = fmax(0, atof(v)); i++; }
     else if (!strcmp(a, "--delay")) { c->delayMs = fmax(0, atof(v)); i++; }
-    else if (!strcmp(a, "--detect")) { c->detect = fmin(50000, fmax(0, atof(v))); i++; }
+    else if (!strcmp(a, "--detect")) { c->detect = fmin(100000, fmax(0, atof(v))); i++; }
     else if (!strcmp(a, "--tw-runner")) { c->twRunner = fmin(5, fmax(1.2, atof(v))); i++; }
-    else if (!strcmp(a, "--no-fair")) c->fair = 0; else if (!strcmp(a, "--fair")) c->fair = 1;
   }
 }
 static char* read_file(const char* p) { FILE* f = fopen(p, "rb"); if (!f) return NULL; fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
@@ -913,8 +913,8 @@ int cli_main(int argc, char** argv) {
   if (mode == 5) { printf("Double-click the app to open the interface. Developer options: --bench, --compare, --train [--gens N], --list-devices,\n"
                           "with --backend cpu|metal|opencl:N --pop --scen --layers --width --K --mem --opt cma|ga --dt --every-step --alt-reward --islands N --wg --load FILE\n"
                           "Intercept (tag) mode: --mode reach|tag  --atk-range M (runner launch distance, 4000-100000 m)  --evade 0-1 (runner weave)\n"
-                          "  --noise M (sensor noise sigma)  --delay MS (sensor delay)  --detect M (wait on the pad until the runner is this close, 0 = off)\n"
-                          "  --tw-runner X (runner thrust-to-weight)  --no-fair (also keep tags the algorithm cannot reach; reachable-only is the default)\n"); return 0; }
+                          "  --noise M (sensor noise sigma)  --delay MS (sensor delay)  --detect M (radar range: launch when the runner comes this close, 0 = launch at once)\n"
+                          "  --tw-runner X (runner thrust-to-weight)\n"); return 0; }
   if (mode == 4) {
 #ifdef BR_HAVE_OPENCL
     opencl_list_devices();
@@ -932,6 +932,15 @@ int cli_main(int argc, char** argv) {
       if (g >= gens) break;
     }
     trainer_pause(); return 0;
+  }
+  if (mode == 6) {   // --ceiling: the guidance algorithm (perfect sensors) as chaser on tag setups: how often it could tag
+    BrParams P; setup_params(&P, &c, 1); Rng r; rng_seed(&r, 777); int N = 400, maxS = tag_max_steps(&P);
+    float* tr = (float*)malloc(sizeof(float) * 6 * (size_t)maxS); int b2 = 0, b5 = 0, b20 = 0, through = 0;
+    for (int i = 0; i < N; i++) { BrScen sc; gen_tag_scen(&sc, &r, &c, &P, tr, 0); sc.trajOff = 0;
+      float d = algo_tag_rollout(&P, &sc, tr); b2 += d <= 2; b5 += d <= 5; b20 += d <= 20; through += sc.atkHit > 0.5f; }
+    printf("range %.0f m  evade %.1f  radar %.0f  tw %.1f  dt %g:  tag<=2m %.1f%%  <=5m %.1f%%  <=20m %.1f%%  (runner arrives unopposed %.0f%%)\n",
+      c.range, c.evade, c.detect, c.tw, c.dt, 100.0*b2/N, 100.0*b5/N, 100.0*b20/N, 100.0*through/N);
+    free(tr); return 0;
   }
   // --bench / --compare: one batch on every compute option
   BrParams P; setup_params(&P, &c, c.scen); Rng r; rng_seed(&r, 12345);

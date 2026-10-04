@@ -67,15 +67,20 @@ button.warn{color:var(--bad);border-color:rgba(255,107,107,.5)}
   <h2>Mode</h2>
   <div class="seg" role="group" aria-label="Mode"><button id="mReach" class="on">Reach target</button><button id="mInt">Intercept</button></div>
   <div class="note" id="modeText"></div>
+  <div id="reachOpts">
+    <label>Max goal distance <b id="vReachMax"></b><input id="sReachMax" type="range" min="2000" max="100000" step="1000" value="7000"></label>
+    <div class="note">Training goals are 1.5 km to this far. Raise it gradually: a ball trained on short hops needs time to learn long flights.</div>
+  </div>
   <div id="tagOpts" hidden>
     <h2>Intercept</h2>
-    <label class="chk"><input type="checkbox" id="cFair" checked> Only reachable tags</label>
-    <div class="note">Keeps a setup only if the guidance algorithm, with perfect sensors, passes within 20 m of the runner.</div>
+    <label>Blast radius <b id="vBlast"></b><input id="sBlast" type="range" min="0" max="10" step="0.5" value="0"></label>
+    <div class="note">Off: your ball must touch the runner (2 m). On: getting this close counts as a catch, like a proximity warhead.</div>
     <label>Runner launch range <b id="vRange"></b><input id="sRange" type="range" min="4000" max="100000" step="500" value="7000"></label>
     <label>Runner weaving <b id="vEvade"></b><input id="sEvade" type="range" min="0" max="1" step="0.1" value="0"></label>
     <label>Sensor noise <b id="vNoise"></b><input id="sNoise" type="range" min="0" max="50" step="1" value="0"></label>
     <label>Sensor delay <b id="vDelay"></b><input id="sDelay" type="range" min="0" max="400" step="20" value="0"></label>
-    <label>Launch on detection <b id="vDetect"></b><input id="sDetect" type="range" min="0" max="8000" step="250" value="0"></label>
+    <label>Radar range <b id="vDetect"></b><input id="sDetect" type="range" min="0" max="100000" step="500" value="0"></label>
+    <div class="note">Your ball waits on its pad until its radar sees the runner within this range, then launches. Off: it launches at once.</div>
     <label>Runner thrust-to-weight <b id="vTwR"></b><input id="sTwR" type="range" min="1.2" max="5" step="0.1" value="2.5"></label>
   </div>
 
@@ -111,7 +116,7 @@ button.warn{color:var(--bad);border-color:rgba(255,107,107,.5)}
   <h2>Physics</h2>
   <label>Physics step <b id="vDt"></b><input id="sDt" type="range" min="5" max="40" step="1" value="20"></label>
   <label class="chk"><input type="checkbox" id="cEvery"> Brain decides every physics step</label>
-  <label>Thrust-to-weight <b id="vTw"></b><input id="sTw" type="range" min="1.2" max="5" step="0.1" value="2.5"></label>
+  <label>Thrust-to-weight <b id="vTw"></b><input id="sTw" type="range" min="1.2" max="20" step="0.1" value="2.5"></label>
   <div class="note" id="physNote">The ball starts 10 m above the pad, pointing straight up. Targets are 1.5–7 km away with up to 15 m/s of wind.</div>
 </div>
 
@@ -162,7 +167,7 @@ const fmt=(v,d=0)=>Number(v).toLocaleString(undefined,{maximumFractionDigits:d,m
 /* ---------------- settings (remembered in this window) ---------------- */
 const S={ backend:'auto', layers:1, width:32, K:0, mem:0, cma:1, pop:256, scen:16, reuse:5, islands:0, nIsl:8, migrate:10,
   decayOn:1, decay:0.995, lrMin:1e-4, speedOn:0, speedW:3, altOn:0, dt:0.02, everyStep:0, tw:2.5, wg:64, chunkMs:40,
-  mode:0, fair:1, range:7000, evade:0, noise:0, delayMs:0, detect:0, twRunner:2.5 };   // mode 0 = reach target, 1 = intercept
+  mode:0, blast:0, reachMax:7000, range:7000, evade:0, noise:0, delayMs:0, detect:0, twRunner:2.5 };   // mode 0 = reach target, 1 = intercept
 try{ Object.assign(S, JSON.parse(localStorage.getItem('brt-settings')||'{}')); }catch(e){}
 const save=()=>{ try{ localStorage.setItem('brt-settings',JSON.stringify(S)); }catch(e){} };
 const cfg=()=>({ ...S, speedW:S.speedOn?S.speedW:0 });
@@ -179,16 +184,18 @@ check('cDecay','decayOn',syncDis); bind('sDecay','vDecay','decay',v=>'×'+v.toFi
 bind('sLrMin','vLrMin','lrMin',v=>{ const x=10**v; return x>=0.01?x.toFixed(2):x.toExponential(0); },v=>10**v,v=>Math.log10(v));
 check('cAlt','altOn'); check('cSpeed','speedOn',syncDis); bind('sSpw','vSpw','speedW',v=>v);
 bind('sDt','vDt','dt',v=>v+' ms',v=>v/1000,v=>Math.round(v*1000)); check('cEvery','everyStep'); bind('sTw','vTw','tw',v=>v.toFixed(1)+'×');
+bind('sReachMax','vReachMax','reachMax',v=>fmt(v/1000,0)+' km'); $('sReachMax').addEventListener('input',()=>syncMode());
+bind('sBlast','vBlast','blast',v=>v>2?v+' m':'off (touch)'); $('sBlast').addEventListener('input',()=>syncMode());
 bind('sRange','vRange','range',v=>fmt(v/1000,v>=20000?0:1)+' km'); bind('sEvade','vEvade','evade',v=>v?'×'+v.toFixed(1):'off');
 bind('sNoise','vNoise','noise',v=>v?'±'+v+' m':'off'); bind('sDelay','vDelay','delayMs',v=>v?v+' ms':'off');
-bind('sDetect','vDetect','detect',v=>v?fmt(v/1000,2)+' km':'off'); bind('sTwR','vTwR','twRunner',v=>v.toFixed(1)+'×'); check('cFair','fair');
-const MODE_TEXT=['Fly the ball from the pad to a goal 1.5–7 km away.',
-  'A red runner ball, flown by the guidance algorithm, launches far out and heads for a defended point. Your ball launches from a nearby site and must touch it (2 m) first.'];
+bind('sDetect','vDetect','detect',v=>v?fmt(v/1000,v>=10000?0:1)+' km':'off (launch at once)'); bind('sTwR','vTwR','twRunner',v=>v.toFixed(1)+'×');
+const MODE_TEXT=[()=>`Fly the ball from the pad to a goal 1.5–${fmt(S.reachMax/1000,0)} km away.`,
+  'A red runner ball, flown by the guidance algorithm, launches far out and heads for a defended point. Your ball launches from a nearby site and must catch it first.'];
 function syncMode(){ const on=!!S.mode;
-  $('mReach').classList.toggle('on',!on); $('mInt').classList.toggle('on',on); $('modeText').textContent=MODE_TEXT[S.mode];
-  $('tagOpts').hidden=!on; $('distRow').hidden=on;
+  $('mReach').classList.toggle('on',!on); $('mInt').classList.toggle('on',on); $('modeText').textContent=S.mode?MODE_TEXT[1].replace('catch it',S.blast>2?`get within ${S.blast} m of it`:'touch it (2 m)'):MODE_TEXT[0]();
+  $('tagOpts').hidden=!on; $('reachOpts').hidden=on; $('distRow').hidden=on;
   $('physNote').textContent=on?'Your ball launches from the ground 0.5–3 km from the defended point, with up to 15 m/s of wind. Each mode keeps its own trained network.'
-    :'The ball starts 10 m above the pad, pointing straight up. Targets are 1.5–7 km away with up to 15 m/s of wind.'; }
+    :`The ball starts 10 m above the pad, pointing straight up. Targets are 1.5–${fmt(S.reachMax/1000,0)} km away with up to 15 m/s of wind.`; }
 async function setMode(m){
   if(m===S.mode) return;
   S.mode=m; save(); syncMode(); clearFlights(); HIST=[]; since=0; drawChart();
@@ -416,6 +423,18 @@ function addFlight(f,i){
 // Intercept: the runner (red) and launch sites (red: runner, blue: yours); played in lockstep with your ball.
 const siteMat=c=>new THREE.MeshStandardMaterial({color:c,roughness:0.7});
 function addSite(p,color){ const m=new THREE.Mesh(new THREE.CylinderGeometry(6,7,0.6,24),siteMat(color)); m.position.set(p[0],0.3,p[2]); scene.add(m); return m; }
+// Radar: a ground ring at its range around your pad, a faint dome, and a rotating sweep beam.
+const radarMat=new THREE.MeshBasicMaterial({color:0x58e0a0,transparent:true,opacity:0.22,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending});
+function addRadar(p,R){
+  const g=new THREE.Group(); g.position.set(p[0],1,p[2]);
+  const ringPts=[]; for(let i=0;i<=128;i++){ const a=i/128*Math.PI*2; ringPts.push(new THREE.Vector3(Math.cos(a)*R,0,Math.sin(a)*R)); }
+  g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ringPts),new THREE.LineBasicMaterial({color:0x7dffc0,transparent:true,opacity:0.95})));
+  const dome=new THREE.Mesh(new THREE.SphereGeometry(R,48,16,0,Math.PI*2,0,Math.PI/2),new THREE.MeshBasicMaterial({color:0x58e0a0,wireframe:true,transparent:true,opacity:0.16,depthWrite:false}));
+  g.add(dome);
+  const sweep=new THREE.Mesh(new THREE.CircleGeometry(R,32,0,Math.PI/9),radarMat); sweep.rotation.x=-Math.PI/2; 
+  const spin=new THREE.Group(); spin.add(sweep); g.add(spin);
+  scene.add(g); return {g,spin};
+}
 function addRunner(fl){
   const f=fl.f, color=new THREE.Color(0xff5a4e);
   const g=new THREE.Group(); g.add(new THREE.Mesh(ballGeo,new THREE.MeshStandardMaterial({color,emissive:color,emissiveIntensity:0.5,roughness:0.25,metalness:0.2}))); scene.add(g);
@@ -423,6 +442,7 @@ function addRunner(fl){
   const lm=new LineMaterial({linewidth:2.2,color:0xff5a4e,transparent:true,opacity:0.9}); lm.resolution=res;
   const trail=new Line2(lg,lm); trail.frustumCulled=false; scene.add(trail);
   fl.run={g,trail,done:false}; fl.sites=[addSite(f.runnerStart,0x8a3a32),addSite(f.start,0x2f5d73)];
+  if(RADAR>0){ fl.radar=addRadar(f.start,RADAR); fl.radar.g.visible=view3d; fl.sites.push(fl.radar.g); }
 }
 function burst(pos,hit){   // hit: green shock ring + white flash; miss: grey dust puff
   const ring=new THREE.Mesh(new THREE.RingGeometry(0.85,1,64),new THREE.MeshBasicMaterial({color:hit?0x9dffc0:0xc8bca8,side:THREE.DoubleSide,transparent:true,depthWrite:false,blending:hit?THREE.AdditiveBlending:THREE.NormalBlending}));
@@ -430,15 +450,17 @@ function burst(pos,hit){   // hit: green shock ring + white flash; miss: grey du
   const flash=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTex,color:hit?0xeafff0:0xb8ad9a,transparent:true,depthWrite:false,blending:hit?THREE.AdditiveBlending:THREE.NormalBlending}));
   flash.position.copy(pos); scene.add(flash); fx.push({ring,flash,age:0,hit});
 }
-let FLY_DT=0.05, timeScale=2, easy=true, camGoal=null, view3d=true;
-controls.addEventListener('start',()=>camGoal=null);   // the user takes the camera: stop gliding
+let RADAR=0, FLY_DT=0.05, timeScale=2, easy=true, camGoal=null, view3d=true, follow=null, followDir=new THREE.Vector3(1,0,0), followEnd=0, followAuto=0;
+controls.addEventListener('start',()=>{ camGoal=null; followAuto=0; });   // the user takes the camera: stop gliding; a chase keeps following at the user's angle
 async function fly(n){
   $('bFly1').disabled=$('bFly5').disabled=true;
   try{ const r=await api('/api/fly',{...cfg(),count:n,dist:+$('sDist').value});
     if(r.error){ $('log').innerHTML=`<div class="sub">${r.error}: press Train first.</div>`; return; }
-    FLY_DT=r.dt; const base=flights.length; r.flights.forEach((f,i)=>addFlight(f,base+i));
+    FLY_DT=r.dt; RADAR=r.radar||0; const base=flights.length; r.flights.forEach((f,i)=>addFlight(f,base+i));
     if(!view3d){ for(const fl of flights.slice(base)){ fl.done=true; fl.trail.geometry.instanceCount=fl.f.points.length-1; fl.glow.material.opacity=0;
       if(fl.run){ fl.run.done=true; fl.run.trail.geometry.instanceCount=fl.f.runner.length-1; fl.run.g.visible=false; } logFlight(fl); } return; }
+    if(n===1){ follow=flights[base]; followEnd=0; followAuto=1; camGoal=null; return; }   // a single flight: chase it
+    follow=null;
     let mx=0; for(const f of r.flights) mx=Math.max(mx,Math.hypot(f.target[0],f.target[2]));
     const tgt=r.flights[0].target;
     if(r.mode==='tag'){ const rr=7000, t=new THREE.Vector3(tgt[0],500,tgt[2]), side=new THREE.Vector3(1,0,0.6).normalize().multiplyScalar(rr*1.2);
@@ -453,7 +475,7 @@ function logFlight(fl){ const f=fl.f, el=document.createElement('div');
 $('bFly1').onclick=()=>fly(1); $('bFly5').onclick=()=>fly(5);
 function clearFlights(){ for(const fl of flights){ scene.remove(fl.g,fl.trail,fl.shadow,fl.drop,fl.ring,fl.beam); fl.trail.geometry.dispose(); fl.trail.material.dispose(); fl.shadow.geometry.dispose();
     if(fl.run){ scene.remove(fl.run.g,fl.run.trail,...fl.sites); fl.run.trail.geometry.dispose(); fl.run.trail.material.dispose(); } }
-  for(const e of fx) scene.remove(e.ring,e.flash); fx.length=0; flights.length=0; $('log').innerHTML='<div class="sub">Flights are computed by the app and drawn here.</div>'; }
+  for(const e of fx) scene.remove(e.ring,e.flash); fx.length=0; flights.length=0; follow=null; $('log').innerHTML='<div class="sub">Flights are computed by the app and drawn here.</div>'; }
 $('bClear').onclick=clearFlights;
 { const d=$('sDist'), ts=$('sTs'); const u=()=>{ $('vDist').textContent=+d.value?fmt(+d.value/1000,0)+' km':'random'; $('vTs').textContent=ts.value+'×'; timeScale=+ts.value; };
   d.oninput=u; ts.oninput=u; u(); }
@@ -465,6 +487,14 @@ function frame(){
   const dt=Math.min(clock.getDelta(),0.05), now=clock.elapsedTime;
   const px=Math.tan(camera.fov*Math.PI/360)*2/innerHeight;
   if(camGoal){ const k=1-Math.exp(-dt*3.5); camera.position.lerp(camGoal.pos,k); controls.target.lerp(camGoal.target,k); if(camera.position.distanceTo(camGoal.pos)<5) camGoal=null; }
+  if(follow){   // chase cam, locked to the ball for the whole flight: the camera moves with it every frame (no lag);
+    // it swings in behind the direction of travel until the user orbits/zooms, then keeps the user's angle. Holds 2 s at the end.
+    const P=follow.f.points, i=Math.min(P.length-2,Math.floor(follow.t/follow.dt)), p=follow.g.position;
+    const off=camera.position.clone().sub(controls.target);
+    if(followAuto&&i>=0){ const a=P[i], b=P[i+1]; _v.set(b[0]-a[0],0,b[2]-a[2]); if(_v.lengthSq()>1e-4) followDir.lerp(_v.normalize(),1-Math.exp(-dt*3)).normalize();
+      const want=followDir.clone().multiplyScalar(-260); want.y=90; off.lerp(want,1-Math.exp(-dt*3)); }
+    controls.target.copy(p); camera.position.copy(p).add(off); if(camera.position.y<5) camera.position.y=5;
+    if(follow.done){ followEnd+=dt; if(followEnd>2) follow=null; } }
   sky.position.copy(camera.position);
   for(const c of clouds){ c.position.x+=dt*6; if(c.position.x>120000) c.position.x-=240000; }
   for(const fl of flights){
@@ -489,6 +519,7 @@ function frame(){
     const dr=camera.position.distanceTo(fl.ring.position), tk=Math.max(1,dr*px*26/60); fl.ring.scale.setScalar(tk);
     if(!fl.done){ fl.beam.material.opacity=0.12+0.08*Math.sin(now*3+fl.phase); fl.beam.scale.set(tk,1,tk); }
   }
+  for(const fl of flights) if(fl.radar) fl.radar.spin.rotation.y-=dt*1.6;   // ~4 s per sweep
   for(let j=fx.length-1;j>=0;j--){ const e=fx[j]; e.age+=dt; const t=e.age/(e.hit?1.6:1.2);
     if(t>=1){ scene.remove(e.ring,e.flash); e.ring.geometry.dispose(); fx.splice(j,1); continue; }
     const dr=camera.position.distanceTo(e.ring.position), sc=Math.max(1,dr*px);

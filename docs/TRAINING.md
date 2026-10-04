@@ -9,7 +9,7 @@ slightly while making it slower. Spare capacity (bigger batches costing ≤25% m
 - Islands off: more scenarios per network (steadier scores).
 
 Speed is measured; population/island sizing is rule-based. In intercept mode the CPU time to build the scenarios
-(flying every runner and the reachability check) is included in every timing, spread over the generations that reuse
+(flying every runner) is included in every timing, spread over the generations that reuse
 them.
 
 ## Settings
@@ -21,16 +21,20 @@ them.
 | Past frames K, memory neurons | History for noisy tasks. Change the network shape (fresh network). |
 | Physics step, decide every step | Smaller step = finer control, slower training. |
 | Reward staying above 5 m | Optional: up to +0.5 for flying above 5 m through mid-flight (from 3 s after launch until 300 m from the target); 0 at half the time, full at 80%. Discourages skimming the ground. |
+| Max goal distance (reach) | Training goals are 1.5 km to this far (2–100 km). Raise it in steps; the flight time limit grows with it. |
+| Thrust-to-weight | 1.2–20. High thrust needs a small physics step (5 ms) to learn well. |
 | Mode | Reach target or Intercept. Each mode trains and saves its own network; a saved network only loads in its own mode. |
-| Only reachable tags | Drops setups the algorithm itself cannot reach with perfect sensors (they only add noise). Keep on. |
+| Blast radius | 0–10 m. Off: the balls must touch (2 m). On: getting this close counts as a catch, like a proximity warhead. |
 | Runner launch range | 4–100 km. Longer runs take longer to fly and simulate. |
 | Runner weaving | Sine weaves on the runner's steering after 6 s (0–1). |
 | Sensor noise / delay | What your ball's sensors see of the runner: uniform noise σ in metres, and a delay in ms. |
-| Launch on detection | Your ball waits on its pad until the runner is this close (0 = launch at once). |
+| Radar range | 0–100 km. Your ball waits on its pad until its radar sees the runner within this range (0 = launch at once). Short ranges make many setups impossible (see `--ceiling`). |
 | Runner thrust-to-weight | The runner's engine, separate from yours. |
 
 ## Tips
 - Watch Validation, not Star hits (best-of-population is often lucky).
 - Decay ×0.995 with a 1e-4 floor; ×0.9 freezes training.
 - Turn on speed reward only after it hits reliably.
+- The replay (Fly 1 / Fly 5) always flies the star with the physics it was trained with (time step, thrust-to-weight, control rate), whatever the panel says. Training uses the panel's physics: change them and the star relearns.
+- Intercept: `brtrain --ceiling --mode tag ...` measures how often the guidance algorithm (perfect sensors) tags on your settings: a practical ceiling.
 - Intercept: start with no noise, delay or weaving and a short range (7 km); add difficulty once Validation is high.

@@ -74,14 +74,14 @@ typedef struct {
   int delay;     // tag: the chaser's sensors report the runner as it was this many physics steps ago
   float ballD;   // tag: centres this close = touching = tagged (balls are 2 m across)
   float noise;   // tag: sensor noise σ in metres (uniform, ±√3·σ on position, half that on velocity)
-  float detect;  // tag: the chaser waits on its pad until the runner is this close (0 = launch at once)
+  float detect;  // tag: radar range: the chaser waits on its pad until the runner is this close (0 = launch at once)
   float pad1;
   int arch[BR_MAXL];
 } BrParams;
 
 // Goal (reach) or the runner's defended point (tag), wind, start, start tilt; tag: where this scenario's runner path
 // starts in the path buffer (in steps), how many steps it has, and the seed for this scenario's sensor noise.
-// atkHit: the runner reached its defended point; winnable: the algorithm with perfect sensors passed within 20 m.
+// atkHit: the runner reached its defended point; winnable: unused (keeps the struct at 64 bytes).
 typedef struct { float tx, ty, tz, wx, wy, wz, sx, sy, sz, q0, trajOff, trajLen, seed, atkHit, winnable, pad0; } BrScen;   // 64 bytes
 
 // Per-flight state in a flat float buffer: [scalars | past frames (29·K) | memory (memN)]
