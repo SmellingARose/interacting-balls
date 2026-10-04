@@ -573,6 +573,159 @@ static double validate(const float* g) {
   free(out); return (double)hits / P.S;
 }
 
+// ---------------- swarm training: one optimizer per AI side; AI vs AI is self-play against a pool of recent stars
+#define SW_POOL 8
+typedef struct {
+  int ai, nin, nout, nw, key[8], live;   // key: the network/optimizer layout this side was built for
+  CMA cma;
+  float* star; double starFit, best, mean; int starVersion;
+  float* pool; int poolN, poolNext;       // this side's recent stars: the other side trains against them
+  double val; int valGen;                 // validation vs the algorithm: catch rate (defenders) or leak rate (attackers)
+} SwSide;
+static struct {
+  SwSide side[2];                         // 0 = attackers, 1 = defenders
+  ScenSet scen, val; int scenAge, valReady; TrainCfg scenCfg, valCfg;
+  double catchRate, leakRate, battlesPerS, ballStepsPerS;
+} SW;
+static const char* sw_side_name(int side) { return side ? "defend" : "attack"; }
+// One saved star per side and matchup: commander brains depend on both counts; nearest-K brains only on K.
+static const char* sw_save_path(const TrainCfg* c, int side) {
+  static char p[1024]; char name[128]; const char* h = getenv("HOME");
+  int cmd = side ? c->defCmd : c->attCmd;
+  if (cmd) snprintf(name, sizeof name, "BallArena-star-swarm-cmd-A%d-D%d-%s.json", c->attN, c->defN, sw_side_name(side));
+  else snprintf(name, sizeof name, "BallArena-star-swarm-nk-K%d-%s.json", c->swK, sw_side_name(side));
+#ifdef _WIN32
+  if (!h) h = getenv("USERPROFILE");
+  snprintf(p, sizeof p, "%s\\%s", h ? h : ".", name);
+#else
+  snprintf(p, sizeof p, "%s/%s", h ? h : ".", name);
+#endif
+  return p;
+}
+static void sw_arch(const BrParams* P, int side, int* arch) {
+  for (int l = 0; l <= P->nl; l++) arch[l] = P->arch[l];
+  arch[0] = side ? P->defNin : P->attNin; arch[P->nl] = side ? P->defNout : P->attNout;
+}
+static void sw_save(const TrainCfg* c, const BrParams* P, int side) {
+  SwSide* S = &SW.side[side]; if (!S->star) return;
+  int arch[BR_MAXL + 1]; sw_arch(P, side, arch);
+  Sb o = {0};
+  sb_printf(&o, "{\"format\":\"ball-arena-network\",\"mode\":\"swarm\",\"side\":\"%s\",\"brain\":\"%s\",\"attackers\":%d,\"defenders\":%d,\"K\":%d,\"arch\":[",
+    sw_side_name(side), (side ? c->defCmd : c->attCmd) ? "commander" : "nearest-k", c->attN, c->defN, c->swK);
+  for (int l = 0; l <= P->nl; l++) sb_printf(&o, "%s%d", l ? "," : "", arch[l]);
+  sb_printf(&o, "],\"dt\":%g,\"ctrlEvery\":%d,\"thrustToWeight\":%g,\"runnerThrustToWeight\":%g,\"generation\":%d,\"fitness\":%.4f,\"validation\":%.4f,\"weights\":[",
+    c->dt, c->everyStep ? 1 : 2, c->tw, c->twRunner, T.gen, S->starFit, S->val);
+  for (int i = 0; i < S->nw; i++) sb_printf(&o, "%s%.7g", i ? "," : "", S->star[i]);
+  sb_printf(&o, "]}");
+  FILE* f = fopen(sw_save_path(c, side), "w"); if (f) { fwrite(o.s, 1, o.n, f); fclose(f); }
+  free(o.s);
+}
+// Weights of this side's saved star if its layer sizes match the current settings (NULL otherwise).
+static float* sw_load(const TrainCfg* c, const BrParams* P, int side) {
+  char* j = NULL; { FILE* f = fopen(sw_save_path(c, side), "rb"); if (!f) return NULL; fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    j = (char*)malloc(n + 1); n = (long)fread(j, 1, n, f); j[n] = 0; fclose(f); }
+  int arch[BR_MAXL + 1], want[BR_MAXL + 1], nl = -1; sw_arch(P, side, want);
+  const char* a = strstr(j, "\"arch\""); const char* w = strstr(j, "\"weights\""); const char* p = a ? strchr(a, '[') : NULL;
+  if (!p || !w) { free(j); return NULL; } p++;
+  while (*p && *p != ']' && nl < BR_MAXL) { arch[++nl] = (int)strtol(p, (char**)&p, 10); while (*p == ',' || *p == ' ') p++; }
+  int ok = nl == P->nl; for (int l = 0; ok && l <= nl; l++) ok = arch[l] == want[l];
+  float* g = NULL; int nw = side ? P->defNw : P->attNw;
+  if (ok) { g = (float*)malloc(sizeof(float) * nw); p = strchr(w, '['); int n = 0;
+    if (p) { p++; while (n < nw && *p && *p != ']') { g[n++] = strtof(p, (char**)&p); while (*p == ',' || *p == ' ') p++; } }
+    if (n != nw) { free(g); g = NULL; } }
+  free(j); return g;
+}
+static void sw_side_free(SwSide* S) { if (S->live) cma_free(&S->cma); free(S->star); free(S->pool); memset(S, 0, sizeof *S); }
+// (Re)build a side when its network or population layout changed: seeded from its saved star when that fits.
+static void sw_build(const TrainCfg* c, const BrParams* P, int side, int lam) {
+  SwSide* S = &SW.side[side]; int ai = side ? c->defAI : c->attAI, cmd = side ? c->defCmd : c->attCmd;
+  int key[8] = { ai, c->layers, c->width, cmd, cmd ? c->attN : 0, cmd ? c->defN : 0, cmd ? 0 : c->swK, lam };
+  if (S->live == ai && !memcmp(S->key, key, sizeof key)) return;
+  sw_side_free(S); memcpy(S->key, key, sizeof key); S->ai = ai;
+  if (!ai) return;
+  S->nin = side ? P->defNin : P->attNin; S->nout = side ? P->defNout : P->attNout; S->nw = side ? P->defNw : P->attNw;
+  float* seed = sw_load(c, P, side); int seeded = seed != NULL;
+  if (!seed) { seed = (float*)malloc(sizeof(float) * S->nw); for (int i = 0; i < S->nw; i++) seed[i] = (float)((urand(&T.rng) * 2 - 1) * 0.1); }
+  cma_init(&S->cma, S->nw, lam, seed, seeded ? 0.02 : 0.25); S->live = 1;
+  S->star = seed; S->starFit = -1e30; S->pool = (float*)malloc(sizeof(float) * S->nw * SW_POOL);
+  memcpy(S->pool, seed, sizeof(float) * S->nw); S->poolN = 1; S->poolNext = 1;
+  set_msg("%s: %s", side ? "defenders" : "attackers", seeded ? "continuing from the saved star" : "new network");
+}
+// Score of one battle for one side (normalised by the counts, so scores compare across swarm sizes).
+static double sw_fit(const float* o, int side, const TrainCfg* c) {
+  double nA = c->attN, nD = c->defN;
+  if (side) return (5 * o[0] - 5 * o[1]) / nA + 0.5 * o[3] / nD;   // defenders: catches, leaks, closeness to attackers
+  return (5 * o[1] - 2 * o[0]) / nA + 0.5 * o[2] / nA;             // attackers: leaks, losses, closeness to the point
+}
+// Validation: each AI side's star against the algorithm on a fixed set of battles.
+static void sw_validate(const TrainCfg* c) {
+  BrParams P; setup_params(&P, c, c->valScen);
+  if (!SW.valReady || SW.val.n != P.S || !scen_same(&SW.valCfg, c)) { Rng r; rng_seed(&r, 4242); scen_make(&SW.val, P.S, &r, c, &P); SW.valCfg = *c; SW.valReady = 1; }
+  int* bat = (int*)calloc((size_t)P.S * 3, sizeof(int)); float* out = (float*)malloc(sizeof(float) * BR_SWOUT * P.S);
+  for (int i = 0; i < P.S; i++) bat[i * 3 + 2] = i;
+  for (int side = 0; side < 2; side++) {
+    SwSide* S = &SW.side[side]; if (!S->ai || !S->star) continue;
+    BrParams Q = P; if (side) Q.attAI = 0; else Q.defAI = 0;   // the other side: the algorithm
+    if (T.be->evalBattles(T.be, side ? NULL : S->star, side ? S->star : NULL, bat, P.S, SW.val.sc, SW.val.traj, SW.val.trajFloats, &Q, out)) continue;
+    double n = 0; for (int i = 0; i < P.S; i++) n += out[i * BR_SWOUT + (side ? 0 : 1)];
+    br_lock(&T.mx); S->val = n / ((double)P.S * c->attN); S->valGen = T.gen; br_unlock(&T.mx);
+  }
+  free(bat); free(out);
+}
+// One swarm generation. Returns -1 to stop training.
+static int sw_generation(void) {
+  TrainCfg* c = &T.cfg;
+  if (!c->attAI && !c->defAI) { set_msg("both sides fly the algorithm: set one side to AI to train"); return -1; }
+  if (!T.be->evalBattles) { set_msg("%s cannot fly swarm battles yet", T.be->info); return -1; }
+  BrParams P; setup_params(&P, c, c->scen);
+  int nAI = c->attAI + c->defAI, lam = c->pop / nAI; if (lam < 8) lam = 8;
+  for (int side = 0; side < 2; side++) sw_build(c, &P, side, lam);
+  if (SW.scen.n != c->scen || SW.scenAge >= c->reuse || !scen_same(&SW.scenCfg, c)) { scen_make(&SW.scen, c->scen, &T.rng, c, &P); SW.scenCfg = *c; SW.scenAge = 0; }
+  SW.scenAge++;
+  double t0 = br_now(), bsteps = 0, catches = 0, leaks = 0; int battles = 0;
+  for (int side = 0; side < 2; side++) {
+    SwSide* S = &SW.side[side]; if (!S->ai) continue;
+    SwSide* O = &SW.side[side ^ 1];
+    cma_ask(&S->cma, &T.rng);
+    int nb = lam * c->scen; int* bat = (int*)malloc(sizeof(int) * 3 * nb); float* out = (float*)malloc(sizeof(float) * BR_SWOUT * nb);
+    for (int i = 0; i < lam; i++) for (int j = 0; j < c->scen; j++) { int b = i * c->scen + j, opp = O->ai ? (i + j) % O->poolN : 0;
+      bat[b * 3] = side ? opp : i; bat[b * 3 + 1] = side ? i : opp; bat[b * 3 + 2] = j; }
+    const float* mine = S->cma.X; const float* theirs = O->ai ? O->pool : NULL;
+    if (T.be->evalBattles(T.be, side ? theirs : mine, side ? mine : theirs, bat, nb, SW.scen.sc, SW.scen.traj, SW.scen.trajFloats, &P, out)) {
+      free(bat); free(out); set_msg("battle evaluation failed on %s", T.be->info); return -1; }
+    double* fit = (double*)malloc(sizeof(double) * lam); int best = 0; double mean = 0;
+    for (int i = 0; i < lam; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + (size_t)(i * c->scen + j) * BR_SWOUT; f += sw_fit(o, side, c); bsteps += o[4]; }
+      fit[i] = f / c->scen; mean += fit[i]; if (fit[i] > fit[best]) best = i; }
+    for (int j = 0; j < c->scen; j++) { const float* o = out + (size_t)(best * c->scen + j) * BR_SWOUT; catches += o[0]; leaks += o[1]; }
+    battles += nb;
+    br_lock(&T.mx);
+    memcpy(S->star, mine + (size_t)best * S->nw, sizeof(float) * S->nw); S->starFit = fit[best]; S->best = fit[best]; S->mean = mean / lam; S->starVersion++;
+    br_unlock(&T.mx);
+    cma_tell(&S->cma, fit); if (c->decayOn) S->cma.sigma *= c->decay; if (S->cma.sigma < c->lrMin) S->cma.sigma = c->lrMin;
+    free(fit); free(bat); free(out);
+  }
+  double dt = br_now() - t0; int gen;
+  br_lock(&T.mx);
+  gen = ++T.gen; T.genTime = dt; SW.battlesPerS = battles / dt; SW.ballStepsPerS = bsteps / dt; T.flightsPerS = SW.battlesPerS; T.stepsPerS = SW.ballStepsPerS;
+  SW.catchRate = catches / ((double)c->scen * nAI * c->attN); SW.leakRate = leaks / ((double)c->scen * nAI * c->attN);
+  T.best = c->defAI ? SW.side[1].best : SW.side[0].best; T.mean = c->defAI ? SW.side[1].mean : SW.side[0].mean;
+  T.sigma = c->defAI ? SW.side[1].cma.sigma : SW.side[0].cma.sigma; T.starVersion++;
+  if (T.histN == HIST_MAX) { memmove(T.hist, T.hist + 1, sizeof(Hist) * (HIST_MAX - 1)); T.histN--; }
+  Hist* h = &T.hist[T.histN++]; memset(h, 0, sizeof *h); h->gen = gen; h->best = (float)T.best; h->mean = (float)T.mean;
+  h->isl[0] = (float)SW.side[0].best; h->isl[1] = (float)SW.side[1].best;
+  br_unlock(&T.mx);
+  // self-play: every few generations each side's star joins its pool (the other side's opponents)
+  if (gen % 5 == 0) for (int side = 0; side < 2; side++) { SwSide* S = &SW.side[side]; if (!S->ai) continue;
+    memcpy(S->pool + (size_t)S->poolNext * S->nw, S->star, sizeof(float) * S->nw); S->poolNext = (S->poolNext + 1) % SW_POOL; if (S->poolN < SW_POOL) S->poolN++; }
+  if (gen % c->valEvery == 0) { sw_validate(c); for (int side = 0; side < 2; side++) if (SW.side[side].ai) sw_save(c, &P, side); }
+  return 0;
+}
+static void sw_autosave(void) {
+  if (T.cfg.mode != BR_MODE_SWARM) return;
+  BrParams P; setup_params(&P, &T.cfg, T.cfg.scen);
+  for (int side = 0; side < 2; side++) if (SW.side[side].ai && SW.side[side].star && SW.side[side].nw == (side ? P.defNw : P.attNw)) sw_save(&T.cfg, &P, side);
+}
+
 static void train_thread(void* arg) {
   (void)arg;
   float* flat = NULL; size_t flatCap = 0; float* out = NULL; size_t outCap = 0; double* fit = NULL; int fitCap = 0;
@@ -582,6 +735,7 @@ static void train_thread(void* arg) {
       if (nc.mode != T.starMode) trainer_set_mode(nc.mode);
       T.cfg = nc; }
     if (ensure_backend()) break;
+    if (T.cfg.mode == BR_MODE_SWARM) { if (sw_generation()) break; continue; }
     if (needs_rebuild(&T.cfg)) build_islands();
     TrainCfg* c = &T.cfg;
     setup_params(&T.P, c, c->scen);   // physics settings may have changed
@@ -654,7 +808,7 @@ int trainer_busy(void) { return T.running || T.tuning; }
 void trainer_pause(void) {
   T.stopReq = 1;
   if (T.threadLive) { br_thread_join(&T.th); T.threadLive = 0; }
-  T.running = 0; autosave();
+  T.running = 0; autosave(); sw_autosave();
 }
 void trainer_reset(void) {
   trainer_pause();
@@ -664,6 +818,9 @@ void trainer_reset(void) {
   T.best = T.mean = T.sigma = T.genTime = T.flightsPerS = T.stepsPerS = T.starHits = T.starMiss = T.valHit = 0; T.valGen = 0;
   snprintf(T.msg, sizeof T.msg, "reset · training stopped");
   br_unlock(&T.mx);
+  if (T.cfg.mode == BR_MODE_SWARM) {   // swarm: forget both sides and delete this matchup's saved stars
+    for (int side = 0; side < 2; side++) { if ((side ? T.cfg.defAI : T.cfg.attAI)) remove(sw_save_path(&T.cfg, side)); sw_side_free(&SW.side[side]); }
+    return; }
   remove(save_path());
 }
 
@@ -673,11 +830,16 @@ void trainer_status_json(Sb* o, int since) {
     "\"genTime\":%.4f,\"sigma\":%.3g,\"valHit\":%.4f,\"valGen\":%d,\"starVersion\":%d,\"hasStar\":%s,\"islands\":%d,\"backend\":",
     T.starMode, T.running ? "true" : "false", T.tuning ? "true" : "false", T.gen, T.best, T.mean, T.starHits, T.starMiss, T.flightsPerS, T.stepsPerS,
     T.genTime, T.sigma, T.valHit, T.valGen, T.starVersion, T.star ? "true" : "false", T.nIsl);
-  sb_jstr(o, T.beInfo); sb_printf(o, ",\"message\":"); sb_jstr(o, T.msg); sb_printf(o, ",\"hist\":[");
+  sb_jstr(o, T.beInfo); sb_printf(o, ",\"message\":"); sb_jstr(o, T.msg);
+  if (T.starMode == BR_MODE_SWARM)
+    sb_printf(o, ",\"swarm\":{\"attAI\":%d,\"defAI\":%d,\"attBest\":%.4f,\"defBest\":%.4f,\"catchRate\":%.4f,\"leakRate\":%.4f,\"valLeak\":%.4f,\"valCatch\":%.4f,\"attStar\":%s,\"defStar\":%s,\"battlesPerS\":%.0f}",
+      SW.side[0].ai, SW.side[1].ai, SW.side[0].best, SW.side[1].best, SW.catchRate, SW.leakRate, SW.side[0].val, SW.side[1].val,
+      SW.side[0].star ? "true" : "false", SW.side[1].star ? "true" : "false", SW.battlesPerS);
+  sb_printf(o, ",\"hist\":[");
   int first = 1;
   for (int i = 0; i < T.histN; i++) { Hist* h = &T.hist[i]; if (h->gen <= since) continue;
     sb_printf(o, "%s[%d,%.4f,%.4f", first ? "" : ",", h->gen, h->best, h->mean); first = 0;
-    int k = T.nIsl > 1 ? (T.nIsl < ISL_SHOW ? T.nIsl : ISL_SHOW) : 0;
+    int k = T.starMode == BR_MODE_SWARM ? 2 : T.nIsl > 1 ? (T.nIsl < ISL_SHOW ? T.nIsl : ISL_SHOW) : 0;   // swarm: attackers' and defenders' best
     for (int q = 0; q < k; q++) sb_printf(o, ",%.3f", h->isl[q]);
     sb_printf(o, "]"); }
   sb_printf(o, "]}");
@@ -985,6 +1147,10 @@ int cli_main(int argc, char** argv) {
     while (T.running || T.hasPending) {
       br_sleep_ms(200);
       br_lock(&T.mx); int g = T.gen; double best = T.best, hits = T.starHits, val = T.valHit, sps = T.stepsPerS, gt = T.genTime; int vg = T.valGen; br_unlock(&T.mx);
+      if (g != last && c.mode == BR_MODE_SWARM) { br_lock(&T.mx);
+        printf("gen %5d  attackers %7.3f  defenders %7.3f  caught %3.0f%%  leaked %3.0f%%  validation vs algorithm: leak %3.0f%% catch %3.0f%%  %6.0f battles/s  %.3f s/gen  [%s]\n",
+          g, SW.side[0].best, SW.side[1].best, SW.catchRate * 100, SW.leakRate * 100, SW.side[0].val * 100, SW.side[1].val * 100, SW.battlesPerS, gt, T.beInfo);
+        br_unlock(&T.mx); last = g; fflush(stdout); }
       if (g != last) { printf("gen %5d  best %7.3f  star hits %3.0f%%  validation %3.0f%% (gen %d)  %6.1f M steps/s  %.3f s/gen  [%s]\n", g, best, hits * 100, val * 100, vg, sps / 1e6, gt, T.beInfo); last = g; fflush(stdout); }
       if (g >= gens) break;
     }
