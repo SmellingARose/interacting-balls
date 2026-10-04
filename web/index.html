@@ -16,7 +16,7 @@ html,body{height:100%;margin:0;background:radial-gradient(120% 90% at 50% 0%,#18
 #right{right:16px;top:16px;width:min(470px,calc(100% - 330px))}
 #flyp{left:50%;transform:translateX(-50%);bottom:16px;width:min(500px,calc(100% - 640px));min-width:300px}
 #flyp h2{white-space:nowrap}
-h1{font:700 26px/1 var(--display);letter-spacing:.04em;margin:0;background:linear-gradient(90deg,#e3ebf2,#5fd1ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+h1{font:700 21px/1 var(--display);white-space:nowrap;letter-spacing:.04em;margin:0;background:linear-gradient(90deg,#e3ebf2,#5fd1ff);-webkit-background-clip:text;background-clip:text;color:transparent}
 h2{font:500 13px var(--display);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:8px 0 0;display:flex;align-items:center;gap:8px}
 #left h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}
 .sub,.note{color:var(--dim);font-size:11px;line-height:1.45}
@@ -55,13 +55,26 @@ button.warn{color:var(--bad);border-color:rgba(255,107,107,.5)}
 #dlg .eq{font:600 13px/1.9 var(--mono);background:rgba(127,127,127,.12);border-radius:6px;padding:8px 12px;overflow-x:auto;white-space:nowrap}
 .best td{color:var(--ok)}
 #offline{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(5,9,13,.85);z-index:9;font:600 16px var(--display);letter-spacing:.1em}
+/* collapsible sections and panels; help text hidden unless "?" is on */
+h2.fold{cursor:pointer;user-select:none;border-radius:4px}
+h2.fold::before{content:'▾';font-size:10px;width:10px;transition:transform .15s;color:var(--dim)}
+h2.fold.closed::before{transform:rotate(-90deg)}
+h2.fold:hover{color:var(--fg)}
+.secBody{display:flex;flex-direction:column;gap:8px}
+.head{display:flex;align-items:center;gap:6px}
+.head h1,.head h2{flex:1;margin:0}
+button.icon{flex:0 0 auto;width:26px;padding:4px 0;font-size:12px;line-height:1}
+.panel.min>:not(.head):not(.keep){display:none!important}
+.panel.min{gap:6px}
+body:not(.help) .note:not(#netNote):not(#tuneNote):not(#modeText),body:not(.help) #left .sub{display:none}
+#modeText{color:var(--fg);opacity:.75}
 @media (max-width:1000px){ #right{left:300px;width:auto} #flyp{display:none} }
 </style></head><body>
 <canvas id="c"></canvas>
 <div id="offline" hidden>THE TRAINER APP IS NOT RUNNING · START IT AGAIN TO CONTINUE</div>
 
 <div class="panel" id="left">
-  <h1>BALL ARENA TRAINER</h1>
+  <div class="head"><h1>BALL ARENA TRAINER</h1><button class="icon" id="bHelp" title="Show help text">?</button><button class="icon" data-min="left" title="Collapse panel">–</button></div>
   <div class="sub">Everything runs natively on this computer. This window only shows it. Closing it keeps training running; open the app again to come back. The app quits by itself after 2 idle minutes.</div>
 
   <h2>Mode</h2>
@@ -133,9 +146,9 @@ button.warn{color:var(--bad);border-color:rgba(255,107,107,.5)}
 </div>
 
 <div class="panel" id="right">
-  <div class="row" style="align-items:center"><h2 style="margin:0;flex:2">Training</h2>
-    <button id="bTrain" class="primary">Train</button><button class="warn" id="bReset">Reset</button></div>
-  <div class="stats">
+  <div class="head"><h2 style="flex:2">Training</h2>
+    <button id="bTrain" class="primary">Train</button><button class="warn" id="bReset">Reset</button><button class="icon" data-min="right" title="Collapse panel">–</button></div>
+  <div class="stats keep">
     <div><small>Generation</small><b id="sGen">0</b></div>
     <div><small id="lBest">Best fitness</small><b id="sBest">—</b></div>
     <div><small id="lHit">Star hits</small><b id="sHit">—</b></div>
@@ -147,6 +160,7 @@ button.warn{color:var(--bad);border-color:rgba(255,107,107,.5)}
   </div>
   <div class="status" id="status">Connecting…</div>
   <canvas id="chart"></canvas>
+  <h2 id="moreH">More</h2>
   <div class="note" id="valNote">Validation = the star ball flown every 10 generations on a fixed set of 64 scenarios it never trains on: the honest hit rate, comparable over time. The star ball is saved automatically and restored next time.</div>
   <div class="row"><button id="bSave">Save network…</button><button id="bLoad">Load network…</button><input type="file" id="fLoad" accept=".json" hidden></div>
   <div class="row"><button id="bResults">Auto-tune results</button><button id="bMath">Network math</button><button id="bGuide">Training guide</button></div>
@@ -154,7 +168,7 @@ button.warn{color:var(--bad);border-color:rgba(255,107,107,.5)}
 </div>
 
 <div class="panel" id="flyp">
-  <div class="row" style="align-items:center"><h2 style="margin:0;flex:1">Watch the star ball</h2><button id="b3d" class="on" title="Turn the 3D view off to stop all drawing">3D on</button><button id="bFly1">Fly 1</button><button id="bFly5">Fly 5</button><button id="bLaunch" hidden>Launch</button><button id="bClear">Clear</button></div>
+  <div class="head"><h2>Watch</h2><button id="b3d" class="on" title="Turn the 3D view off to stop all drawing">3D on</button><button id="bFly1">Fly 1</button><button id="bFly5">Fly 5</button><button id="bLaunch" hidden>Launch</button><button id="bClear">Clear</button><button class="icon" data-min="flyp" title="Collapse panel">–</button></div>
   <div class="row" id="viewRow" hidden><div class="seg" role="group" aria-label="Follow"><button id="vwAtt">Follow attackers</button><button id="vwDef" class="on">Follow defenders</button></div><button id="bPrev" title="Previous ball ( [ )">◀</button><button id="bNext" title="Next ball ( ] )">▶</button><button id="bOver">Overview</button></div>
   <label id="distRow">Goal distance <b id="vDist"></b><input id="sDist" type="range" min="0" max="100000" step="1000" value="0"></label>
   <label>Playback speed <b id="vTs"></b><input id="sTs" type="range" min="0.5" max="8" step="0.5" value="2"></label>
@@ -176,6 +190,27 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 const $=id=>document.getElementById(id);
 const api=async(path,body)=>{ const r=await fetch(path,body===undefined?{}:{method:'POST',body:typeof body==='string'?body:JSON.stringify(body)}); if(!r.ok) throw new Error(r.status); return r.json(); };
 const fmt=(v,d=0)=>Number(v).toLocaleString(undefined,{maximumFractionDigits:d,minimumFractionDigits:d});
+
+/* ---------------- layout: collapsible sections and panels, help text toggle (remembered in this window) ---------------- */
+const UI=(()=>{ try{ return JSON.parse(localStorage.getItem('brt-ui')||'{}'); }catch(e){ return {}; } })();
+const saveUI=()=>{ try{ localStorage.setItem('brt-ui',JSON.stringify(UI)); }catch(e){} };
+// Each h2 in `box` folds the elements after it, up to the next h2.
+function sections(box,openByDefault){
+  let body=null;
+  for(const el of [...box.children]){
+    if(el.tagName!=='H2'){ if(body) body.appendChild(el); continue; }
+    const key=box.id+':'+(el.id||el.textContent.trim()), open=UI[key]??openByDefault.includes(el.id||el.textContent.trim());
+    body=document.createElement('div'); body.className='secBody'; body.hidden=!open; el.after(body);
+    el.classList.add('fold'); el.classList.toggle('closed',!open); el.tabIndex=0; el.setAttribute('role','button'); el.setAttribute('aria-expanded',open);
+    const b=body, toggle=()=>{ const o=b.hidden; b.hidden=!o; el.classList.toggle('closed',!o); el.setAttribute('aria-expanded',o); UI[key]=o; saveUI(); };
+    el.onclick=toggle; el.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); toggle(); } };
+  }
+}
+sections($('left'),['Mode']); sections($('swarmOpts'),['Attackers','Defenders']); sections($('tagOpts'),['tagTitle']); sections($('right'),[]);
+for(const b of document.querySelectorAll('[data-min]')){ const p=$(b.dataset.min), set=m=>{ p.classList.toggle('min',m); b.textContent=m?'+':'–'; b.title=m?'Expand panel':'Collapse panel'; };
+  set(!!UI['min:'+p.id]); b.onclick=()=>{ UI['min:'+p.id]=!p.classList.contains('min'); saveUI(); set(UI['min:'+p.id]); }; }
+{ const set=on=>{ document.body.classList.toggle('help',on); $('bHelp').classList.toggle('on',on); };
+  set(!!UI.help); $('bHelp').onclick=()=>{ UI.help=!UI.help; saveUI(); set(UI.help); }; }
 
 /* ---------------- settings (remembered in this window) ---------------- */
 const S={ backend:'auto', layers:1, width:32, K:0, mem:0, cma:1, pop:256, scen:16, reuse:5, islands:0, nIsl:8, migrate:10,
