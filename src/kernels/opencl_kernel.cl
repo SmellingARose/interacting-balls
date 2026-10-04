@@ -14,3 +14,19 @@ __kernel void br_kernel(__global float* state, __global const float* weights,
   flags[r] = a;
   if (a) atomic_inc(alive);
 }
+
+// Swarm: one work-item = one battle (bat[3r..3r+2]: attacker genome, defender genome, scenario), `chunk` steps per dispatch.
+__kernel void br_sw_kernel(__global float* state, __global const float* wA, __global const float* wD, __global const BrScen* scen,
+                           __constant BrParams* pp, __global volatile uint* alive, __global const int* idx, __global int* flags,
+                           __global const int* bat) {
+  BrParams P = *pp;
+  int gid = (int)get_global_id(0);
+  if (gid >= P.nActive) return;
+  int r = idx[gid];
+  __global float* g = state + (size_t)r * (size_t)P.stride;
+  BrScen sc = scen[bat[r * 3 + 2]];
+  br_sw_run(g, &P, &sc, wA + (size_t)bat[r * 3] * (size_t)P.attNw, wD + (size_t)bat[r * 3 + 1] * (size_t)P.defNw, P.chunk);
+  int a = g[SWH_DONE] == 0.0f;
+  flags[r] = a;
+  if (a) atomic_inc(alive);
+}

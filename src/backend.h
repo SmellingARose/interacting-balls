@@ -35,9 +35,12 @@ int  opencl_devices(char names[][160], int isGpu[], int max);   // for the UI
 
 // Shared helpers used by the GPU hosts
 int  br_max_width(const BrParams* P);
+int  br_sw_max_width(const BrParams* P);   // widest swarm layer for these settings (GPU buffers are compiled to fit)
 void br_transpose_layers(const float* g, float* t, int nl, const int* arch);
 void br_init_states(float* state, const BrParams* P, const BrScen* scen);
 void br_collect(const float* state, const BrParams* P, float* out);
+void br_sw_init_states(float* state, const BrParams* P, const BrScen* scen, const int* bat, int n, const float* start);
+void br_sw_collect(const float* state, const BrParams* P, int n, float* out);
 extern const char* BR_SRC_SIM_CORE;
 extern const char* BR_SRC_METAL;
 extern const char* BR_SRC_OPENCL;

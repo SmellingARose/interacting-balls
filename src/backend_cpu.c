@@ -94,10 +94,21 @@ Backend* cpu_backend_create(int threads) {
 }
 
 // ---- helpers shared by the GPU hosts
+int br_sw_max_width(const BrParams* P) {
+  int m = BR_NI + 2 * BR_SW_MAXK * SW_NF_NB;
+  if (P->mode == BR_MODE_SWARM) { int v[5] = { P->attNin, P->defNin, P->attNout, P->defNout, P->arch[1] }; m = 16; for (int i = 0; i < 5; i++) if (v[i] > m) m = v[i]; for (int l = 1; l < P->nl; l++) if (P->arch[l] > m) m = P->arch[l]; }
+  return (m + 3) & ~3;
+}
 int br_max_width(const BrParams* P) { int m = 4; for (int l = 0; l <= P->nl; l++) if (P->arch[l] > m) m = P->arch[l]; return (m + 3) & ~3; }
 void br_init_states(float* state, const BrParams* P, const BrScen* scen) {
   for (int r = 0; r < P->nRoll; r++) br_init(state + (size_t)r * P->stride, P, &scen[r % P->S]);
 }
 void br_collect(const float* state, const BrParams* P, float* out) {
   for (int r = 0; r < P->nRoll; r++) br_result(state + (size_t)r * P->stride, out + (size_t)r * BR_OUT);
+}
+void br_sw_init_states(float* state, const BrParams* P, const BrScen* scen, const int* bat, int n, const float* start) {
+  for (int r = 0; r < n; r++) br_sw_init(state + (size_t)r * P->stride, P, &scen[bat[r * 3 + 2]], start);
+}
+void br_sw_collect(const float* state, const BrParams* P, int n, float* out) {
+  for (int r = 0; r < n; r++) br_sw_result(state + (size_t)r * P->stride, P, out + (size_t)r * BR_SWOUT);
 }

@@ -438,7 +438,9 @@ FN void br_run(BR_GP float* g, BR_PP const BrParams* P, BR_PP const BrScen* sc, 
 #define BR_SW_MAXD 32
 #define BR_SW_MAXB 64
 #define BR_SW_MAXK 8
-#define SW_MAXW 704         // widest swarm layer: commander inputs 13·32 own + 7·32 enemy = 640
+#ifndef SW_MAXW
+#define SW_MAXW 704         // widest swarm layer: commander inputs 13·32 own + 7·32 enemy = 640 (GPUs compile it to fit)
+#endif
 #define SW_H 8              // header floats
 #define SWH_K 0             // physics steps done
 #define SWH_CATCH 1

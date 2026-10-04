@@ -880,8 +880,70 @@ static double measure(Backend* b, const float* G, int n, const ScenSet* sc, BrPa
   return steps / best;
 }
 
+// Swarm auto-tune: one generation's battles (saved stars with small variations when they fit, else random brains)
+// on every compute option and GPU work-group size; the fastest in battles per second wins.
+static void sw_tune(const TrainCfg* cin) {
+  TrainCfg c = *cin; Rng r; rng_seed(&r, 777);
+  BrParams P; setup_params(&P, &c, c.scen);
+  int nAI = c.attAI + c.defAI, lam = nAI ? c.pop / nAI : c.pop; if (lam < 8) lam = 8;
+  int G = lam < 64 ? lam : 64, nb = lam * c.scen * (nAI ? nAI : 1);
+  ScenSet scs = {0}; scen_make(&scs, c.scen, &r, &c, &P);
+  float* w[2] = { NULL, NULL };
+  for (int side = 0; side < 2; side++) { if (!(side ? c.defAI : c.attAI)) continue;
+    int nw = side ? P.defNw : P.attNw; w[side] = (float*)malloc(sizeof(float) * (size_t)G * nw); float* st = sw_load(&c, &P, side);
+    for (int k = 0; k < G; k++) for (int i = 0; i < nw; i++) w[side][(size_t)k * nw + i] = st ? st[i] + (float)(gauss(&r) * 0.02) : (float)((urand(&r) * 2 - 1) * 0.1);
+    tlog("%s: %s", side ? "Defenders" : "Attackers", st ? "your saved star with small variations" : "random brains (no saved star for this matchup)"); free(st); }
+  int* bat = (int*)malloc(sizeof(int) * 3 * nb); for (int i = 0; i < nb; i++) { bat[i * 3] = (i / c.scen) % G; bat[i * 3 + 1] = (i / c.scen + 3) % G; bat[i * 3 + 2] = i % c.scen; }
+  float* out = (float*)malloc(sizeof(float) * BR_SWOUT * nb);
+  tlog("Measuring one generation: %d battles of %d vs %d", nb, c.attN, c.defN);
+  char ids[40][32]; int nOpt = 0; strcpy(ids[nOpt++], "cpu");
+#ifdef BR_HAVE_METAL
+  strcpy(ids[nOpt++], "metal");
+#endif
+#ifdef BR_HAVE_OPENCL
+  { char nm[32][160]; int g[32]; int k = opencl_devices(nm, g, 32); for (int i = 0; i < k && nOpt < 40; i++) if (g[i]) snprintf(ids[nOpt++], 32, "opencl:%d", i); }
+#endif
+  Meas rows[200]; int nRows = 0, best = -1;
+  for (int oi = 0; oi < nOpt; oi++) {
+    int wgs[4] = { 0, 32, 64, 128 }, nwg = strcmp(ids[oi], "cpu") ? 4 : 1;
+    for (int wi = nwg > 1 ? 1 : 0; wi < nwg; wi++) {
+      char err[256] = ""; TrainCfg cc = c; Backend* be = make_backend(ids[oi], &cc, err, sizeof err); if (!be) { tlog("%s: not available (%s)", ids[oi], err); break; }
+      if (!be->evalBattles) { be->destroy(be); break; }
+      be->wg = wgs[wi]; be->chunkMs = 40;
+      double sec = 1e9, bs = 0;
+      for (int k = 0; k < 2; k++) { double t0 = br_now(); if (be->evalBattles(be, w[0], w[1], bat, nb, scs.sc, scs.traj, scs.trajFloats, &P, out)) { sec = 1e9; break; } double t = br_now() - t0; if (t < sec) sec = t; }
+      for (int i = 0; i < nb; i++) bs += out[i * BR_SWOUT + 4];
+      Meas* m = &rows[nRows++]; snprintf(m->id, sizeof m->id, "%s", ids[oi]); snprintf(m->label, sizeof m->label, "%s", be->info);
+      m->n = lam; m->wg = wgs[wi]; m->chunk = 40; m->sps = bs / sec; m->sec = sec;
+      char wl[32] = ""; if (wgs[wi]) snprintf(wl, sizeof wl, " · work-group %d", wgs[wi]);
+      tlog("%s%s: %.0f battles/s (%.2f s per generation)", be->info, wl, nb / sec, sec);
+      if (best < 0 || sec < rows[best].sec) best = nRows - 1;
+      be->destroy(be);
+    }
+  }
+  Sb res = {0};
+  if (best < 0) sb_printf(&res, "{\"ok\":false}");
+  else { Meas* m = &rows[best];
+    sb_printf(&res, "{\"ok\":true,\"best\":{\"backend\":\"%s\",\"label\":", m->id); sb_jstr(&res, m->label);
+    sb_printf(&res, ",\"wg\":%d,\"chunkMs\":40,\"stepsPerS\":%.0f,\"secPerGen\":%.4f,\"batchNetworks\":%d,\"pop\":%d,\"scen\":%d,\"islands\":0,\"nIsl\":%d},\"note\":",
+      m->wg ? m->wg : 64, m->sps, m->sec, m->n, c.pop, c.scen, c.nIsl);
+    sb_jstr(&res, "Swarm: measured in battles per generation with your current matchup; population and scenarios are unchanged.");
+    sb_printf(&res, ",\"options\":[");
+    for (int i = 0, first = 1; i < nRows; i++) { int top = 1; for (int j = 0; j < nRows; j++) if (!strcmp(rows[j].id, rows[i].id) && rows[j].sec < rows[i].sec) top = 0;
+      if (!top) continue; sb_printf(&res, "%s{\"backend\":\"%s\",\"label\":", first ? "" : ",", rows[i].id); sb_jstr(&res, rows[i].label); first = 0;
+      sb_printf(&res, ",\"stepsPerS\":%.0f,\"secPerGen\":%.4f,\"batchNetworks\":%d,\"wg\":%d,\"chunkMs\":40}", rows[i].sps, rows[i].sec, rows[i].n, rows[i].wg); }
+    sb_printf(&res, "],\"rows\":[");
+    for (int i = 0; i < nRows; i++) { sb_printf(&res, "%s{\"backend\":\"%s\",\"label\":", i ? "," : "", rows[i].id); sb_jstr(&res, rows[i].label);
+      sb_printf(&res, ",\"networks\":%d,\"flights\":%d,\"wg\":%d,\"chunkMs\":40,\"stepsPerS\":%.0f,\"sec\":%.3f}", rows[i].n, nb, rows[i].wg, rows[i].sps, rows[i].sec); }
+    sb_printf(&res, "]}");
+    tlog("Done: %s flies the most battles per second (%.2f s per generation).", m->label, m->sec);
+  }
+  br_lock(&T.mx); free(T.tuneResult.s); T.tuneResult = res; br_unlock(&T.mx);
+  free(w[0]); free(w[1]); free(bat); free(out); scen_free(&scs);
+}
 static void tune_thread(void* arg) {
   (void)arg; TrainCfg c = T.tuneCfg; Rng r; rng_seed(&r, 777);
+  if (c.mode == BR_MODE_SWARM) { sw_tune(&c); T.tuning = 0; return; }
   BrParams P; setup_params(&P, &c, c.scen);
   // A realistic population: your star ball (if it matches the current network) plus small variations. Random networks
   // crash within seconds and would mislead the measurement, so without a star a quick CPU pre-training runs first.
@@ -1234,6 +1296,32 @@ int cli_main(int argc, char** argv) {
     printf("range %.0f m  evade %.1f  radar %.0f  tw %.1f  dt %g:  tag<=2m %.1f%%  <=5m %.1f%%  <=20m %.1f%%  (runner arrives unopposed %.0f%%)\n",
       c.range, c.evade, c.detect, c.tw, c.dt, 100.0*b2/N, 100.0*b5/N, 100.0*b20/N, 100.0*through/N);
     free(tr); return 0;
+  }
+  if ((mode == 1 || mode == 2) && c.mode == BR_MODE_SWARM) {   // --bench / --compare --mode swarm: the same battles on every compute option
+    int S = 32, G = 32, N = S * G;   // G genomes per AI side, each on every scenario
+    BrParams P; setup_params(&P, &c, S); Rng r; rng_seed(&r, 12345); ScenSet scs = {0}; scen_make(&scs, S, &r, &c, &P);
+    float* wA = (float*)malloc(sizeof(float) * (size_t)G * (P.attNw ? P.attNw : 1)); float* wD = (float*)malloc(sizeof(float) * (size_t)G * (P.defNw ? P.defNw : 1));
+    for (size_t i = 0; i < (size_t)G * P.attNw; i++) wA[i] = (float)((urand(&r) * 2 - 1) * 0.5);
+    for (size_t i = 0; i < (size_t)G * P.defNw; i++) wD[i] = (float)((urand(&r) * 2 - 1) * 0.5);
+    for (int side = 0; side < 2; side++) { float* st = (side ? c.defAI : c.attAI) ? sw_load(&c, &P, side) : NULL; if (!st) continue;   // trained brains make real catches
+      int nw = side ? P.defNw : P.attNw; float* w = side ? wD : wA; for (int k = 0; k < G; k++) for (int i = 0; i < nw; i++) w[(size_t)k * nw + i] = st[i] + (k ? (float)(gauss(&r) * 0.01) : 0);
+      printf("  (%s: the saved star, with small variations)\n", side ? "defenders" : "attackers"); free(st); }
+    int* bat = (int*)malloc(sizeof(int) * 3 * N); for (int i = 0; i < N; i++) { bat[i * 3] = i / S; bat[i * 3 + 1] = (i / S + 7) % G; bat[i * 3 + 2] = i % S; }
+    float* ref = (float*)malloc(sizeof(float) * BR_SWOUT * N); float* out = (float*)malloc(sizeof(float) * BR_SWOUT * N);
+    const char* ids[3] = { "cpu", "metal", "opencl:0" };
+    for (int bi = 0; bi < 3; bi++) {
+      char err[256] = ""; Backend* be = make_backend(ids[bi], &c, err, sizeof err); if (!be) { printf("  %-9s not available (%s)\n", ids[bi], err); continue; }
+      if (!be->evalBattles) { printf("  %-9s %-36s cannot fly battles\n", ids[bi], be->info); be->destroy(be); continue; }
+      float* dst = bi == 0 ? ref : out; double best = 1e9;
+      for (int k = 0; k < 2; k++) { double t0 = br_now(); if (be->evalBattles(be, wA, wD, bat, N, scs.sc, scs.traj, scs.trajFloats, &P, dst)) { best = -1; break; } double t = br_now() - t0; if (t < best) best = t; }
+      if (best < 0) { printf("  %-9s %-36s failed\n", ids[bi], be->info); be->destroy(be); continue; }
+      double ca = 0, le = 0, bs = 0; for (int i = 0; i < N; i++) { ca += dst[i * BR_SWOUT]; le += dst[i * BR_SWOUT + 1]; bs += dst[i * BR_SWOUT + 4]; }
+      printf("  %-9s %-36s %7.0f battles/s  %6.1f M ball-steps/s  caught %4.0f  leaked %4.0f", ids[bi], be->info, N / best, bs / best / 1e6, ca, le);
+      if (mode == 2 && bi > 0) { int same = 0; for (int i = 0; i < N; i++) same += dst[i * BR_SWOUT] == ref[i * BR_SWOUT] && dst[i * BR_SWOUT + 1] == ref[i * BR_SWOUT + 1];
+        printf("  same catches/leaks as CPU: %d/%d", same, N); }
+      printf("\n"); be->destroy(be);
+    }
+    free(wA); free(wD); free(bat); free(ref); free(out); scen_free(&scs); return 0;
   }
   // --bench / --compare: one batch on every compute option
   BrParams P; setup_params(&P, &c, c.scen); Rng r; rng_seed(&r, 12345);

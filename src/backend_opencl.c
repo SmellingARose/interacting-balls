@@ -40,8 +40,8 @@ int br_cl_load(void) {
 
 typedef struct {
   cl_context ctx; cl_command_queue q; cl_device_id dev;
-  cl_program prog; cl_kernel k; int progMaxW;
-  cl_mem state, weights, scen, params, alive, idx, flags, traj; size_t capState, capW, capScen, capIdx, capFlags, capTraj;
+  cl_program prog; cl_kernel k, swk; int progMaxW, progSwW;
+  cl_mem state, weights, scen, params, alive, idx, flags, traj, wD, bat; size_t capState, capW, capScen, capIdx, capFlags, capTraj, capWD, capBat;
   int chunk;
 } ClImpl;
 
@@ -75,14 +75,15 @@ void opencl_list_devices(void) {
   for (int i = 0; i < n; i++) printf("  [%d] %s %s\n", i, names[i], gpu[i] ? "GPU" : "CPU/other");
 }
 
-static int build_program(ClImpl* c, int maxW) {
-  if (c->prog && c->progMaxW == maxW) return 0;
+static int build_program(ClImpl* c, int maxW, int swW) {
+  if (c->prog && c->progMaxW == maxW && c->progSwW == swW) return 0;
   if (c->k) CL.ReleaseKernel(c->k);
+  if (c->swk) CL.ReleaseKernel(c->swk);
   if (c->prog) CL.ReleaseProgram(c->prog);
-  c->k = NULL; c->prog = NULL;
+  c->k = c->swk = NULL; c->prog = NULL;
   const char* parts[2] = { BR_SRC_SIM_CORE, BR_SRC_OPENCL };
   cl_int e; c->prog = CL.CreateProgramWithSource(c->ctx, 2, parts, NULL, &e);
-  char opts[128]; snprintf(opts, sizeof opts, "-DBR_OPENCL=1 -DMAXW=%d -cl-fast-relaxed-math -cl-mad-enable", maxW);
+  char opts[160]; snprintf(opts, sizeof opts, "-DBR_OPENCL=1 -DMAXW=%d -DSW_MAXW=%d -cl-fast-relaxed-math -cl-mad-enable", maxW, swW);
   e = CL.BuildProgram(c->prog, 1, &c->dev, opts, NULL, NULL);
   if (e != CL_SUCCESS) {
     size_t len = 0; CL.GetProgramBuildInfo(c->prog, c->dev, CL_PROGRAM_BUILD_LOG, 0, NULL, &len);
@@ -91,7 +92,9 @@ static int build_program(ClImpl* c, int maxW) {
   }
   c->k = CL.CreateKernel(c->prog, "br_kernel", &e);
   if (e != CL_SUCCESS) { fprintf(stderr, "OpenCL kernel create failed (%d)\n", e); return -1; }
-  c->progMaxW = maxW; return 0;
+  c->swk = CL.CreateKernel(c->prog, "br_sw_kernel", &e);
+  if (e != CL_SUCCESS) { fprintf(stderr, "OpenCL swarm kernel create failed (%d)\n", e); return -1; }
+  c->progMaxW = maxW; c->progSwW = swW; return 0;
 }
 
 static cl_mem grow(ClImpl* c, cl_mem m, size_t* cap, size_t bytes) {
@@ -103,7 +106,7 @@ static cl_mem grow(ClImpl* c, cl_mem m, size_t* cap, size_t bytes) {
 
 static int opencl_eval(Backend* b, const float* weights, int nGenomes, const BrScen* scen, const float* traj, size_t trajFloats, BrParams* P, float* out) {
   ClImpl* c = (ClImpl*)b->impl;
-  if (build_program(c, br_max_width(P))) return -1;
+  if (build_program(c, br_max_width(P), c->prog ? c->progSwW : br_sw_max_width(P))) return -1;
   P->nRoll = nGenomes * P->S;
   size_t sBytes = sizeof(float) * (size_t)P->nRoll * P->stride, wBytes = sizeof(float) * (size_t)nGenomes * P->nw;
   c->state = grow(c, c->state, &c->capState, sBytes);
@@ -159,10 +162,74 @@ static int opencl_eval(Backend* b, const float* weights, int nGenomes, const BrS
   return 0;
 }
 
+// Swarm battles: same chunked dispatch and compaction as flights; one work-item per battle.
+static int opencl_eval_battles(Backend* b, const float* attW, const float* defW, const int* bat, int nBattles, const BrScen* scen,
+                               const float* start, size_t startFloats, BrParams* P, float* out) {
+  (void)startFloats;
+  ClImpl* c = (ClImpl*)b->impl;
+  if (build_program(c, c->prog ? c->progMaxW : br_max_width(P), br_sw_max_width(P))) return -1;
+  int nS = 0, nA = 0, nD = 0;
+  for (int r = 0; r < nBattles; r++) { if (bat[r * 3 + 2] >= nS) nS = bat[r * 3 + 2] + 1; if (bat[r * 3] >= nA) nA = bat[r * 3] + 1; if (bat[r * 3 + 1] >= nD) nD = bat[r * 3 + 1] + 1; }
+  P->nRoll = nBattles;
+  size_t sBytes = sizeof(float) * (size_t)nBattles * P->stride;
+  size_t aBytes = sizeof(float) * (P->attAI ? (size_t)nA * P->attNw : 1), dBytes = sizeof(float) * (P->defAI ? (size_t)nD * P->defNw : 1);
+  c->state = grow(c, c->state, &c->capState, sBytes);
+  c->weights = grow(c, c->weights, &c->capW, aBytes);
+  c->wD = grow(c, c->wD, &c->capWD, dBytes);
+  c->scen = grow(c, c->scen, &c->capScen, sizeof(BrScen) * (size_t)nS);
+  c->idx = grow(c, c->idx, &c->capIdx, sizeof(int) * (size_t)nBattles);
+  c->flags = grow(c, c->flags, &c->capFlags, sizeof(int) * (size_t)nBattles);
+  c->bat = grow(c, c->bat, &c->capBat, sizeof(int) * 3 * (size_t)nBattles);
+  if (!c->state || !c->weights || !c->wD || !c->idx || !c->flags || !c->bat) { fprintf(stderr, "OpenCL: out of GPU memory\n"); return -1; }
+  int* idx = (int*)malloc(sizeof(int) * (size_t)nBattles); int* flags = (int*)malloc(sizeof(int) * (size_t)nBattles);
+  for (int r = 0; r < nBattles; r++) idx[r] = r;
+  P->nActive = nBattles;
+  float* host = (float*)malloc(sBytes);
+  br_sw_init_states(host, P, scen, bat, nBattles, start);
+  CL.EnqueueWriteBuffer(c->q, c->idx, CL_FALSE, 0, sizeof(int) * (size_t)nBattles, idx, 0, NULL, NULL);
+  CL.EnqueueWriteBuffer(c->q, c->state, CL_FALSE, 0, sBytes, host, 0, NULL, NULL);
+  if (P->attAI) CL.EnqueueWriteBuffer(c->q, c->weights, CL_FALSE, 0, aBytes, attW, 0, NULL, NULL);
+  if (P->defAI) CL.EnqueueWriteBuffer(c->q, c->wD, CL_FALSE, 0, dBytes, defW, 0, NULL, NULL);
+  CL.EnqueueWriteBuffer(c->q, c->scen, CL_FALSE, 0, sizeof(BrScen) * (size_t)nS, scen, 0, NULL, NULL);
+  CL.EnqueueWriteBuffer(c->q, c->bat, CL_FALSE, 0, sizeof(int) * 3 * (size_t)nBattles, bat, 0, NULL, NULL);
+  size_t local = (size_t)(b->wg > 0 ? b->wg : 64); if ((int)local > b->maxWg) local = (size_t)b->maxWg;
+  double target = b->chunkMs > 0 ? b->chunkMs : 40; int chunk = 64;
+  int maxSteps = (int)(P->maxT / P->dt) + 8, done = 0; cl_uint alive = 0, zero = 0;
+  while (done < maxSteps) {
+    P->chunk = chunk;
+    CL.EnqueueWriteBuffer(c->q, c->params, CL_FALSE, 0, sizeof(BrParams), P, 0, NULL, NULL);
+    CL.EnqueueWriteBuffer(c->q, c->alive, CL_FALSE, 0, sizeof zero, &zero, 0, NULL, NULL);
+    cl_mem args[9] = { c->state, c->weights, c->wD, c->scen, c->params, c->alive, c->idx, c->flags, c->bat };
+    for (int i = 0; i < 9; i++) CL.SetKernelArg(c->swk, i, sizeof(cl_mem), &args[i]);
+    size_t global = ((size_t)P->nActive + local - 1) / local * local;
+    double t0 = br_now();
+    cl_int e = CL.EnqueueNDRangeKernel(c->q, c->swk, 1, NULL, &global, &local, 0, NULL, NULL);
+    if (e != CL_SUCCESS) { fprintf(stderr, "OpenCL launch failed (%d)\n", e); free(host); free(idx); free(flags); return -1; }
+    CL.EnqueueReadBuffer(c->q, c->alive, CL_TRUE, 0, sizeof alive, &alive, 0, NULL, NULL);
+    double ms = (br_now() - t0) * 1000;
+    done += chunk;
+    double scale = target / (ms > 0.5 ? ms : 0.5);
+    int next = (int)(chunk * (scale > 4 ? 4 : scale < 0.25 ? 0.25 : scale));
+    chunk = next < 8 ? 8 : next > 100000 ? 100000 : next;
+    if (alive == 0) break;
+    if (alive < 0.7 * P->nActive) {
+      CL.EnqueueReadBuffer(c->q, c->flags, CL_TRUE, 0, sizeof(int) * (size_t)nBattles, flags, 0, NULL, NULL);
+      int n = 0; for (int i = 0; i < P->nActive; i++) { int r = idx[i]; if (flags[r]) idx[n++] = r; }
+      P->nActive = n;
+      CL.EnqueueWriteBuffer(c->q, c->idx, CL_FALSE, 0, sizeof(int) * (size_t)n, idx, 0, NULL, NULL);
+    }
+  }
+  CL.EnqueueReadBuffer(c->q, c->state, CL_TRUE, 0, sBytes, host, 0, NULL, NULL);
+  br_sw_collect(host, P, nBattles, out);
+  free(host); free(idx); free(flags);
+  return 0;
+}
+
 static void opencl_destroy(Backend* b) { ClImpl* c = (ClImpl*)b->impl;
-  cl_mem ms[8] = { c->state, c->weights, c->scen, c->params, c->alive, c->idx, c->flags, c->traj };
-  for (int i = 0; i < 8; i++) if (ms[i]) CL.ReleaseMemObject(ms[i]);
+  cl_mem ms[10] = { c->state, c->weights, c->scen, c->params, c->alive, c->idx, c->flags, c->traj, c->wD, c->bat };
+  for (int i = 0; i < 10; i++) if (ms[i]) CL.ReleaseMemObject(ms[i]);
   if (c->k) CL.ReleaseKernel(c->k);
+  if (c->swk) CL.ReleaseKernel(c->swk);
   if (c->prog) CL.ReleaseProgram(c->prog);
   CL.ReleaseCommandQueue(c->q); CL.ReleaseContext(c->ctx); free(c); free(b); }
 
@@ -182,7 +249,7 @@ Backend* opencl_backend_create(int deviceIndex, char* err, int errLen) {
   c->alive = CL.CreateBuffer(c->ctx, CL_MEM_READ_WRITE, sizeof(cl_uint), NULL, &e);
   c->chunk = 256;
   Backend* b = (Backend*)calloc(1, sizeof(Backend));
-  b->name = "opencl"; b->eval = opencl_eval; b->destroy = opencl_destroy; b->impl = c;
+  b->name = "opencl"; b->eval = opencl_eval; b->evalBattles = opencl_eval_battles; b->destroy = opencl_destroy; b->impl = c;
   size_t mwg = 256; CL.GetDeviceInfo(c->dev, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof mwg, &mwg, NULL);
   cl_ulong mem = 0; CL.GetDeviceInfo(c->dev, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof mem, &mem, NULL);
   b->wg = 64; b->chunkMs = 40; b->maxWg = (int)mwg; b->memBytes = (double)mem;
