@@ -1,5 +1,29 @@
+# build output
 build/
 build-*/
+cmake-build-*/
 dist/
-*.json
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+*.o
+*.a
+*.exe
+*.dSYM/
+
+# trained networks and local data stay on your computer (the app saves them in your home folder)
+BallArena-star-*.json
+BallisticRange-champion.json
+*.backup.json
+*.log
+
+# editor, OS and local tool files
 .DS_Store
+.vscode/
+.idea/
+*.swp
+
+# secrets, just in case
+.env
+*.pem
+*.key

@@ -1,7 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Ball Arena Trainer</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
 /* Layout: full-bleed 3D range; controls on the left, live training on the right, like a flight-test console. Single dark look. */
 :root{ --bg:#0b1118; --panel:linear-gradient(180deg,rgba(16,25,35,.90),rgba(9,15,22,.90)); --line:rgba(150,180,205,.18); --fg:#e3ebf2; --dim:#8ea2b4;
@@ -181,7 +180,7 @@ body:not(.help) .note:not(#netNote):not(#tuneNote):not(#modeText),body:not(.help
   <div id="dlgBody"></div>
 </div>
 
-<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/":"/vendor/addons/"}}</script>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -189,7 +188,7 @@ import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 const $=id=>document.getElementById(id);
-const api=async(path,body)=>{ const r=await fetch(path,body===undefined?{}:{method:'POST',body:typeof body==='string'?body:JSON.stringify(body)}); if(!r.ok) throw new Error(r.status); return r.json(); };
+const api=async(path,body)=>{ const r=await fetch(path,body===undefined?{}:{method:'POST',headers:{'X-BR':'1'},body:typeof body==='string'?body:JSON.stringify(body)}); if(!r.ok) throw new Error(r.status); return r.json(); };
 const fmt=(v,d=0)=>Number(v).toLocaleString(undefined,{maximumFractionDigits:d,minimumFractionDigits:d});
 
 /* ---------------- layout: collapsible sections and panels, help text toggle (remembered in this window) ---------------- */

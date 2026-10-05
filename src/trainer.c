@@ -474,7 +474,10 @@ static int load_json_mode(const char* json, char* msg, int len, int wantMode) {
   int fmode = BR_MODE_REACH; { const char* m = strstr(json, "\"mode\""); const char* t = m ? strstr(m, "\"tag\"") : NULL; const char* w = m ? strstr(m, "\"swarm\"") : NULL;
     if (t && t - m < 16) fmode = BR_MODE_TAG; else if (w && w - m < 16) fmode = BR_MODE_SWARM; }
   if (wantMode >= 0 && fmode != wantMode) { snprintf(msg, len, "this network was trained in %s mode; switch to that mode to load it", mode_label(fmode)); return -1; }
-  int nw = 0; for (int l = 0; l < nl; l++) nw += arch[l + 1] * arch[l] + arch[l + 1];
+  long nwl = 0; for (int l = 0; l <= nl; l++) if (arch[l] < 1 || arch[l] > 4096) { snprintf(msg, len, "bad layer size"); return -1; }
+  for (int l = 0; l < nl; l++) nwl += (long)arch[l + 1] * arch[l] + arch[l + 1];
+  if (nwl > (4L << 20)) { snprintf(msg, len, "network too large"); return -1; }
+  int nw = (int)nwl;
   float* g = (float*)malloc(sizeof(float) * nw); p = strchr(w, '['); if (!p) { free(g); return -1; } p++;
   int n = 0; while (n < nw && *p && *p != ']') { g[n++] = strtof(p, (char**)&p); while (*p == ',' || *p == ' ') p++; }
   if (n != nw) { free(g); snprintf(msg, len, "expected %d weights, found %d", nw, n); return -1; }

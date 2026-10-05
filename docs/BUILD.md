@@ -17,7 +17,9 @@ zig cc -target x86_64-windows-gnu -O3 -ffast-math -mcpu=x86_64_v3 -DBR_HAVE_OPEN
   src/main.c src/trainer.c src/server.c src/backend_cpu.c src/backend_opencl.c build/kernels_embed.c \
   -lws2_32 -lshell32 -o BallArenaTrainer.exe
 ```
-Needs an AVX2 CPU and the GPU driver's OpenCL.
+Needs an AVX2 CPU and the GPU driver's OpenCL (use `-mcpu=x86_64_v2` / `-march=x86-64-v2` for older processors).
+No prebuilt executables are published: build from source.
+`build/kernels_embed.c` embeds the simulation source, GPU kernels, interface and the bundled three.js (`web/vendor/`).
 
 **Developer options:** `--bench`, `--compare` (CPU vs GPU on one batch), `--train`, `--list-devices`; `--help` lists
 every flag, including intercept mode (`--mode tag`, `--atk-range`, `--noise`, `--delay`, …) and `--alt-reward`.

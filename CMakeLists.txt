@@ -9,7 +9,8 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 set(EMBED ${CMAKE_BINARY_DIR}/kernels_embed.c)
-file(GLOB KERNEL_FILES ${CMAKE_SOURCE_DIR}/src/kernels/* ${CMAKE_SOURCE_DIR}/web/index.html)
+file(GLOB_RECURSE VENDOR_FILES ${CMAKE_SOURCE_DIR}/web/vendor/*.js)
+file(GLOB KERNEL_FILES ${CMAKE_SOURCE_DIR}/src/kernels/* ${CMAKE_SOURCE_DIR}/web/index.html ${VENDOR_FILES})
 add_custom_command(OUTPUT ${EMBED}
   COMMAND ${CMAKE_COMMAND} -DOUT=${EMBED} -DSRC=${CMAKE_SOURCE_DIR}/src -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
   DEPENDS ${CMAKE_SOURCE_DIR}/src/sim_core.h ${KERNEL_FILES} ${CMAKE_SOURCE_DIR}/cmake/embed.cmake)

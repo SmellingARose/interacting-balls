@@ -13,6 +13,7 @@
 #else
   #include <sys/socket.h>
   #include <sys/select.h>
+  #include <sys/time.h>
   #include <netinet/in.h>
   #include <arpa/inet.h>
   #include <unistd.h>
@@ -22,10 +23,24 @@
 #endif
 
 extern const char* BR_UI_HTML;
+// three.js and the few addons the page uses, embedded in the program (the page loads nothing from the internet)
+extern const char *BR_V_THREE, *BR_V_ORBIT, *BR_V_LINE2, *BR_V_LINEMAT, *BR_V_LINEGEO, *BR_V_SEG2, *BR_V_SEGGEO;
+static const struct { const char* path; const char** data; } VENDOR[] = {
+  { "/vendor/three.module.js", &BR_V_THREE }, { "/vendor/addons/controls/OrbitControls.js", &BR_V_ORBIT },
+  { "/vendor/addons/lines/Line2.js", &BR_V_LINE2 }, { "/vendor/addons/lines/LineMaterial.js", &BR_V_LINEMAT },
+  { "/vendor/addons/lines/LineGeometry.js", &BR_V_LINEGEO }, { "/vendor/addons/lines/LineSegments2.js", &BR_V_SEG2 },
+  { "/vendor/addons/lines/LineSegmentsGeometry.js", &BR_V_SEGGEO } };
 static volatile int quitReq = 0;
 static double lastRequest = 0;
 int trainer_busy(void);
 
+static void set_timeout(sock_t s, int sec) {
+#ifdef _WIN32
+  DWORD ms = (DWORD)sec * 1000; setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&ms, sizeof ms); setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&ms, sizeof ms);
+#else
+  struct timeval tv = { sec, 0 }; setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv); setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+#endif
+}
 static int send_all(sock_t s, const char* p, size_t n) {
   while (n) { int k = (int)send(s, p, (int)(n > 1 << 20 ? 1 << 20 : n), 0); if (k <= 0) return -1; p += k; n -= (size_t)k; }
   return 0;
@@ -37,6 +52,35 @@ static void reply(sock_t s, int code, const char* type, const char* body, size_t
   send_all(s, h, (size_t)n); if (len) send_all(s, body, len);
 }
 static void reply_sb(sock_t s, Sb* b) { reply(s, 200, "application/json", b->s ? b->s : "{}", b->s ? b->n : 2); free(b->s); }
+
+// Value of header `name` (case-insensitive) copied into out; returns 0 when missing.
+static int header_value(const char* req, const char* name, char* out, int len) {
+  size_t nl = strlen(name); const char* p = req;
+  while ((p = strstr(p, "\r\n")) != NULL) {
+    p += 2; if (p[0] == '\r') break;   // blank line: end of headers
+    int match = 1; for (size_t i = 0; i < nl; i++) { char a = p[i], b = name[i]; if (a >= 'A' && a <= 'Z') a += 32; if (b >= 'A' && b <= 'Z') b += 32; if (a != b) { match = 0; break; } }
+    if (!match || p[nl] != ':') continue;
+    p += nl + 1; while (*p == ' ' || *p == '\t') p++;
+    int n = 0; while (p[n] && p[n] != '\r' && p[n] != '\n' && n < len - 1) { out[n] = p[n]; n++; } out[n] = 0;
+    while (n > 0 && (out[n - 1] == ' ' || out[n - 1] == '\t')) out[--n] = 0;
+    return 1;
+  }
+  return 0;
+}
+// "127.0.0.1", "localhost" or either with :port.
+static int loopback_host(const char* h) {
+  const char* names[2] = { "127.0.0.1", "localhost" };
+  for (int i = 0; i < 2; i++) { size_t n = strlen(names[i]);
+    if (!strncmp(h, names[i], n)) { const char* r = h + n; if (!*r) return 1; if (*r == ':' && r[1]) { for (r++; *r; r++) if (*r < '0' || *r > '9') return 0; return 1; } } }
+  return 0;
+}
+static int header_ok(const char* req, int post) {
+  char v[300];
+  if (!header_value(req, "Host", v, sizeof v) || !loopback_host(v)) return 0;
+  if (header_value(req, "Origin", v, sizeof v)) { const char* h = !strncmp(v, "http://", 7) ? v + 7 : NULL; if (!h || !loopback_host(h)) return 0; }
+  if (post && (!header_value(req, "X-BR", v, sizeof v) || strcmp(v, "1"))) return 0;
+  return 1;
+}
 
 static void handle(sock_t s) {
   // read headers (+ body by Content-Length)
@@ -55,16 +99,21 @@ static void handle(sock_t s) {
     }
     if (n == cap) { cap *= 2; buf = (char*)realloc(buf, cap + 1); }
   }
-  // only answer requests addressed to this machine (blocks DNS-rebinding tricks from web pages)
-  char* host = strstr(buf, "\r\nHost:"); if (!host) host = strstr(buf, "\r\nhost:");
-  if (!host || !(strstr(host, "127.0.0.1") == host + 8 || strstr(host, "localhost") == host + 8)) { reply(s, 403, "text/plain", "forbidden", 9); free(buf); return; }
+  // Only answer requests addressed to this machine, from this app's own page:
+  //  - the Host header must be exactly 127.0.0.1 or localhost (optionally with a port): blocks DNS rebinding;
+  //  - any Origin header must be this page's own origin, and every POST must carry X-BR: 1 (a custom header makes a
+  //    browser ask permission first, which this server never grants): blocks other web pages from sending commands.
   char method[8] = "", path[256] = "";
   sscanf(buf, "%7s %255s", method, path);
+  if (!header_ok(buf, !strcmp(method, "POST"))) { reply(s, 403, "text/plain", "forbidden", 9); free(buf); return; }
   lastRequest = br_now();
   char* q = strchr(path, '?'); char query[128] = ""; if (q) { snprintf(query, sizeof query, "%s", q + 1); *q = 0; }
   Sb out = {0}; TrainCfg c;
   if (!strcmp(path, "/") || !strcmp(path, "/index.html")) reply(s, 200, "text/html; charset=utf-8", BR_UI_HTML, strlen(BR_UI_HTML));
   else if (!strcmp(path, "/favicon.ico")) reply(s, 204, "image/x-icon", "", 0);
+  else if (!strncmp(path, "/vendor/", 8)) { int hit = 0;
+    for (size_t i = 0; i < sizeof VENDOR / sizeof VENDOR[0]; i++) if (!strcmp(path, VENDOR[i].path)) { reply(s, 200, "text/javascript; charset=utf-8", *VENDOR[i].data, strlen(*VENDOR[i].data)); hit = 1; break; }
+    if (!hit) reply(s, 404, "text/plain", "not found", 9); }
   else if (!strcmp(path, "/api/hardware")) { hardware_json(&out); reply_sb(s, &out); }
   else if (!strcmp(path, "/api/status")) { int since = 0; sscanf(query, "since=%d", &since); trainer_status_json(&out, since); reply_sb(s, &out); }
   else if (!strcmp(path, "/api/start")) { cfg_defaults(&c); cfg_from_json(&c, body); trainer_start(&c); sb_printf(&out, "{\"ok\":true}"); reply_sb(s, &out); }
@@ -125,9 +174,11 @@ int serve_ui(int openWindow) {
   lastRequest = br_now();
   while (!quitReq) {
     // wake every second: quit by itself once idle (no window open, nothing training) for 2 minutes
+    // wake every second: quit by itself once idle (no window open, nothing training) for 2 minutes
     fd_set fs; FD_ZERO(&fs); FD_SET(ls, &fs); struct timeval tv = { 1, 0 };
     if (select((int)ls + 1, &fs, NULL, NULL, &tv) <= 0) { if (!trainer_busy() && br_now() - lastRequest > 120) break; continue; }
     sock_t s = accept(ls, NULL, NULL); if (s == INVALID_SOCKET) continue;
+    set_timeout(s, 10);   // a stalled client must not block the app's single accept loop
     handle(s); CLOSESOCK(s);
   }
   trainer_pause();

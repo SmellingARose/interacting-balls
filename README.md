@@ -40,6 +40,15 @@ Swarm: `brtrain --train --mode swarm --attackers 4 --defenders 4 --att algo --de
 Command-line runs save stars to your home folder like the app: set `HOME` to a scratch folder when testing.
 
 
+## Security and network notes
+- The app's interface listens on `127.0.0.1` only (ports 8642–8661). It answers only requests addressed to this computer
+  from its own page, and commands need a header other web pages cannot send, so a web page you visit cannot control it.
+  The page loads nothing from the internet (three.js is included, see [THIRD_PARTY.md](THIRD_PARTY.md)).
+- Trained networks are saved as JSON files in your home folder (`~/BallArena-star-*.json`).
+
+## License
+MIT, see [LICENSE](LICENSE). three.js (MIT) is bundled in `web/vendor/`, see [THIRD_PARTY.md](THIRD_PARTY.md).
+
 ## Docs
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): code layout and data flow
 - [docs/TRAINING.md](docs/TRAINING.md): settings, auto-tune, tips

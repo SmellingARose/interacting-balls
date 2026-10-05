@@ -21,8 +21,8 @@ typedef struct {
   // swarm: attN attackers vs defN defenders; each side flown by a network (AI) or the guidance algorithm; a network side
   // uses a commander brain (one network steers the whole side) or nearest-K (one small network per ball, sees swK nearest)
   int attN, defN, attAI, defAI, attCmd, defCmd, swK;
-  double rangeMax;
-  int noEarly;       // swarm: never end a battle early (for checking the early-end shortcut)   // swarm: attackers launch `range`–`rangeMax` from the defended point, from any direction
+  double rangeMax;   // swarm: attackers launch `range`–`rangeMax` from the defended point, from any direction
+  int noEarly;       // swarm: never end a battle early (for checking the early-end shortcut)
   int swLayout;   // GPU swarm layout (0 = automatic, 1 = thread per battle, 2 = work-group per battle), from auto-tune
 } TrainCfg;
 
