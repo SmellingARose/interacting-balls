@@ -16,6 +16,11 @@ them.
 | Setting | Effect |
 |---|---|
 | CMA-ES / GA | CMA-ES adapts per-weight step sizes (default). GA needs decay. |
+| CMA-ES variant | Automatic: sep-CMA-ES up to 2,000 weights, LM-MA-ES above (`--opt sep|lm`). Both draw mirrored pairs (z, −z). |
+| Head start | A new network first copies the guidance algorithm (behaviour cloning, 3 DAgger rounds), then evolves (`--no-imitate`). |
+| Automatic difficulty | A new network starts on an easy version of the settings and steps up a level (of 10) when validation reaches the threshold twice in a row (`--auto-diff`). |
+| Restart when stuck | No validation or training-score progress for 6 checks: restart around the star, alternating wide/large and fine/small searches (`--no-restarts`). |
+| Normalise sensors | Running mean/spread per sensor, folded into the first layer (reach, intercept; `--no-norm`). |
 | Islands | Parallel populations swapping their best every N generations. |
 | Scenarios / reuse | 16–32 scenarios, kept 5–10 generations, for fair comparisons. |
 | Past frames K, memory neurons | History for noisy tasks. Change the network shape (fresh network). |
@@ -44,6 +49,11 @@ them.
 - Intercept: start with no noise, delay or weaving and a short range (7 km); add difficulty once Validation is high.
 - Swarm: start with AI defenders vs algorithm attackers, 3 vs 3, Nearest-K with K = 2, 7 km and no radar delay; once
   the validation catch rate is high, add attackers, radar range or weaving. Nearest-K brains carry over to other counts.
+- Swarm AI vs AI: opponents are drawn from the other side's last 16 stars, weighted toward the ones this side still
+  loses to (prioritised fictitious self-play).
+- New networks: keep the head start on; with automatic difficulty on, set your real target and let it climb.
 - Swarm AI vs AI: watch the validation rates (each side against the algorithm), not the training scores, which move as
   the opponents change. Commander brains have many more weights and learn much more slowly.
 - Swarm auto-tune measures battles per generation on every backend and both GPU layouts with your current matchup.
+
+The ideas behind these, with the maths: [docs/explainers](explainers/README.md).

@@ -1572,6 +1572,7 @@ int cli_main(int argc, char** argv) {
   cli_cfg(&c, argc, argv, &mode, &gens, &load);
   if (mode == 5) { printf("Double-click the app to open the interface. Developer options: --bench, --compare, --train [--gens N], --list-devices,\n"
                           "with --backend cpu|metal|opencl:N --pop --scen --layers --width --K --mem --opt cma|ga --dt --every-step --alt-reward --islands N --wg --load FILE\n"
+                          "Techniques: --opt sep|lm (CMA-ES variant)  --no-imitate (no head start)  --auto-diff (automatic difficulty)  --no-restarts  --no-norm  --val-every N\n"
                           "Intercept (tag) mode: --mode reach|tag|swarm  --atk-range M (runner launch distance, 4000-100000 m)  --evade 0-1 (runner weave)\n"
                           "  --noise M (sensor noise sigma)  --delay MS (sensor delay)  --detect M (radar range: launch when the runner comes this close, 0 = launch at once)\n"
                           "  --tw-runner X (runner thrust-to-weight)  --blast M (catch radius, 0-10 m)\n"
