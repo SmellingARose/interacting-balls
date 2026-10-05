@@ -138,6 +138,19 @@ body:not(.help) .note:not(#netNote):not(#tuneNote):not(#modeText),body:not(.help
   <label class="chk"><input type="checkbox" id="cSpeed"> Reward speed</label>
   <label>Speed weight <b id="vSpw"></b><input id="sSpw" type="range" min="0.5" max="10" step="0.5" value="3"></label>
 
+  <h2>Techniques</h2>
+  <label class="chk"><input type="checkbox" id="cImitate" checked> Head start: copy the guidance algorithm</label>
+  <div class="note">A new network first learns to imitate the algorithm (behaviour cloning with DAgger), then evolves from there.</div>
+  <label class="chk"><input type="checkbox" id="cAutoDiff"> Automatic difficulty</label>
+  <label>Step up at validation <b id="vDiffAt"></b><input id="sDiffAt" type="range" min="0.3" max="1" step="0.05" value="0.8"></label>
+  <div class="note">A new network starts on an easy version of your settings and steps up a level (of 10) each time validation reaches this twice in a row. Level 10 is your settings.</div>
+  <label class="chk"><input type="checkbox" id="cRestarts" checked> Restart when stuck</label>
+  <div class="note">When neither validation nor the training score improves for 6 checks, the optimizer restarts around the best network, alternating a wide search with a big population and a fine one with a small population.</div>
+  <label class="chk"><input type="checkbox" id="cNorm" checked> Normalise sensors</label>
+  <div class="note">Rescales each sensor by its running mean and spread (reach and intercept). Folded into the network's first layer, so saved networks are unchanged.</div>
+  <label>CMA-ES variant <b id="vOptKind"></b><input id="sOptKind" type="range" min="0" max="2" step="1" value="0"></label>
+  <div class="note">Automatic uses sep-CMA-ES up to 2,000 weights and LM-MA-ES above. Both draw mirrored pairs of candidates.</div>
+
   <h2>Physics</h2>
   <label>Physics step <b id="vDt"></b><input id="sDt" type="range" min="5" max="40" step="1" value="20"></label>
   <label class="chk"><input type="checkbox" id="cEvery"> Brain decides every physics step</label>
@@ -214,7 +227,7 @@ for(const b of document.querySelectorAll('[data-min]')){ const p=$(b.dataset.min
 
 /* ---------------- settings (remembered in this window) ---------------- */
 const S={ backend:'auto', layers:1, width:32, K:0, mem:0, cma:1, pop:256, scen:16, reuse:5, islands:0, nIsl:8, migrate:10,
-  decayOn:1, decay:0.995, lrMin:1e-4, speedOn:0, speedW:3, altOn:0, dt:0.02, everyStep:0, tw:2.5, wg:64, chunkMs:40,
+  decayOn:1, decay:0.995, lrMin:1e-4, imitate:1, autoDiff:0, diffAt:0.8, restarts:1, normIn:1, optKind:0, speedOn:0, speedW:3, altOn:0, dt:0.02, everyStep:0, tw:2.5, wg:64, chunkMs:40,
   mode:0, attN:4, defN:4, attAI:0, defAI:1, attCmd:0, defCmd:0, swK:2, swLayout:0, rangeMax:8500, blast:0, reachMax:7000, range:7000, evade:0, noise:0, delayMs:0, detect:0, twRunner:2.5 };   // mode 0 = reach target, 1 = intercept, 2 = swarm
 try{ Object.assign(S, JSON.parse(localStorage.getItem('brt-settings')||'{}')); }catch(e){}
 const save=()=>{ try{ localStorage.setItem('brt-settings',JSON.stringify(S)); }catch(e){} };
@@ -230,6 +243,8 @@ bind('sPop','vPop','pop',v=>v); bind('sScen','vScen','scen',v=>v); bind('sReuse'
 check('cIsl','islands',syncDis); bind('sIsl','vIsl','nIsl',v=>v); bind('sMig','vMig','migrate',v=>v+' gens');
 check('cDecay','decayOn',syncDis); bind('sDecay','vDecay','decay',v=>'×'+v.toFixed(3));
 bind('sLrMin','vLrMin','lrMin',v=>{ const x=10**v; return x>=0.01?x.toFixed(2):x.toExponential(0); },v=>10**v,v=>Math.log10(v));
+check('cImitate','imitate'); check('cAutoDiff','autoDiff',syncDis); check('cRestarts','restarts'); check('cNorm','normIn');
+bind('sDiffAt','vDiffAt','diffAt',v=>Math.round(v*100)+'%'); bind('sOptKind','vOptKind','optKind',v=>['automatic','sep-CMA-ES','LM-MA-ES'][v]);
 check('cAlt','altOn'); check('cSpeed','speedOn',syncDis); bind('sSpw','vSpw','speedW',v=>v);
 bind('sDt','vDt','dt',v=>v+' ms',v=>v/1000,v=>Math.round(v*1000)); check('cEvery','everyStep'); bind('sTw','vTw','tw',v=>v.toFixed(1)+'×');
 bind('sReachMax','vReachMax','reachMax',v=>fmt(v/1000,0)+' km'); $('sReachMax').addEventListener('input',()=>syncMode());
@@ -272,7 +287,7 @@ async function setMode(m){
   if(running) changed(); else await api('/api/mode',{mode:m}).catch(()=>{});   // loads that mode's saved network
 }
 $('mReach').onclick=()=>setMode(0); $('mInt').onclick=()=>setMode(1); $('mSwarm').onclick=()=>setMode(2);
-function syncDis(){ $('sIsl').disabled=$('sMig').disabled=!S.islands; $('sDecay').disabled=!S.decayOn; $('sSpw').disabled=!S.speedOn; }
+function syncDis(){ $('sDiffAt').disabled=!S.autoDiff; $('sIsl').disabled=$('sMig').disabled=!S.islands; $('sDecay').disabled=!S.decayOn; $('sSpw').disabled=!S.speedOn; }
 function seg(){ $('opCMA').classList.toggle('on',!!S.cma); $('opGA').classList.toggle('on',!S.cma); }
 $('opCMA').onclick=()=>{ S.cma=1; seg(); changed(); }; $('opGA').onclick=()=>{ S.cma=0; seg(); changed(); };
 seg(); syncDis();
@@ -334,7 +349,7 @@ async function poll(){
       $('sVal').textContent=(w.defAI?'catch '+pc(w.valCatch):'')+(w.defAI&&w.attAI?' · ':'')+(w.attAI?'leak '+pc(w.valLeak):''); }
     $('sSps').textContent=st.stepsPerS?fmt(st.stepsPerS/1e6,1):'—'; $('sFps').textContent=st.flightsPerS?fmt(st.flightsPerS):'—';
     $('sGt').textContent=st.genTime?fmt(st.genTime,3)+' s':'—'; $('sSig').textContent=st.gen?Number(st.sigma).toPrecision(2):'—';
-    $('status').textContent=(st.tuning?'auto-tuning · ':'')+(st.backend?st.backend+' · ':'')+(st.message||'')+(st.islands>1?` · ${st.islands} islands`:'');
+    $('status').textContent=(st.tuning?'auto-tuning · ':'')+(st.backend?st.backend+' · ':'')+(st.message||'')+(st.islands>1?` · ${st.islands} islands`:'')+(st.autoDiff&&!/difficulty/.test(st.message||'')?` · difficulty ${st.level}/10`:'')+(st.restarts?` · ${st.restarts} restart${st.restarts>1?'s':''}`:'');
     drawChart();
   }catch(e){ $('offline').hidden=false; }
   setTimeout(poll,350);
