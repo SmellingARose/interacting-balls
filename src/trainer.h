@@ -23,6 +23,7 @@ typedef struct {
   int attN, defN, attAI, defAI, attCmd, defCmd, swK;
   double rangeMax;   // swarm: attackers launch `range`–`rangeMax` from the defended point, from any direction
   int noEarly;       // swarm: never end a battle early (for checking the early-end shortcut)
+  int restarts;   // restart the optimizer around the best network when validation stalls (BIPOP-style)
   int optKind;    // CMA family: 0 automatic (LM-MA-ES above 2,000 weights), 1 sep-CMA-ES, 2 LM-MA-ES
   int swLayout;   // GPU swarm layout (0 = automatic, 1 = thread per battle, 2 = work-group per battle), from auto-tune
 } TrainCfg;

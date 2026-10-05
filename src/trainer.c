@@ -65,7 +65,7 @@ void cfg_defaults(TrainCfg* c) {
   memset(c, 0, sizeof *c);
   strcpy(c->backend, "auto"); c->wg = 64; c->chunkMs = 40;
   c->layers = 1; c->width = 32; c->pop = 256; c->scen = 16; c->reuse = 5; c->nIsl = 4; c->migrate = 10;
-  c->cma = 1; c->decayOn = 1; c->decay = 0.995; c->lrMin = 1e-4;
+  c->cma = 1; c->restarts = 1; c->decayOn = 1; c->decay = 0.995; c->lrMin = 1e-4;
   c->dt = 0.02; c->tw = 2.5; c->valEvery = 10; c->valScen = 64;
   c->mode = 0; c->range = 7000; c->twRunner = 2.5; c->reachMax = 7000; c->blast = 0;
   c->rangeMax = 8500; c->attN = 4; c->defN = 4; c->attAI = 0; c->defAI = 1; c->attCmd = 0; c->defCmd = 0; c->swK = 2;
@@ -79,7 +79,7 @@ void cfg_from_json(TrainCfg* c, const char* j) {
   c->pop = clampi((int)jnum(j, "pop", c->pop), 8, 262144); c->scen = clampi((int)jnum(j, "scen", c->scen), 1, 256);
   c->reuse = clampi((int)jnum(j, "reuse", c->reuse), 1, 1000); c->islands = jnum(j, "islands", c->islands) != 0;
   c->nIsl = clampi((int)jnum(j, "nIsl", c->nIsl), 2, 256); c->migrate = clampi((int)jnum(j, "migrate", c->migrate), 1, 1000);
-  c->cma = jnum(j, "cma", c->cma) != 0; c->optKind = clampi((int)jnum(j, "optKind", c->optKind), 0, 2); c->decayOn = jnum(j, "decayOn", c->decayOn) != 0; c->decay = jnum(j, "decay", c->decay); c->lrMin = jnum(j, "lrMin", c->lrMin);
+  c->cma = jnum(j, "cma", c->cma) != 0; c->optKind = clampi((int)jnum(j, "optKind", c->optKind), 0, 2); c->restarts = jnum(j, "restarts", c->restarts) != 0; c->decayOn = jnum(j, "decayOn", c->decayOn) != 0; c->decay = jnum(j, "decay", c->decay); c->lrMin = jnum(j, "lrMin", c->lrMin);
   c->dt = jnum(j, "dt", c->dt); if (c->dt < 0.005) c->dt = 0.005; if (c->dt > 0.04) c->dt = 0.04;
   c->tw = jnum(j, "tw", c->tw); c->speedW = jnum(j, "speedW", c->speedW); c->everyStep = jnum(j, "everyStep", c->everyStep) != 0;
   c->altOn = jnum(j, "altOn", c->altOn) != 0;
@@ -97,11 +97,11 @@ void cfg_from_json(TrainCfg* c, const char* j) {
 }
 void cfg_to_json(const TrainCfg* c, char* o, int len) {
   snprintf(o, len, "{\"backend\":\"%s\",\"wg\":%d,\"chunkMs\":%g,\"layers\":%d,\"width\":%d,\"K\":%d,\"mem\":%d,\"pop\":%d,\"scen\":%d,\"reuse\":%d,"
-    "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"optKind\":%d,\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d,\"altOn\":%d,"
+    "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"optKind\":%d,\"restarts\":%d,\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d,\"altOn\":%d,"
     "\"mode\":%d,\"blast\":%g,\"reachMax\":%g,\"range\":%g,\"evade\":%g,\"noise\":%g,\"delayMs\":%g,\"detect\":%g,\"twRunner\":%g,"
     "\"rangeMax\":%g,\"attN\":%d,\"defN\":%d,\"attAI\":%d,\"defAI\":%d,\"attCmd\":%d,\"defCmd\":%d,\"swK\":%d}",
     c->backend, c->wg, c->chunkMs, c->layers, c->width, c->K, c->mem, c->pop, c->scen, c->reuse, c->islands, c->nIsl, c->migrate,
-    c->cma, c->optKind, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW, c->everyStep, c->altOn,
+    c->cma, c->optKind, c->restarts, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW, c->everyStep, c->altOn,
     c->mode, c->blast, c->reachMax, c->range, c->evade, c->noise, c->delayMs, c->detect, c->twRunner,
     c->rangeMax, c->attN, c->defN, c->attAI, c->defAI, c->attCmd, c->defCmd, c->swK);
 }
@@ -457,6 +457,8 @@ static struct {
   int gen; double best, mean, sigma, genTime, flightsPerS, stepsPerS, starHits, starMiss, valHit; int valGen;
   Hist* hist; int histN;
   char msg[256]; char beInfo[256];
+  // restarts (BIPOP-style): population multiplier and starting step size of the current run, stalled validations
+  int restarts, stall; double popMul, restartSigma, bestVal, fitSum, bestFitAvg; int fitN;
   // auto-tune
   br_thread tuneTh; volatile int tuning, tuneLive; TrainCfg tuneCfg; Sb tuneLog; Sb tuneResult;
 } T;
@@ -528,7 +530,9 @@ int trainer_load_json(const char* json, char* msg, int len) { return load_json_m
 // Make `mode`'s saved star the current one (none if that mode has never been trained). Lock NOT held.
 static void load_mode_star(int mode) {
   br_lock(&T.mx); free(T.star); T.star = NULL; T.starNw = 0; T.starMode = mode; T.starVersion++; T.gen = 0; T.histN = 0;
-  T.best = T.mean = T.starHits = T.starMiss = T.valHit = 0; T.valGen = 0; br_unlock(&T.mx);
+  T.best = T.mean = T.starHits = T.starMiss = T.valHit = 0; T.valGen = 0;
+  T.restarts = 0; T.stall = 0; T.bestVal = 0; T.popMul = 1; T.restartSigma = 0; T.bestFitAvg = -1e30; T.fitSum = 0; T.fitN = 0;
+  br_unlock(&T.mx);
   if (mode == BR_MODE_SWARM) { set_msg("swarm: each side's star is kept per matchup and loaded when training starts"); return; }
   const char* p = save_path_mode(mode); FILE* f = fopen(p, "rb");
   for (int old = -1; !f && mode == BR_MODE_REACH && old >= -2; old--) { p = save_path_mode(old); f = fopen(p, "rb"); }
@@ -547,7 +551,7 @@ void trainer_set_mode(int mode) {
 
 void trainer_init(void) {
   br_mutex_init(&T.mx); rng_seed(&T.rng, (unsigned)(br_now() * 1000));
-  cfg_defaults(&T.cfg); T.hist = (Hist*)calloc(HIST_MAX, sizeof(Hist));
+  cfg_defaults(&T.cfg); T.hist = (Hist*)calloc(HIST_MAX, sizeof(Hist)); T.bestFitAvg = -1e30; T.popMul = 1;
   load_mode_star(T.cfg.mode);
 }
 
@@ -565,7 +569,8 @@ static void build_islands(void) {
   free_islands(); g_optKind = T.cfg.optKind;
   TrainCfg* c = &T.cfg; setup_params(&T.P, c, c->scen);
   int k = c->islands ? c->nIsl : 1; if (k > c->pop / 4) k = c->pop / 4 > 1 ? c->pop / 4 : 1;
-  int per = c->pop / k; if (per < 4) per = 4;
+  if (T.popMul <= 0) T.popMul = 1;
+  int per = (int)(c->pop * T.popMul) / k; if (per < 4) per = 4;
   float* seed = (float*)malloc(sizeof(float) * T.P.nw); int seeded = 0;
   br_lock(&T.mx); if (star_matches(&T.P)) { memcpy(seed, T.star, sizeof(float) * T.P.nw); seeded = 1; } br_unlock(&T.mx);
   T.isl = (Island*)calloc(k, sizeof(Island)); T.nIsl = k;
@@ -573,11 +578,11 @@ static void build_islands(void) {
     Island* I = &T.isl[i]; I->cma = c->cma; I->bestG = (float*)calloc(T.P.nw, sizeof(float)); I->bestF = -1e30;
     float* s = (float*)malloc(sizeof(float) * T.P.nw);
     if (seeded) memcpy(s, seed, sizeof(float) * T.P.nw); else { random_genome(s, &T.P, &T.rng); if (c->cma) for (int j = 0; j < T.P.nw; j++) s[j] *= 0.2f; }
-    if (c->cma) cma_init(&I->c, T.P.nw, per, s, seeded ? 0.02 : 0.25); else ga_init(&I->ga, T.P.nw, per, s, seeded ? 0.03 : 0.1, &T.rng);
+    if (c->cma) cma_init(&I->c, T.P.nw, per, s, seeded ? (T.restartSigma > 0 ? T.restartSigma : 0.02) : 0.25); else ga_init(&I->ga, T.P.nw, per, s, seeded ? 0.03 : 0.1, &T.rng);
     free(s);
   }
   free(seed);
-  if (!seeded) { br_lock(&T.mx); T.histN = 0; T.gen = 0; br_unlock(&T.mx); }
+  if (!seeded) { br_lock(&T.mx); T.histN = 0; T.gen = 0; br_unlock(&T.mx); T.restarts = 0; T.stall = 0; T.bestVal = 0; T.popMul = 1; T.restartSigma = 0; T.bestFitAvg = -1e30; T.fitSum = 0; T.fitN = 0; }
   T.structKey[0] = c->layers; T.structKey[1] = c->width; T.structKey[2] = c->K; T.structKey[3] = c->mem;
   T.structKey[4] = c->pop; T.structKey[5] = c->islands ? c->nIsl : 0; T.structKey[6] = c->cma; T.structKey[7] = 1;
   T.scenAge = 1 << 30;
@@ -616,6 +621,7 @@ typedef struct {
   float* star; double starFit, best, mean; int starVersion;
   float* pool; int poolN, poolNext;       // this side's recent stars: the other side trains against them
   double val; int valGen;                 // validation vs the algorithm: catch rate (defenders) or leak rate (attackers)
+  double bestVal, fitSum, bestFitAvg; int stall, restarts, fitN;   // restarts when validation and the training score stall
 } SwSide;
 static struct {
   SwSide side[2];                         // 0 = attackers, 1 = defenders
@@ -676,7 +682,7 @@ static void sw_build(const TrainCfg* c, const BrParams* P, int side, int lam) {
   SwSide* S = &SW.side[side]; int ai = side ? c->defAI : c->attAI, cmd = side ? c->defCmd : c->attCmd;
   int key[8] = { ai, c->layers, c->width, cmd, cmd ? c->attN : 0, cmd ? c->defN : 0, cmd ? 0 : c->swK, lam };
   if (S->live == ai && !memcmp(S->key, key, sizeof key)) return;
-  sw_side_free(S); memcpy(S->key, key, sizeof key); S->ai = ai; g_optKind = c->optKind;
+  sw_side_free(S); memcpy(S->key, key, sizeof key); S->ai = ai; g_optKind = c->optKind; S->bestFitAvg = -1e30;
   if (!ai) return;
   S->nin = side ? P->defNin : P->attNin; S->nout = side ? P->defNout : P->attNout; S->nw = side ? P->defNw : P->attNw;
   float* seed = sw_load(c, P, side); int seeded = seed != NULL;
@@ -704,6 +710,16 @@ static void sw_validate(const TrainCfg* c) {
     if (T.be->evalBattles(T.be, side ? NULL : S->star, side ? S->star : NULL, bat, P.S, SW.val.sc, SW.val.traj, SW.val.trajFloats, &Q, out)) continue;
     double n = 0; for (int i = 0; i < P.S; i++) n += out[i * BR_SWOUT + (side ? 0 : 1)];
     br_lock(&T.mx); S->val = n / ((double)P.S * c->attN); S->valGen = T.gen; br_unlock(&T.mx);
+    double avg = S->fitN ? S->fitSum / S->fitN : -1e30; S->fitSum = 0; S->fitN = 0;
+    int better = S->val > S->bestVal + 1e-9 || avg > S->bestFitAvg + 0.05;
+    if (S->val > S->bestVal) S->bestVal = S->val; if (avg > S->bestFitAvg) S->bestFitAvg = avg;
+    if (better) S->stall = 0; else S->stall++;
+    if (c->restarts && S->stall >= 6 && S->bestVal < 1) {   // restart this side's optimizer around its star (BIPOP-style)
+      S->restarts++; S->stall = 0; int lam = S->cma.lam, big = S->restarts & 1;
+      int nl = big ? (lam * 2 > 4096 ? 4096 : lam * 2) : (lam / 2 > 8 ? lam / 2 : 8);
+      cma_free(&S->cma); g_optKind = c->optKind; cma_init(&S->cma, S->nw, nl, S->star, big ? 0.1 : 0.01);
+      set_msg("%s: validation stalled at %.0f%%, restart %d (%s search)", side ? "defenders" : "attackers", S->bestVal * 100, S->restarts, big ? "wide" : "fine");
+    }
   }
   free(bat); free(out);
 }
@@ -722,19 +738,20 @@ static int sw_generation(void) {
     SwSide* S = &SW.side[side]; if (!S->ai) continue;
     SwSide* O = &SW.side[side ^ 1];
     cma_ask(&S->cma, &T.rng);
-    int nb = lam * c->scen; int* bat = (int*)malloc(sizeof(int) * 3 * nb); float* out = (float*)malloc(sizeof(float) * BR_SWOUT * nb);
-    for (int i = 0; i < lam; i++) for (int j = 0; j < c->scen; j++) { int b = i * c->scen + j, opp = O->ai ? (i + j) % O->poolN : 0;
+    int L = S->cma.lam;   // this side's population (a restart may have changed it)
+    int nb = L * c->scen; int* bat = (int*)malloc(sizeof(int) * 3 * nb); float* out = (float*)malloc(sizeof(float) * BR_SWOUT * nb);
+    for (int i = 0; i < L; i++) for (int j = 0; j < c->scen; j++) { int b = i * c->scen + j, opp = O->ai ? (i + j) % O->poolN : 0;
       bat[b * 3] = side ? opp : i; bat[b * 3 + 1] = side ? i : opp; bat[b * 3 + 2] = j; }
     const float* mine = S->cma.X; const float* theirs = O->ai ? O->pool : NULL;
     if (T.be->evalBattles(T.be, side ? theirs : mine, side ? mine : theirs, bat, nb, SW.scen.sc, SW.scen.traj, SW.scen.trajFloats, &P, out)) {
       free(bat); free(out); set_msg("battle evaluation failed on %s", T.be->info); return -1; }
-    double* fit = (double*)malloc(sizeof(double) * lam); int best = 0; double mean = 0;
-    for (int i = 0; i < lam; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + (size_t)(i * c->scen + j) * BR_SWOUT; f += sw_fit(o, side, c); bsteps += o[4]; }
+    double* fit = (double*)malloc(sizeof(double) * L); int best = 0; double mean = 0;
+    for (int i = 0; i < L; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + (size_t)(i * c->scen + j) * BR_SWOUT; f += sw_fit(o, side, c); bsteps += o[4]; }
       fit[i] = f / c->scen; mean += fit[i]; if (fit[i] > fit[best]) best = i; }
     for (int j = 0; j < c->scen; j++) { const float* o = out + (size_t)(best * c->scen + j) * BR_SWOUT; catches += o[0]; leaks += o[1]; }
     battles += nb;
     br_lock(&T.mx);
-    memcpy(S->star, mine + (size_t)best * S->nw, sizeof(float) * S->nw); S->starFit = fit[best]; S->best = fit[best]; S->mean = mean / lam; S->starVersion++;
+    memcpy(S->star, mine + (size_t)best * S->nw, sizeof(float) * S->nw); S->starFit = fit[best]; S->best = fit[best]; S->fitSum += fit[best]; S->fitN++; S->mean = mean / L; S->starVersion++;
     br_unlock(&T.mx);
     cma_tell(&S->cma, fit); if (c->decayOn) S->cma.sigma *= c->decay; if (S->cma.sigma < c->lrMin) S->cma.sigma = c->lrMin;
     free(fit); free(bat); free(out);
@@ -810,7 +827,7 @@ static void train_thread(void* arg) {
     if (T.starNw != T.P.nw) { free(T.star); T.star = (float*)malloc(sizeof(float) * T.P.nw); T.starNw = T.P.nw; }
     memcpy(T.star, flat + (size_t)star * T.P.nw, sizeof(float) * T.P.nw);
     T.starNl = T.P.nl; memcpy(T.starArch, T.P.arch, sizeof(int) * (T.P.nl + 1)); T.starK = T.P.K; T.starMem = T.P.rec; T.starDt = c->dt; T.starTw = c->tw; T.starEvery = c->everyStep; T.starVersion++; T.starFit = fit[star];
-    T.best = fit[star]; T.mean = mean; T.sigma = sig / T.nIsl; T.genTime = dt; T.flightsPerS = n * c->scen / dt; T.stepsPerS = steps / dt;
+    T.best = fit[star]; T.mean = mean; T.fitSum += fit[star]; T.fitN++; T.sigma = sig / T.nIsl; T.genTime = dt; T.flightsPerS = n * c->scen / dt; T.stepsPerS = steps / dt;
     T.starHits = (double)hits / c->scen; T.starMiss = miss / c->scen;
     if (T.histN == HIST_MAX) { memmove(T.hist, T.hist + 1, sizeof(Hist) * (HIST_MAX - 1)); T.histN--; }
     Hist* h = &T.hist[T.histN++]; h->gen = gen; h->best = (float)T.best; h->mean = (float)mean; memcpy(h->isl, islBest, sizeof islBest);
@@ -824,6 +841,19 @@ static void train_thread(void* arg) {
       float* g = (float*)malloc(sizeof(float) * T.P.nw); memcpy(g, flat + (size_t)star * T.P.nw, sizeof(float) * T.P.nw);
       double v = validate(g); free(g);
       br_lock(&T.mx); T.valHit = v; T.valGen = gen; br_unlock(&T.mx);
+      // restarts: validation not better for 6 checks in a row (and not already perfect) restarts the optimizer around the
+      // star, alternating a large population with a wide search and a small one with a fine search (BIPOP-CMA-ES)
+      double avg = T.fitN ? T.fitSum / T.fitN : -1e30; T.fitSum = 0; T.fitN = 0;   // mean star fitness since the last check
+      int better = v > T.bestVal + 1e-9 || avg > T.bestFitAvg + 0.05;
+      if (v > T.bestVal) T.bestVal = v; if (avg > T.bestFitAvg) T.bestFitAvg = avg;
+      if (better) T.stall = 0; else T.stall++;   // stuck = neither validation nor the training score improved
+      if (c->restarts && c->cma && T.stall >= 6 && T.bestVal < 1) {
+        T.restarts++; T.stall = 0;
+        if (T.restarts & 1) { T.popMul = fmin(8, (T.popMul > 1 ? T.popMul : 1) * 2); T.restartSigma = 0.1; }
+        else { T.popMul = 0.5; T.restartSigma = 0.01; }
+        set_msg("validation stalled at %.0f%%: restart %d with a %s search (population ×%g)", T.bestVal * 100, T.restarts, T.restarts & 1 ? "wide" : "fine", T.popMul);
+        build_islands();   // seeded from the star, which is kept
+      }
       autosave();
     }
   }
@@ -862,9 +892,9 @@ void trainer_reset(void) {
 void trainer_status_json(Sb* o, int since) {
   br_lock(&T.mx);
   sb_printf(o, "{\"mode\":%d,\"running\":%s,\"tuning\":%s,\"gen\":%d,\"best\":%.4f,\"mean\":%.4f,\"starHits\":%.4f,\"starMiss\":%.2f,\"flightsPerS\":%.0f,\"stepsPerS\":%.0f,"
-    "\"genTime\":%.4f,\"sigma\":%.3g,\"valHit\":%.4f,\"valGen\":%d,\"starVersion\":%d,\"hasStar\":%s,\"islands\":%d,\"backend\":",
+    "\"genTime\":%.4f,\"sigma\":%.3g,\"valHit\":%.4f,\"valGen\":%d,\"starVersion\":%d,\"hasStar\":%s,\"islands\":%d,\"restarts\":%d,\"backend\":",
     T.starMode, T.running ? "true" : "false", T.tuning ? "true" : "false", T.gen, T.best, T.mean, T.starHits, T.starMiss, T.flightsPerS, T.stepsPerS,
-    T.genTime, T.sigma, T.valHit, T.valGen, T.starVersion, T.star ? "true" : "false", T.nIsl);
+    T.genTime, T.sigma, T.valHit, T.valGen, T.starVersion, T.star ? "true" : "false", T.nIsl, T.restarts);
   sb_jstr(o, T.beInfo); sb_printf(o, ",\"message\":"); sb_jstr(o, T.msg);
   if (T.starMode == BR_MODE_SWARM)
     sb_printf(o, ",\"swarm\":{\"attAI\":%d,\"defAI\":%d,\"attBest\":%.4f,\"defBest\":%.4f,\"catchRate\":%.4f,\"leakRate\":%.4f,\"valLeak\":%.4f,\"valCatch\":%.4f,\"attStar\":%s,\"defStar\":%s,\"battlesPerS\":%.0f}",
@@ -1269,7 +1299,8 @@ static void cli_cfg(TrainCfg* c, int argc, char** argv, int* mode, int* gens, ch
     else if (!strcmp(a, "--k")) { c->swK = clampi(atoi(v), 1, BR_SW_MAXK); i++; }
     else if (!strcmp(a, "--blast")) { c->blast = fmin(10, fmax(0, atof(v))); i++; }
     else if (!strcmp(a, "--reach-max")) { c->reachMax = fmin(100000, fmax(2000, atof(v))); i++; }
-    else if (!strcmp(a, "--no-early")) c->noEarly = 1;
+    else if (!strcmp(a, "--val-every")) { c->valEvery = atoi(v) > 0 ? atoi(v) : 10; i++; }
+    else if (!strcmp(a, "--no-early")) c->noEarly = 1; else if (!strcmp(a, "--no-restarts")) c->restarts = 0;
     else if (!strcmp(a, "--atk-range-max")) { c->rangeMax = fmin(100000, fmax(4000, atof(v))); i++; }
     else if (!strcmp(a, "--atk-range")) { c->range = fmin(100000, fmax(4000, atof(v))); i++; }
     else if (!strcmp(a, "--evade")) { c->evade = fmin(1, fmax(0, atof(v))); i++; }
@@ -1309,6 +1340,7 @@ int cli_main(int argc, char** argv) {
         printf("gen %5d  attackers %7.3f  defenders %7.3f  caught %3.0f%%  leaked %3.0f%%  validation vs algorithm: leak %3.0f%% catch %3.0f%%  %6.0f battles/s  %.3f s/gen  [%s]\n",
           g, SW.side[0].best, SW.side[1].best, SW.catchRate * 100, SW.leakRate * 100, SW.side[0].val * 100, SW.side[1].val * 100, SW.battlesPerS, gt, T.beInfo);
         br_unlock(&T.mx); last = g; fflush(stdout); }
+      { static char lastMsg[256] = ""; br_lock(&T.mx); if (strcmp(lastMsg, T.msg) && strncmp(T.msg, "training", 8)) { snprintf(lastMsg, sizeof lastMsg, "%s", T.msg); printf("  [%s]\n", T.msg); } br_unlock(&T.mx); }
       if (g != last) { printf("gen %5d  best %7.3f  star hits %3.0f%%  validation %3.0f%% (gen %d)  %6.1f M steps/s  %.3f s/gen  [%s]\n", g, best, hits * 100, val * 100, vg, sps / 1e6, gt, T.beInfo); last = g; fflush(stdout); }
       if (g >= gens) break;
     }
