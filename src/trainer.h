@@ -31,26 +31,27 @@ typedef struct {
   int swLayout;   // GPU swarm layout (0 = automatic, 1 = thread per battle, 2 = work-group per battle), from auto-tune
 } TrainCfg;
 
-void cfg_defaults(TrainCfg* c);
-void cfg_from_json(TrainCfg* c, const char* json);
-void cfg_to_json(const TrainCfg* c, char* out, int len);
-void setup_params(BrParams* P, const TrainCfg* c, int S);
-Backend* make_backend(const char* id, const TrainCfg* c, char* err, int errLen);
-const char* default_backend_id(void);
-
 // Small growable string for JSON replies
 typedef struct { char* s; size_t n, cap; } Sb;
 void sb_printf(Sb* b, const char* fmt, ...);
 void sb_jstr(Sb* b, const char* s);   // appends a quoted, escaped JSON string
 
+void cfg_defaults(TrainCfg* c);
+void cfg_from_json(TrainCfg* c, const char* json);   // reads the keys present and clamps every setting to its range
+void cfg_to_json(const TrainCfg* c, Sb* out);        // the same keys, for the status
+void setup_params(BrParams* P, const TrainCfg* c, int S);
+Backend* make_backend(const char* id, const TrainCfg* c, char* err, int errLen);
+const char* default_backend_id(char* buf, int len);   // what "auto" picks on this computer
+
 void trainer_init(void);
 void trainer_start(const TrainCfg* c);   // starts, or applies new settings to a running session
 void trainer_pause(void);
-void trainer_reset(void);
-void trainer_status_json(Sb* out, int since);
-void trainer_star_json(Sb* out);
-int  trainer_load_json(const char* json, char* msg, int len);   // refuses a network saved in the other mode
-void trainer_set_mode(int mode);   // 0 reach, 1 tag: saves the current star and loads that mode's own
+void trainer_reset(const TrainCfg* c);   // forgets the network of c's mode (swarm: c's matchup); its files are kept as *.bak
+int  trainer_busy(void);                 // training or auto-tuning
+void trainer_status_json(Sb* out, int since);   // includes "cfg": the settings training uses
+void trainer_star_json(Sb* out);   // the kept (best validated) network, else the latest star
+int  trainer_load_json(const char* json, char* msg, int len);   // reach / intercept only; refuses a network saved in another mode
+void trainer_set_mode(int mode);   // saves the current star and loads that mode's own
 void hardware_json(Sb* out);
 void autotune_start(const TrainCfg* c);
 void autotune_status_json(Sb* out);

@@ -12,7 +12,17 @@
 #endif
 
 void br_transpose_genome(const float* g, float* t, const BrParams* P);   // backend_cpu.c
-void br_transpose_layers(const float* g, float* t, int nl, const int* arch);
+
+// Network limits of the settings. They keep every layer inside the simulation's fixed CPU buffers (MAXW, SW_MAXW,
+// BR_MAXL), so the settings are clamped to them and a loaded network file must fit them too.
+#define CFG_MAXK 4
+#define CFG_MAXLAYERS 8
+#define CFG_MAXWIDTH 128
+#define CFG_MAXSCEN 256
+_Static_assert(BR_NI * (CFG_MAXK + 1) + CFG_MAXWIDTH <= MAXW, "inputs with past frames and memory must fit MAXW");
+_Static_assert(CFG_MAXLAYERS + 2 <= BR_MAXL, "layers must fit BR_MAXL");
+_Static_assert(CFG_MAXWIDTH <= SW_MAXW && BR_SW_MAXA * SW_NF_CMD_OWN + BR_SW_MAXD * SW_NF_CMD_ENEMY <= SW_MAXW &&
+               BR_NI + 2 * BR_SW_MAXK * SW_NF_NB <= SW_MAXW && 3 * BR_SW_MAXB <= SW_MAXW, "swarm layers must fit SW_MAXW");
 
 // ---------------- string builder
 void sb_printf(Sb* b, const char* fmt, ...) {
@@ -71,39 +81,58 @@ void cfg_defaults(TrainCfg* c) {
   c->rangeMax = 8500; c->attN = 4; c->defN = 4; c->attAI = 0; c->defAI = 1; c->attCmd = 0; c->defCmd = 0; c->swK = 2;
 }
 static int clampi(int v, int a, int b) { return v < a ? a : v > b ? b : v; }
+// Every setting in range, whether it came from the interface or the command line.
+static void cfg_clamp(TrainCfg* c) {
+  c->threads = clampi(c->threads, 0, 4096); c->wg = clampi(c->wg, 8, 1024);
+  c->layers = clampi(c->layers, 1, CFG_MAXLAYERS); c->width = clampi(c->width, 4, CFG_MAXWIDTH); c->K = clampi(c->K, 0, CFG_MAXK); c->mem = c->mem != 0;
+  c->pop = clampi(c->pop, 8, 262144); c->scen = clampi(c->scen, 1, CFG_MAXSCEN); c->reuse = clampi(c->reuse, 1, 1000); c->islands = c->islands != 0;
+  c->nIsl = clampi(c->nIsl, 2, 256); c->migrate = clampi(c->migrate, 1, 1000);
+  c->cma = c->cma != 0; c->optKind = clampi(c->optKind, 0, 2); c->restarts = c->restarts != 0; c->normIn = c->normIn != 0; c->imitate = c->imitate != 0;
+  c->autoDiff = c->autoDiff != 0; c->diffAt = fmin(1, fmax(0.05, c->diffAt)); c->decayOn = c->decayOn != 0;
+  c->dt = fmin(0.04, fmax(0.005, c->dt));
+  c->everyStep = c->everyStep != 0; c->altOn = c->altOn != 0; c->noEarly = c->noEarly != 0;
+  c->valEvery = clampi(c->valEvery, 1, 1000); c->valScen = clampi(c->valScen, 8, 512);
+  c->mode = clampi(c->mode, BR_MODE_REACH, BR_MODE_SWARM);
+  c->reachMax = fmin(100000, fmax(2000, c->reachMax)); c->blast = fmin(10, fmax(0, c->blast));
+  c->range = fmin(100000, fmax(4000, c->range)); c->evade = fmin(1, fmax(0, c->evade));
+  c->noise = fmin(200, fmax(0, c->noise)); c->delayMs = fmin(2000, fmax(0, c->delayMs));
+  c->detect = fmin(100000, fmax(0, c->detect)); c->twRunner = fmin(5, fmax(1.2, c->twRunner));
+  c->rangeMax = fmin(100000, fmax(c->range, c->rangeMax));
+  c->attN = clampi(c->attN, 1, BR_SW_MAXA); c->defN = clampi(c->defN, 1, BR_SW_MAXD);
+  c->attAI = c->attAI != 0; c->defAI = c->defAI != 0; c->attCmd = c->attCmd != 0; c->defCmd = c->defCmd != 0;
+  c->swK = clampi(c->swK, 1, BR_SW_MAXK); c->swLayout = clampi(c->swLayout, 0, 2);
+}
 void cfg_from_json(TrainCfg* c, const char* j) {
   jstr(j, "backend", c->backend, sizeof c->backend);
-  c->threads = (int)jnum(j, "threads", c->threads); c->wg = clampi((int)jnum(j, "wg", c->wg), 8, 1024); c->chunkMs = jnum(j, "chunkMs", c->chunkMs);
-  c->layers = clampi((int)jnum(j, "layers", c->layers), 1, 8); c->width = clampi((int)jnum(j, "width", c->width), 4, 128);
-  c->K = clampi((int)jnum(j, "K", c->K), 0, 4); c->mem = jnum(j, "mem", c->mem) != 0;
-  c->pop = clampi((int)jnum(j, "pop", c->pop), 8, 262144); c->scen = clampi((int)jnum(j, "scen", c->scen), 1, 256);
-  c->reuse = clampi((int)jnum(j, "reuse", c->reuse), 1, 1000); c->islands = jnum(j, "islands", c->islands) != 0;
-  c->nIsl = clampi((int)jnum(j, "nIsl", c->nIsl), 2, 256); c->migrate = clampi((int)jnum(j, "migrate", c->migrate), 1, 1000);
-  c->cma = jnum(j, "cma", c->cma) != 0; c->optKind = clampi((int)jnum(j, "optKind", c->optKind), 0, 2); c->restarts = jnum(j, "restarts", c->restarts) != 0; c->normIn = jnum(j, "normIn", c->normIn) != 0; c->imitate = jnum(j, "imitate", c->imitate) != 0; c->autoDiff = jnum(j, "autoDiff", c->autoDiff) != 0; c->diffAt = fmin(1, fmax(0.05, jnum(j, "diffAt", c->diffAt))); c->decayOn = jnum(j, "decayOn", c->decayOn) != 0; c->decay = jnum(j, "decay", c->decay); c->lrMin = jnum(j, "lrMin", c->lrMin);
-  c->dt = jnum(j, "dt", c->dt); if (c->dt < 0.005) c->dt = 0.005; if (c->dt > 0.04) c->dt = 0.04;
-  c->tw = jnum(j, "tw", c->tw); c->speedW = jnum(j, "speedW", c->speedW); c->everyStep = jnum(j, "everyStep", c->everyStep) != 0;
-  c->altOn = jnum(j, "altOn", c->altOn) != 0;
-  c->valEvery = clampi((int)jnum(j, "valEvery", c->valEvery), 1, 1000); c->valScen = clampi((int)jnum(j, "valScen", c->valScen), 8, 512);
-  c->mode = clampi((int)jnum(j, "mode", c->mode), BR_MODE_REACH, BR_MODE_SWARM);
-  c->reachMax = fmin(100000, fmax(2000, jnum(j, "reachMax", c->reachMax))); c->blast = fmin(10, fmax(0, jnum(j, "blast", c->blast)));
-  c->range = fmin(100000, fmax(4000, jnum(j, "range", c->range))); c->evade = fmin(1, fmax(0, jnum(j, "evade", c->evade)));
-  c->noise = fmin(200, fmax(0, jnum(j, "noise", c->noise))); c->delayMs = fmin(2000, fmax(0, jnum(j, "delayMs", c->delayMs)));
-  c->detect = fmin(100000, fmax(0, jnum(j, "detect", c->detect))); c->twRunner = fmin(5, fmax(1.2, jnum(j, "twRunner", c->twRunner)));
-  c->rangeMax = fmin(100000, fmax(c->range, jnum(j, "rangeMax", c->rangeMax)));
-  c->attN = clampi((int)jnum(j, "attN", c->attN), 1, BR_SW_MAXA); c->defN = clampi((int)jnum(j, "defN", c->defN), 1, BR_SW_MAXD);
-  c->attAI = jnum(j, "attAI", c->attAI) != 0; c->defAI = jnum(j, "defAI", c->defAI) != 0;
-  c->attCmd = jnum(j, "attCmd", c->attCmd) != 0; c->defCmd = jnum(j, "defCmd", c->defCmd) != 0;
-  c->swK = clampi((int)jnum(j, "swK", c->swK), 1, BR_SW_MAXK); c->swLayout = clampi((int)jnum(j, "swLayout", c->swLayout), 0, 2);
+  c->threads = (int)jnum(j, "threads", c->threads); c->wg = (int)jnum(j, "wg", c->wg); c->chunkMs = jnum(j, "chunkMs", c->chunkMs);
+  c->layers = (int)jnum(j, "layers", c->layers); c->width = (int)jnum(j, "width", c->width); c->K = (int)jnum(j, "K", c->K); c->mem = jnum(j, "mem", c->mem) != 0;
+  c->pop = (int)jnum(j, "pop", c->pop); c->scen = (int)jnum(j, "scen", c->scen); c->reuse = (int)jnum(j, "reuse", c->reuse); c->islands = jnum(j, "islands", c->islands) != 0;
+  c->nIsl = (int)jnum(j, "nIsl", c->nIsl); c->migrate = (int)jnum(j, "migrate", c->migrate);
+  c->cma = jnum(j, "cma", c->cma) != 0; c->optKind = (int)jnum(j, "optKind", c->optKind); c->restarts = jnum(j, "restarts", c->restarts) != 0; c->normIn = jnum(j, "normIn", c->normIn) != 0;
+  c->imitate = jnum(j, "imitate", c->imitate) != 0; c->autoDiff = jnum(j, "autoDiff", c->autoDiff) != 0; c->diffAt = jnum(j, "diffAt", c->diffAt);
+  c->decayOn = jnum(j, "decayOn", c->decayOn) != 0; c->decay = jnum(j, "decay", c->decay); c->lrMin = jnum(j, "lrMin", c->lrMin);
+  c->dt = jnum(j, "dt", c->dt); c->tw = jnum(j, "tw", c->tw); c->speedW = jnum(j, "speedW", c->speedW); c->everyStep = jnum(j, "everyStep", c->everyStep) != 0;
+  c->altOn = jnum(j, "altOn", c->altOn) != 0; c->valEvery = (int)jnum(j, "valEvery", c->valEvery); c->valScen = (int)jnum(j, "valScen", c->valScen);
+  c->mode = (int)jnum(j, "mode", c->mode); c->reachMax = jnum(j, "reachMax", c->reachMax); c->blast = jnum(j, "blast", c->blast);
+  c->range = jnum(j, "range", c->range); c->evade = jnum(j, "evade", c->evade); c->noise = jnum(j, "noise", c->noise); c->delayMs = jnum(j, "delayMs", c->delayMs);
+  c->detect = jnum(j, "detect", c->detect); c->twRunner = jnum(j, "twRunner", c->twRunner); c->rangeMax = jnum(j, "rangeMax", c->rangeMax);
+  c->attN = (int)jnum(j, "attN", c->attN); c->defN = (int)jnum(j, "defN", c->defN); c->attAI = jnum(j, "attAI", c->attAI) != 0; c->defAI = jnum(j, "defAI", c->defAI) != 0;
+  c->attCmd = jnum(j, "attCmd", c->attCmd) != 0; c->defCmd = jnum(j, "defCmd", c->defCmd) != 0; c->swK = (int)jnum(j, "swK", c->swK);
+  c->swLayout = (int)jnum(j, "swLayout", c->swLayout); c->noEarly = jnum(j, "noEarly", c->noEarly) != 0;
+  cfg_clamp(c);
 }
-void cfg_to_json(const TrainCfg* c, char* o, int len) {
-  snprintf(o, len, "{\"backend\":\"%s\",\"wg\":%d,\"chunkMs\":%g,\"layers\":%d,\"width\":%d,\"K\":%d,\"mem\":%d,\"pop\":%d,\"scen\":%d,\"reuse\":%d,"
-    "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"optKind\":%d,\"restarts\":%d,\"normIn\":%d,\"imitate\":%d,\"autoDiff\":%d,\"diffAt\":%g,\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d,\"altOn\":%d,"
+// The settings as JSON, with the same keys cfg_from_json reads (the status reports the settings training uses).
+void cfg_to_json(const TrainCfg* c, Sb* o) {
+  sb_printf(o, "{\"backend\":"); sb_jstr(o, c->backend);
+  sb_printf(o, ",\"threads\":%d,\"wg\":%d,\"chunkMs\":%g,\"layers\":%d,\"width\":%d,\"K\":%d,\"mem\":%d,\"pop\":%d,\"scen\":%d,\"reuse\":%d,"
+    "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"optKind\":%d,\"restarts\":%d,\"normIn\":%d,\"imitate\":%d,\"autoDiff\":%d,\"diffAt\":%g,"
+    "\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d,\"altOn\":%d,\"valEvery\":%d,\"valScen\":%d,"
     "\"mode\":%d,\"blast\":%g,\"reachMax\":%g,\"range\":%g,\"evade\":%g,\"noise\":%g,\"delayMs\":%g,\"detect\":%g,\"twRunner\":%g,"
-    "\"rangeMax\":%g,\"attN\":%d,\"defN\":%d,\"attAI\":%d,\"defAI\":%d,\"attCmd\":%d,\"defCmd\":%d,\"swK\":%d}",
-    c->backend, c->wg, c->chunkMs, c->layers, c->width, c->K, c->mem, c->pop, c->scen, c->reuse, c->islands, c->nIsl, c->migrate,
-    c->cma, c->optKind, c->restarts, c->normIn, c->imitate, c->autoDiff, c->diffAt, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW, c->everyStep, c->altOn,
-    c->mode, c->blast, c->reachMax, c->range, c->evade, c->noise, c->delayMs, c->detect, c->twRunner,
-    c->rangeMax, c->attN, c->defN, c->attAI, c->defAI, c->attCmd, c->defCmd, c->swK);
+    "\"rangeMax\":%g,\"attN\":%d,\"defN\":%d,\"attAI\":%d,\"defAI\":%d,\"attCmd\":%d,\"defCmd\":%d,\"swK\":%d,\"swLayout\":%d,\"noEarly\":%d}",
+    c->threads, c->wg, c->chunkMs, c->layers, c->width, c->K, c->mem, c->pop, c->scen, c->reuse, c->islands, c->nIsl, c->migrate,
+    c->cma, c->optKind, c->restarts, c->normIn, c->imitate, c->autoDiff, c->diffAt, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW,
+    c->everyStep, c->altOn, c->valEvery, c->valScen, c->mode, c->blast, c->reachMax, c->range, c->evade, c->noise, c->delayMs, c->detect, c->twRunner,
+    c->rangeMax, c->attN, c->defN, c->attAI, c->defAI, c->attCmd, c->defCmd, c->swK, c->swLayout, c->noEarly);
 }
 
 // Weights of a network with `nin` inputs, `nout` outputs and P's hidden layers.
@@ -143,20 +172,23 @@ void setup_params(BrParams* P, const TrainCfg* c, int S) {
   if (c->mode == BR_MODE_SWARM) sw_params(P, c);
 }
 
-const char* default_backend_id(void) {
-#ifdef BR_HAVE_METAL
-  return "metal";
+// What "auto" means on this computer: Metal, else the fastest-looking OpenCL GPU, else the CPU. Writes into `buf`.
+const char* default_backend_id(char* buf, int len) {
+#if defined(BR_HAVE_METAL)
+  snprintf(buf, len, "metal");
+#elif defined(BR_HAVE_OPENCL)
+  static volatile int best = -2;   // devices are ranked once per run (every thread gets the same answer)
+  if (best == -2) best = opencl_best_gpu();
+  if (best >= 0) snprintf(buf, len, "opencl:%d", best); else snprintf(buf, len, "cpu");
 #else
-  #ifdef BR_HAVE_OPENCL
-  { char n[32][160]; int g[32]; int k = opencl_devices(n, g, 32); for (int i = 0; i < k; i++) if (g[i]) { static char id[16]; snprintf(id, sizeof id, "opencl:%d", i); return id; } }
-  #endif
-  return "cpu";
+  snprintf(buf, len, "cpu");
 #endif
+  return buf;
 }
 
 Backend* make_backend(const char* id, const TrainCfg* c, char* err, int errLen) {
-  Backend* b = NULL;
-  if (!strcmp(id, "auto")) id = default_backend_id();
+  Backend* b = NULL; char auto_id[32];
+  if (!strcmp(id, "auto")) id = default_backend_id(auto_id, sizeof auto_id);
   if (!strcmp(id, "cpu")) b = cpu_backend_create(c->threads);
 #ifdef BR_HAVE_METAL
   else if (!strcmp(id, "metal")) b = metal_backend_create(err, errLen);
@@ -243,7 +275,7 @@ static int gen_tag_scen(BrScen* out, Rng* r, const TrainCfg* c, const BrParams* 
   BrScen sc; memset(&sc, 0, sizeof sc);
   sc.tx = def[0]; sc.ty = def[1]; sc.tz = def[2]; sc.wx = wind[0]; sc.wy = wind[1]; sc.wz = wind[2];
   sc.sx = st[0]; sc.sy = st[1]; sc.sz = st[2]; sc.q0 = (float)(urand(r) * 0.02);
-  sc.trajOff = (float)off; sc.trajLen = (float)len; sc.seed = (float)(int)(urand(r) * 16777216); sc.atkHit = (float)hit;
+  br_set_traj_off(&sc, off); sc.trajLen = (float)len; sc.seed = (float)(int)(urand(r) * 16777216); sc.atkHit = (float)hit;
   *out = sc;
   return len;
 }
@@ -267,7 +299,7 @@ static size_t gen_tag_batch(BrScen* sc, int S, Rng* r, const TrainCfg* c, const 
   int off = 0;   // pack: slot i starts at i·maxS ≥ off, so moving forward never overwrites an unread slot
   for (int i = 0; i < S; i++) {
     if (off != i * maxS) memmove(traj + (size_t)off * 6, traj + (size_t)i * maxS * 6, sizeof(float) * 6 * (size_t)len[i]);
-    sc[i].trajOff = (float)off; off += len[i];
+    br_set_traj_off(&sc[i], off); off += len[i];
   }
   free(seeds); free(len);
   return (size_t)off * 6;
@@ -293,7 +325,7 @@ static void sw_gen_scen(BrScen* sc, Rng* r, const TrainCfg* c, float* st, float 
   double a = urand(r) * 2 * M_PI, d = urand(r) * 3000, wa = urand(r) * 2 * M_PI, w = urand(r) * 15;
   sc->tx = (float)(cos(a) * d); sc->ty = 0; sc->tz = (float)(sin(a) * d);
   sc->wx = (float)(cos(wa) * w); sc->wz = (float)(sin(wa) * w);
-  sc->trajOff = off; sc->seed = (float)(int)(urand(r) * 16777216);
+  br_set_traj_off(sc, (long)off); sc->seed = (float)(int)(urand(r) * 16777216);
   for (int b = 0; b < c->attN + c->defN; b++) {
     float* p = st + b * SW_START; double t, rr;
     if (b < c->attN) { t = urand(r) * 2 * M_PI; rr = c->range + urand(r) * fmax(0, c->rangeMax - c->range); }
@@ -340,7 +372,7 @@ static void random_genome(float* g, const BrParams* P, Rng* r) {
 typedef struct { int n, lam; float* pop; double sigma; } GA;
 // sep-CMA-ES (diagonal covariance), or for large networks LM-MA-ES (Loshchilov, Glasmachers & Beyer 2017): a few
 // memory vectors learn the main directions of the search at O(n) cost, where a covariance model would be too slow.
-// Both draw mirrored pairs (z, −z), which halves the noise of each update at no extra cost.
+// Both draw mirrored pairs (z, −z) and recombine only the better of each pair (pairwise selection).
 typedef struct { int n, lam, mu; double* w; double mueff, cs, ds, cc, c1, cmu, chiN, sigma; double *m, *C, *ps, *pc; float *Z, *Y, *X; int g;
   int lm, nm; double *Mv, *cdv, *ccv; } CMA;
 #define LM_AUTO_N 2000   // networks with more weights use LM-MA-ES (optKind 0 = automatic)
@@ -409,8 +441,13 @@ static void cma_ask(CMA* c, Rng* r) {
     } else for (int i = 0; i < n; i++) { double y = sqrt(c->C[i]) * Z[i]; Y[i] = (float)y; X[i] = (float)(c->m[i] + c->sigma * y); }
   }
 }
-static void cma_tell(CMA* c, const double* f) {
-  int n = c->n, mu = c->mu, *ord = rank(f, c->lam);
+// Pairwise selection: only the better half of each mirrored pair (k, k+1) can be recombined. Without it a pair that
+// both rank in the top mu cancels out in the mean step, the step-size path looks too short under noisy fitness and
+// sigma shrinks steadily (Auger, Brockhoff & Hansen 2011). An odd last sample has no partner and stays eligible.
+static void cma_tell(CMA* c, const double* f0) {
+  double* f = (double*)malloc(sizeof(double) * c->lam); memcpy(f, f0, sizeof(double) * c->lam);
+  for (int k = 0; k + 1 < c->lam; k += 2) { if (f[k + 1] > f[k]) f[k] = -1e300; else f[k + 1] = -1e300; }   // finite: built with -ffast-math
+  int n = c->n, mu = c->mu, *ord = rank(f, c->lam); free(f);
   double* ym = (double*)calloc(n, sizeof(double)); double* zm = (double*)calloc(n, sizeof(double));
   for (int k = 0; k < mu; k++) { const float* y = c->Y + (size_t)ord[k] * n; const float* z = c->Z + (size_t)ord[k] * n; double wk = c->w[k];
     for (int i = 0; i < n; i++) { ym[i] += wk * y[i]; zm[i] += wk * z[i]; } }
@@ -445,22 +482,50 @@ static double* isl_sigma(Island* I) { return I->cma ? &I->c.sigma : &I->ga.sigma
 #define ISL_SHOW 16
 typedef struct { int gen; float best, mean; float isl[ISL_SHOW]; } Hist;
 
+// A network with the shape and physics it was trained with and how it did (gen, fitness, validation and the difficulty
+// level that validation was measured at).
+typedef struct { float* w; int nw, nl, arch[BR_MAXL], K, mem, every, gen, level; double dt, tw, fit, val; } Net;
+static void net_free(Net* n) { free(n->w); memset(n, 0, sizeof *n); }
+static void net_set(Net* n, const float* w, const BrParams* P, const TrainCfg* c) {   // shape from P, physics from c
+  if (!n->w || n->nw != P->nw) { free(n->w); n->w = (float*)malloc(sizeof(float) * P->nw); }
+  memcpy(n->w, w, sizeof(float) * P->nw); n->nw = P->nw; n->nl = P->nl; memcpy(n->arch, P->arch, sizeof(int) * (P->nl + 1));
+  n->K = P->K; n->mem = P->rec; n->dt = c->dt; n->tw = c->tw; n->every = c->everyStep;
+}
+static void net_copy(Net* d, const Net* s) {
+  float* w = d->w; if (!s->w) { net_free(d); return; }
+  if (!w || d->nw != s->nw) { free(w); w = (float*)malloc(sizeof(float) * s->nw); }
+  memcpy(w, s->w, sizeof(float) * s->nw); *d = *s; d->w = w;
+}
+static int net_matches(const Net* n, const BrParams* P) {
+  if (!n->w || n->nl != P->nl) return 0;
+  for (int l = 0; l <= P->nl; l++) if (n->arch[l] != P->arch[l]) return 0;
+  return n->K == P->K && n->mem == P->rec;
+}
+
 static struct {
   br_mutex mx; br_thread th; volatile int running, stopReq, threadLive;
   TrainCfg cfg, pending; volatile int hasPending;
-  Backend* be; char beId[32]; int beWg; double beChunk; int beThreads;
-  BrParams P; Island* isl; int nIsl; int structKey[8];
+  Backend* be; char beId[32]; int beThreads; int autoCpu;   // autoCpu: "auto" moved to the CPU after the GPU failed
+  BrParams P; Island* isl; int nIsl; int structKey[9];
+  volatile int reseedReq;   // a loaded network replaces the islands' search (rebuilt from it before the next generation)
+  int maxGen;               // command line: stop after this generation (0 = no limit)
   Rng rng; ScenSet scen; int scenAge; TrainCfg scenCfg;
   ScenSet val; TrainCfg valCfg; int valReady;   // fixed validation set (same seed every time, rebuilt when settings change)
   int starMode;   // mode the current star was trained in (BR_MODE_*); each mode keeps its own save file
-  float* star; int starNw; int starArch[BR_MAXL]; int starNl; int starK, starMem; double starDt, starTw; int starEvery; int starVersion; double starFit;
-  int gen; double best, mean, sigma, genTime, flightsPerS, stepsPerS, starHits, starMiss, valHit; int valGen;
+  // star: this generation's best (flown by Fly). hof: the best validated network so far (hall of fame), the one that is
+  // saved and that restarts start from: a validation drop never replaces it. hofCfg: the settings hof.val was measured on
+  // (hofOk = 0: not measured in this session); hofNew: it replaced a network of another shape, so its file is backed up
+  // before the first save.
+  Net star, hof; TrainCfg hofCfg; int hofOk, hofNew;
+  int gen; double best, sigma, genTime, flightsPerS, stepsPerS, starHits, valHit; int valGen, unval;   // unval: generations since the last validation
   Hist* hist; int histN;
   char msg[256]; char beInfo[256];
-  // restarts (BIPOP-style): population multiplier and starting step size of the current run, stalled validations
-  int restarts, stall; double popMul, restartSigma, bestVal, fitSum, bestFitAvg; int fitN;
+  // restarts (BIPOP-style): population multiplier and starting step size of the current run (bigMul: the large-population
+  // regime's multiplier, doubled on each wide restart), stalled validations
+  int restarts, stall; double popMul, bigMul, restartSigma, bestVal, fitSum, bestFitAvg; int fitN;
   // sensor normalisation: the optimizer works on networks that see standardised sensors; mean / spread per sensor
-  int normOn; double normMu[BR_NI], normSd[BR_NI]; float* eff; size_t effCap;
+  // (normDue: measure them after the next generation, for islands rebuilt around an existing network)
+  int normOn, normDue; double normMu[BR_NI], normSd[BR_NI]; float* eff; size_t effCap;
   // automatic difficulty: level 0 (easy) .. 10 (the settings); the settings training actually uses this generation
   int level, levelHits; TrainCfg run;
   // auto-tune
@@ -468,80 +533,107 @@ static struct {
 } T;
 
 static void set_msg(const char* fmt, ...) { va_list ap; va_start(ap, fmt); br_lock(&T.mx); vsnprintf(T.msg, sizeof T.msg, fmt, ap); br_unlock(&T.mx); va_end(ap); }
+// The restart cycle and the stall check start over (any rebuild except a restart, a new or loaded network, a mode switch).
+static void run_reset(void) { T.restarts = 0; T.stall = 0; T.bestVal = 0; T.popMul = 1; T.bigMul = 1; T.restartSigma = 0; T.bestFitAvg = -1e30; T.fitSum = 0; T.fitN = 0; }
 
 // One saved star per mode: BallArena-star-reach.json and BallArena-star-tag.json. Older single-mode saves
 // (mode -1: BallArena-star.json, -2: BallisticRange-champion.json) are read as the reach star if no reach file exists.
-static const char* save_path_mode(int mode) {
-  static char p[1024]; const char* h = getenv("HOME");
-  const char* name = mode == -2 ? "BallisticRange-champion.json" : mode < 0 ? "BallArena-star.json" : mode == BR_MODE_SWARM ? "BallArena-star-swarm.json" : mode == BR_MODE_TAG ? "BallArena-star-tag.json" : "BallArena-star-reach.json";
+// Swarm stars are saved per side and matchup (sw_save_path): NULL here.
+static const char* home_path(const char* name, char* p, int len) {
+  const char* h = getenv("HOME");
 #ifdef _WIN32
   if (!h) h = getenv("USERPROFILE");
-  snprintf(p, sizeof p, "%s\\%s", h ? h : ".", name);
+  snprintf(p, len, "%s\\%s", h ? h : ".", name);
 #else
-  snprintf(p, sizeof p, "%s/%s", h ? h : ".", name);
+  snprintf(p, len, "%s/%s", h ? h : ".", name);
 #endif
   return p;
 }
-static const char* save_path(void) { return save_path_mode(T.starMode); }
+static const char* save_path_mode(int mode, char* p, int len) {
+  if (mode == BR_MODE_SWARM) return NULL;
+  return home_path(mode == -2 ? "BallisticRange-champion.json" : mode < 0 ? "BallArena-star.json" : mode == BR_MODE_TAG ? "BallArena-star-tag.json" : "BallArena-star-reach.json", p, len);
+}
+// Keeps a save file as <name>.bak (replacing an older one) before it is overwritten or reset: undo by renaming it back.
+static void backup(const char* p) {
+  if (!p) return;
+  FILE* f = fopen(p, "rb"); if (!f) return; fclose(f);
+  char b[1100]; snprintf(b, sizeof b, "%s.bak", p); remove(b); rename(p, b);
+}
 
-static void star_json_locked(Sb* o) {
-  sb_printf(o, "{\"format\":\"ball-arena-network\",\"mode\":\"%s\",\"arch\":[", mode_name(T.starMode));
-  for (int l = 0; l <= T.starNl; l++) sb_printf(o, "%s%d", l ? "," : "", T.starArch[l]);
-  sb_printf(o, "],\"K\":%d,\"memory\":%s,\"dt\":%g,\"ctrlEvery\":%d,\"thrustToWeight\":%g,\"generation\":%d,\"fitness\":%.4f,\"validationHitRate\":%.4f,\"version\":%d,\"weights\":[",
-    T.starK, T.starMem ? "true" : "false", T.starDt, T.starEvery ? 1 : 2, T.starTw, T.gen, T.starFit, T.valHit, T.starVersion);
-  for (int i = 0; i < T.starNw; i++) sb_printf(o, "%s%.7g", i ? "," : "", T.star[i]);
+static void net_json(Sb* o, const Net* n, int mode) {
+  sb_printf(o, "{\"format\":\"ball-arena-network\",\"mode\":\"%s\",\"arch\":[", mode_name(mode));
+  for (int l = 0; l <= n->nl; l++) sb_printf(o, "%s%d", l ? "," : "", n->arch[l]);
+  sb_printf(o, "],\"K\":%d,\"memory\":%s,\"dt\":%g,\"ctrlEvery\":%d,\"thrustToWeight\":%g,\"generation\":%d,\"fitness\":%.4f,\"validationHitRate\":%.4f,\"level\":%d,\"weights\":[",
+    n->K, n->mem ? "true" : "false", n->dt, n->every ? 1 : 2, n->tw, n->gen, n->fit, n->val, n->level);
+  for (int i = 0; i < n->nw; i++) sb_printf(o, "%s%.7g", i ? "," : "", n->w[i]);
   sb_printf(o, "]}");
 }
+// Saves the kept (best validated) network of the current mode.
 static void autosave(void) {
-  Sb o = {0}; br_lock(&T.mx); if (T.star) star_json_locked(&o); br_unlock(&T.mx);
-  if (o.n) { FILE* f = fopen(save_path(), "w"); if (f) { fwrite(o.s, 1, o.n, f); fclose(f); } }
+  if (T.starMode == BR_MODE_SWARM) return;   // swarm sides are saved by sw_save
+  Sb o = {0}; br_lock(&T.mx); int bk = T.hofNew && T.hof.w; if (T.hof.w) { net_json(&o, &T.hof, T.starMode); T.hofNew = 0; } br_unlock(&T.mx);
+  char p[1024]; save_path_mode(T.starMode, p, sizeof p);
+  if (o.n) { if (bk) backup(p); FILE* f = fopen(p, "w"); if (f) { fwrite(o.s, 1, o.n, f); fclose(f); } }
   free(o.s);
 }
 
-// Load a network (JSON with "arch", "K", "memory", "weights"). Called with the lock NOT held.
-static int load_json_mode(const char* json, char* msg, int len, int wantMode) {
+// Load a network (JSON with "arch", "K", "memory", "weights") as both the star and the kept network. Only shapes the
+// settings can make are accepted: equal hidden widths, K and widths within the limits, inputs that match K and memory
+// and 3 outputs. `user`: loaded from the interface or --load, so training rebuilds its search from it and the save file
+// it replaces is backed up. Called with the lock NOT held.
+static int load_json_mode(const char* json, char* msg, int len, int wantMode, int user) {
   const char* a = strstr(json, "\"arch\""); const char* w = strstr(json, "\"weights\"");
   if (!a || !w) { snprintf(msg, len, "not a Ball Arena network file"); return -1; }
   int arch[BR_MAXL], nl = -1; const char* p = strchr(a, '['); if (!p) return -1; p++;
   while (*p && *p != ']' && nl < BR_MAXL - 1) { arch[++nl] = (int)strtol(p, (char**)&p, 10); while (*p == ',' || *p == ' ') p++; }
-  if (nl < 1) { snprintf(msg, len, "bad arch"); return -1; }
-  // mode: "tag", or "reach" ("mission" and a missing field are older reach saves). A star from the other mode is refused.
-  int fmode = BR_MODE_REACH; { const char* m = strstr(json, "\"mode\""); const char* t = m ? strstr(m, "\"tag\"") : NULL; const char* w = m ? strstr(m, "\"swarm\"") : NULL;
-    if (t && t - m < 16) fmode = BR_MODE_TAG; else if (w && w - m < 16) fmode = BR_MODE_SWARM; }
+  // mode: "tag", "swarm" or "reach" ("mission" and a missing field are older reach saves). A star from another mode is refused.
+  int fmode = BR_MODE_REACH; { const char* m = strstr(json, "\"mode\""); const char* t = m ? strstr(m, "\"tag\"") : NULL; const char* s = m ? strstr(m, "\"swarm\"") : NULL;
+    if (t && t - m < 16) fmode = BR_MODE_TAG; else if (s && s - m < 16) fmode = BR_MODE_SWARM; }
+  if (fmode == BR_MODE_SWARM) { snprintf(msg, len, "this is a swarm network; swarm stars are kept per side and matchup and cannot be loaded"); return -1; }
   if (wantMode >= 0 && fmode != wantMode) { snprintf(msg, len, "this network was trained in %s mode; switch to that mode to load it", mode_label(fmode)); return -1; }
-  long nwl = 0; for (int l = 0; l <= nl; l++) if (arch[l] < 1 || arch[l] > 4096) { snprintf(msg, len, "bad layer size"); return -1; }
-  for (int l = 0; l < nl; l++) nwl += (long)arch[l + 1] * arch[l] + arch[l + 1];
-  if (nwl > (4L << 20)) { snprintf(msg, len, "network too large"); return -1; }
-  int nw = (int)nwl;
+  int K = (int)jnum(json, "K", 0), mem = jnum(json, "memory", 0) != 0, wd = nl >= 1 ? arch[1] : 0, ok = nl >= 2 && nl <= CFG_MAXLAYERS + 1 && K >= 0 && K <= CFG_MAXK && wd >= 1 && wd <= CFG_MAXWIDTH;
+  for (int l = 1; ok && l < nl; l++) ok = arch[l] == wd;
+  if (ok) ok = arch[0] == BR_NI * (K + 1) + (mem ? wd : 0) && arch[nl] == 3;
+  if (!ok) { snprintf(msg, len, "this network's shape cannot be used (up to %d hidden layers of equal width up to %d, K up to %d)", CFG_MAXLAYERS, CFG_MAXWIDTH, CFG_MAXK); return -1; }
+  int nw = 0; for (int l = 0; l < nl; l++) nw += arch[l + 1] * arch[l] + arch[l + 1];
   float* g = (float*)malloc(sizeof(float) * nw); p = strchr(w, '['); if (!p) { free(g); return -1; } p++;
   int n = 0; while (n < nw && *p && *p != ']') { g[n++] = strtof(p, (char**)&p); while (*p == ',' || *p == ' ') p++; }
   if (n != nw) { free(g); snprintf(msg, len, "expected %d weights, found %d", nw, n); return -1; }
   br_lock(&T.mx);
-  free(T.star); T.star = g; T.starNw = nw; T.starMode = fmode; T.starNl = nl; memcpy(T.starArch, arch, sizeof(int) * (nl + 1));
-  T.starK = (int)jnum(json, "K", 0); T.starMem = jnum(json, "memory", 0) != 0; T.starVersion++; T.starFit = jnum(json, "fitness", 0);
+  net_free(&T.star); T.star.w = g; T.star.nw = nw; T.star.nl = nl; memcpy(T.star.arch, arch, sizeof(int) * (nl + 1)); T.star.K = K; T.star.mem = mem;
   // physics it was trained with (files without them: the current settings)
-  T.starDt = jnum(json, "dt", T.cfg.dt); T.starTw = jnum(json, "thrustToWeight", T.cfg.tw); T.starEvery = jnum(json, "ctrlEvery", T.cfg.everyStep ? 1 : 2) == 1;
-  T.valHit = jnum(json, "validationHitRate", 0);
-  br_unlock(&T.mx);
+  T.star.dt = fmin(0.04, fmax(0.005, jnum(json, "dt", T.cfg.dt))); T.star.tw = jnum(json, "thrustToWeight", T.cfg.tw); T.star.every = jnum(json, "ctrlEvery", T.cfg.everyStep ? 1 : 2) == 1;
+  T.star.gen = (int)jnum(json, "generation", 0); T.star.fit = jnum(json, "fitness", 0); T.star.val = jnum(json, "validationHitRate", 0);
+  T.star.level = clampi((int)jnum(json, "level", 10), 0, 10);
+  T.starMode = fmode; net_copy(&T.hof, &T.star); T.hofOk = 0; T.valHit = T.star.val; T.valGen = 0;
+  if (user) { T.hofNew = 1; T.reseedReq = 1; T.gen = 0; T.histN = 0; T.best = T.starHits = 0; }   // a new chart for the loaded network
+  TrainCfg c = T.cfg; br_unlock(&T.mx);
   snprintf(msg, len, "loaded network %d", arch[0]); for (int l = 1; l <= nl; l++) { char t[16]; snprintf(t, sizeof t, "-%d", arch[l]); strncat(msg, t, len - strlen(msg) - 1); }
+  if (user && (c.K != K || c.mem != mem || c.layers != nl - 1 || c.width != wd))
+    strncat(msg, " (its shape differs from your network settings: match them to train it)", len - strlen(msg) - 1);
   return 0;
 }
 
 static void free_islands(void);
-// Loading a network from the interface or --load: it must belong to the mode currently selected.
-int trainer_load_json(const char* json, char* msg, int len) { return load_json_mode(json, msg, len, T.cfg.mode); }
+// Loading a network from the interface or --load (reach and intercept: it must belong to the mode selected). It becomes
+// the star and the kept network; training (now or at the next start) rebuilds its search from it.
+int trainer_load_json(const char* json, char* msg, int len) {
+  if (T.cfg.mode == BR_MODE_SWARM) { snprintf(msg, len, "loading is not available in swarm mode; swarm stars are kept per side and matchup"); return -1; }
+  return load_json_mode(json, msg, len, T.cfg.mode, 1);
+}
 
 // Make `mode`'s saved star the current one (none if that mode has never been trained). Lock NOT held.
 static void load_mode_star(int mode) {
-  br_lock(&T.mx); free(T.star); T.star = NULL; T.starNw = 0; T.starMode = mode; T.starVersion++; T.gen = 0; T.histN = 0;
-  T.best = T.mean = T.starHits = T.starMiss = T.valHit = 0; T.valGen = 0;
-  T.restarts = 0; T.stall = 0; T.bestVal = 0; T.popMul = 1; T.restartSigma = 0; T.bestFitAvg = -1e30; T.fitSum = 0; T.fitN = 0; T.level = 10; T.levelHits = 0;
+  br_lock(&T.mx); net_free(&T.star); net_free(&T.hof); T.hofOk = 0; T.hofNew = 0; T.reseedReq = 0; T.starMode = mode; T.gen = 0; T.histN = 0;
+  T.best = T.starHits = T.valHit = 0; T.valGen = 0; run_reset(); T.level = 10; T.levelHits = 0;
   br_unlock(&T.mx);
   if (mode == BR_MODE_SWARM) { set_msg("swarm: each side's star is kept per matchup and loaded when training starts"); return; }
-  const char* p = save_path_mode(mode); FILE* f = fopen(p, "rb");
-  for (int old = -1; !f && mode == BR_MODE_REACH && old >= -2; old--) { p = save_path_mode(old); f = fopen(p, "rb"); }
+  char pb[1024]; const char* p = save_path_mode(mode, pb, sizeof pb); FILE* f = fopen(p, "rb");
+  for (int old = -1; !f && mode == BR_MODE_REACH && old >= -2; old--) { p = save_path_mode(old, pb, sizeof pb); f = fopen(p, "rb"); }
   if (f) { fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET); char* b = (char*)malloc(len + 1); len = (long)fread(b, 1, len, f); b[len] = 0; fclose(f);
-    char m[200]; if (!load_json_mode(b, m, sizeof m, mode)) set_msg("restored your last %s star (%s)", mode_label(mode), p); free(b); }
+    char m[200]; if (!load_json_mode(b, m, sizeof m, mode, 0)) { T.level = T.hof.level; set_msg("restored your last %s star (%s)", mode_label(mode), p); }
+    else set_msg("could not restore %s: %s", p, m);
+    free(b); }
   else set_msg("no saved %s star yet", mode_label(mode));
 }
 // Select a mode: saves the current star, then makes that mode's saved star current. Called with training stopped
@@ -549,21 +641,18 @@ static void load_mode_star(int mode) {
 void trainer_set_mode(int mode) {
   mode = clampi(mode, BR_MODE_REACH, BR_MODE_SWARM);
   if (mode == T.starMode && T.cfg.mode == mode) return;
-  autosave(); T.cfg.mode = mode; load_mode_star(mode);
+  autosave(); br_lock(&T.mx); T.cfg.mode = mode; br_unlock(&T.mx); load_mode_star(mode);
   free_islands();
 }
 
 void trainer_init(void) {
   br_mutex_init(&T.mx); rng_seed(&T.rng, (unsigned)(br_now() * 1000));
-  cfg_defaults(&T.cfg); T.hist = (Hist*)calloc(HIST_MAX, sizeof(Hist)); T.bestFitAvg = -1e30; T.popMul = 1;
+  cfg_defaults(&T.cfg); T.hist = (Hist*)calloc(HIST_MAX, sizeof(Hist)); run_reset();
   load_mode_star(T.cfg.mode);
 }
 
-static int star_matches(const BrParams* P) {
-  if (!T.star || T.starMode != P->mode || T.starNl != P->nl) return 0;
-  for (int l = 0; l <= P->nl; l++) if (T.starArch[l] != P->arch[l]) return 0;
-  return T.starK == P->K && T.starMem == P->rec;
-}
+// A network that can seed training with these parameters: this mode's and the same shape.
+static int star_ok(const Net* n, const BrParams* P) { return T.starMode == P->mode && net_matches(n, P); }
 
 static void free_islands(void) {
   for (int i = 0; i < T.nIsl; i++) { if (T.isl[i].cma) cma_free(&T.isl[i].c); else ga_free(&T.isl[i].ga); free(T.isl[i].bestG); }
@@ -631,26 +720,36 @@ static void norm_update(const float* star) {
 }
 
 // ---------------- automatic difficulty (curriculum)
-// Level 10 is exactly the settings. Lower levels interpolate toward an easy version: short reach goals; close, slower,
-// non-weaving attackers or runners, no sensor noise or delay, launch at once, a bigger catch radius; one attacker in a
-// nearest-K swarm. The network's shape never changes with the level.
+// Level 10 is exactly the settings. Lower levels interpolate toward an easy version for the side that learns. Every mode:
+// short reach goals; closer attackers or runners; no sensor noise or delay. A network chasing (intercept, or network
+// defenders against algorithm attackers) also gets slower, non-weaving attackers or runners, a radar that sees them from
+// further away, a bigger catch radius and fewer attackers. Network attackers against algorithm defenders get the
+// opposite: fewer defenders, launching later. Networks on both sides: only the shared knobs. The network's shape never
+// changes with the level (ball counts change only when no commander network depends on them).
 static TrainCfg curriculum(const TrainCfg* c, int level) {
   TrainCfg e = *c; if (!c->autoDiff || level >= 10) return e;
   double t = level / 10.0;
 #define LERP(a, b) ((a) + ((b) - (a)) * t)
-  if (c->mode == BR_MODE_REACH) e.reachMax = LERP(fmin(3000, c->reachMax), c->reachMax);
-  else {
-    e.range = LERP(fmin(4000, c->range), c->range);
-    if (c->mode == BR_MODE_SWARM) e.rangeMax = fmax(e.range, LERP(fmin(6000, c->rangeMax), c->rangeMax));
-    e.evade = c->evade * t; e.noise = c->noise * t; e.delayMs = c->delayMs * t;
-    e.detect = c->detect <= 0 || t <= 0 ? 0 : c->detect + (100000 - c->detect) * (1 - t);   // radar sees from further away
+  if (c->mode == BR_MODE_REACH) { e.reachMax = LERP(fmin(3000, c->reachMax), c->reachMax); return e; }
+  int sw = c->mode == BR_MODE_SWARM, helpDef = !sw || !c->attAI, helpAtt = sw && c->attAI && !c->defAI;
+  int counts = sw && !(c->attAI && c->attCmd) && !(c->defAI && c->defCmd);
+  e.range = LERP(fmin(4000, c->range), c->range);
+  if (sw) e.rangeMax = fmax(e.range, LERP(fmin(6000, c->rangeMax), c->rangeMax));
+  e.noise = c->noise * t; e.delayMs = c->delayMs * t;
+  // the easy radar reaches just past the farthest start (any further changes nothing), so it tightens level by level
+  double edge = sw ? e.rangeMax + 3000 : e.range + 1500 + 3000;
+  if (helpDef) {
+    e.evade = c->evade * t; e.detect = c->detect <= 0 ? 0 : LERP(fmax(c->detect, edge), c->detect);
     e.blast = LERP(fmax(10, c->blast), c->blast); e.twRunner = LERP(fmin(1.5, c->twRunner), c->twRunner);
-    if (c->mode == BR_MODE_SWARM && !(c->attAI && c->attCmd) && !(c->defAI && c->defCmd)) e.attN = 1 + (int)lround((c->attN - 1) * t);
+    if (counts) e.attN = 1 + (int)lround((c->attN - 1) * t);
+  } else if (helpAtt) {
+    double hard = c->detect > 0 ? c->detect : edge;   // radar 0 (launch at once) acts like one past every start
+    e.detect = LERP(fmin(2000, hard), hard);
+    if (counts) e.defN = 1 + (int)lround((c->defN - 1) * t);
   }
 #undef LERP
   return e;
 }
-static double validate(const float* g);
 // ---------------- head start by imitation (behaviour cloning)
 // A network that would start from random weights first learns to copy the guidance algorithm: the algorithm flies on the
 // CPU while every decision is recorded as (what the network would sense, what the algorithm did), then the network is
@@ -659,6 +758,7 @@ static double validate(const float* g);
 #define BC_MAXN 60000      // recorded decisions
 #define BC_SECONDS 3.0     // fitting budget per rnd
 #define BC_ROUNDS 3        // DAgger: rnd 0 the algorithm flies; later rounds the network flies and the algorithm labels
+// Pause / Reset must not wait for a head start: recording and fitting give up as soon as training is asked to stop.
 typedef struct { float* X; float* Y; int n, nin, nout, cap; } BcData;
 static void bc_add(BcData* d, const float* x, const float* u3, int k) {   // k balls' controls (3 each) as network targets
   if (d->n >= d->cap) return;
@@ -677,10 +777,10 @@ static void bc_fit(float* g, int nl, const int* arch, const BcData* d, Rng* r, i
   float* A = (float*)malloc(sizeof(float) * (size_t)(nl + 1) * maxw); float* D = (float*)malloc(sizeof(float) * 2 * maxw);
   int B = 128, t = 0; double lr = 1e-3, b1 = 0.9, b2 = 0.999, t0 = br_now(), loss = 0;
   int* idx = (int*)malloc(sizeof(int) * d->n); for (int i = 0; i < d->n; i++) idx[i] = i;
-  for (int ep = 0; ep < 60 && br_now() - t0 < BC_SECONDS; ep++) {
+  for (int ep = 0; ep < 60 && br_now() - t0 < BC_SECONDS && !T.stopReq; ep++) {
     for (int i = d->n - 1; i > 0; i--) { int j = (int)(urand(r) * (i + 1)); int tmp = idx[i]; idx[i] = idx[j]; idx[j] = tmp; }
     loss = 0;
-    for (int b0 = 0; b0 + B <= d->n; b0 += B) {
+    for (int b0 = 0; b0 + B <= d->n && !T.stopReq; b0 += B) {
       memset(gr, 0, sizeof(double) * nw);
       for (int q = 0; q < B; q++) {
         const float* x = d->X + (size_t)idx[b0 + q] * d->nin; const float* y = d->Y + (size_t)idx[b0 + q] * d->nout;
@@ -698,19 +798,21 @@ static void bc_fit(float* g, int nl, const int* arch, const BcData* d, Rng* r, i
       for (int k = 0; k < nw; k++) { double gk = gr[k] / B; m[k] = b1 * m[k] + (1 - b1) * gk; v[k] = b2 * v[k] + (1 - b2) * gk * gk; g[k] -= (float)(lr * (m[k] / c1) / (sqrt(v[k] / c2) + 1e-8)); }
     }
   }
-  set_msg("head start: copied the guidance algorithm (fit error %.3f per output)", d->n >= B ? loss / ((double)(d->n / B) * B * arch[nl]) : 0);
+  if (!T.stopReq) set_msg("head start: copied the guidance algorithm (fit error %.3f per output)", d->n >= B ? loss / ((double)(d->n / B) * B * arch[nl]) : 0);
   free(m); free(v); free(gr); free(A); free(D); free(idx);
 }
-// Reach / intercept: record the algorithm flying this mode's scenarios.
+// Reach / intercept: record the algorithm flying this mode's scenarios. Memory inputs are recorded as zero (the
+// algorithm has no memory), so their weights get no gradient: they are zeroed after each fit, which makes the copy the
+// feedforward network that was fitted instead of one fed noise through random memory weights.
 static int bc_flights(const TrainCfg* c, float* g) {
   BrParams P; setup_params(&P, c, 64); Rng r; rng_seed(&r, 9091); ScenSet sc = {0}; scen_make(&sc, 64, &r, c, &P);
   BcData d = { 0 }; d.nin = P.nin; d.nout = 3; d.cap = BC_MAXN; d.X = (float*)malloc(sizeof(float) * (size_t)d.cap * d.nin); d.Y = (float*)malloc(sizeof(float) * (size_t)d.cap * 3);
-  float* st = (float*)malloc(sizeof(float) * P.stride); float hist[BR_NI * 4] = {0}; float x[MAXW];
-  float* wt = (float*)malloc(sizeof(float) * P.nw); int ok = 0;
-  for (int rnd = 0; rnd < BC_ROUNDS; rnd++) {
+  float* st = (float*)malloc(sizeof(float) * P.stride); float hist[BR_NI * CFG_MAXK] = {0}; float x[MAXW];
+  float* wt = (float*)malloc(sizeof(float) * P.nw); int ok = 0, ni = P.arch[0], m0 = BR_NI * (P.K + 1);
+  for (int rnd = 0; rnd < BC_ROUNDS && !T.stopReq; rnd++) {
     int quota = d.n + (d.cap - d.n) / (BC_ROUNDS - rnd);   // spread the data over the rounds
     if (rnd) br_transpose_genome(g, wt, &P);
-    for (int si = 0; si < sc.n && d.n < quota; si++) {
+    for (int si = 0; si < sc.n && d.n < quota && !T.stopReq; si++) {
       int sj = (si + rnd * 17) % sc.n;
       br_init(st, &P, &sc.sc[sj]); BrState s; br_load(&s, st); BrTgt tg; memset(&tg, 0, sizeof tg); memset(hist, 0, sizeof hist);
       float* nh = st + S_HIST; float* nm = st + S_HIST + BR_NI * P.K;
@@ -719,17 +821,19 @@ static int bc_flights(const TrainCfg* c, float* g) {
         if (s.k % P.ctrl == 0) {
           memset(x, 0, sizeof(float) * P.nin); br_inputs(&s, &tg, x);
           for (int i = 0; i < BR_NI * P.K; i++) x[BR_NI + i] = hist[i];
-          for (int i = BR_NI * P.K - 1; i >= BR_NI; i--) hist[i] = hist[i - BR_NI]; for (int i = 0; i < BR_NI && P.K; i++) hist[i] = x[i];
+          for (int i = BR_NI * P.K - 1; i >= BR_NI; i--) hist[i] = hist[i - BR_NI];
+          for (int i = 0; i < BR_NI && P.K; i++) hist[i] = x[i];
           float u[3]; br_algo_control(&s, &P, &sc.sc[sj], &tg, u); bc_add(&d, x, u, 1);   // the algorithm's answer is the label
           if (rnd) br_control(&s, &P, &tg, wt, nh, nm); else { s.u0 = u[0]; s.u1 = u[1]; s.u2 = u[2]; }   // who flies
         }
         s.k++; br_step(&s, &P, &sc.sc[sj], &tg);
       }
     }
-    if (d.n > 500) { bc_fit(g, P.nl, P.arch, &d, &r, rnd == 0); ok = 1; }
+    if (d.n > 500 && !T.stopReq) { bc_fit(g, P.nl, P.arch, &d, &r, rnd == 0); ok = 1;
+      if (P.rec) for (int j = 0; j < P.arch[1]; j++) for (int i = m0; i < ni; i++) g[j * ni + i] = 0; }
   }
   free(st); free(wt); scen_free(&sc);
-  free(d.X); free(d.Y); return ok ? 0 : -1;
+  free(d.X); free(d.Y); return ok && !T.stopReq ? 0 : -1;
 }
 // Swarm: record battles flown by the algorithm on both sides, as `side`'s network (nearest-K or commander) would see them.
 static int bc_battles(const TrainCfg* c, const BrParams* P0, int side, float* g) {
@@ -742,11 +846,11 @@ static int bc_battles(const TrainCfg* c, const BrParams* P0, int side, float* g)
   int arch[BR_MAXL + 1]; for (int l = 0; l <= P0->nl; l++) arch[l] = P0->arch[l]; arch[0] = nin; arch[P0->nl] = nout;
   int nwS = side ? P0->defNw : P0->attNw, ok = 0; float* wt = (float*)malloc(sizeof(float) * nwS);
   BrParams PN = *P0; if (side) PN.attAI = 0; else PN.defAI = 0;   // network flies `side` (later rounds), the algorithm the other
-  static _Thread_local float BX[BR_SW_MAXA * SW_MAXW], BY[BR_SW_MAXA * SW_MAXW];
-  for (int rnd = 0; rnd < BC_ROUNDS; rnd++) {
+  float* BX = (float*)malloc(sizeof(float) * BR_SW_MAXB * SW_MAXW); float* BY = (float*)malloc(sizeof(float) * BR_SW_MAXB * SW_MAXW);   // nearest-K batch
+  for (int rnd = 0; rnd < BC_ROUNDS && !T.stopReq; rnd++) {
   int quota = d.n + (d.cap - d.n) / (BC_ROUNDS - rnd);
   if (rnd) br_transpose_layers(g, wt, P0->nl, arch);
-  for (int si0 = 0; si0 < S && d.n < quota; si0++) {
+  for (int si0 = 0; si0 < S && d.n < quota && !T.stopReq; si0++) {
     int si = (si0 + rnd * 11) % S;
     const BrScen* s0 = &sc.sc[si]; br_sw_init(g0, &P, s0, sc.traj); BR_U32 seed = (BR_U32)s0->seed;
     for (int it = 0; it < 400000 && g0[SWH_DONE] == 0 && d.n < quota; it++) {
@@ -772,27 +876,85 @@ static int bc_battles(const TrainCfg* c, const BrParams* P0, int side, float* g)
       br_sw_resolve(g0, &P, s0);
     }
   }
-  if (d.n > 500) { bc_fit(g, P0->nl, arch, &d, &r, rnd == 0); ok = 1; }
+  if (d.n > 500 && !T.stopReq) { bc_fit(g, P0->nl, arch, &d, &r, rnd == 0); ok = 1; }
   }
-  free(g0); free(wt); scen_free(&sc);
-  free(d.X); free(d.Y); return ok ? 0 : -1;
+  free(g0); free(wt); free(BX); free(BY); scen_free(&sc);
+  free(d.X); free(d.Y); return ok && !T.stopReq ? 0 : -1;
 }
 
-static void build_islands(void) {
+// Settings that change what validation measures: when they change, earlier scores no longer compare.
+static int val_same(const TrainCfg* a, const TrainCfg* b) {
+  return scen_same(a, b) && a->valScen == b->valScen && a->dt == b->dt && a->tw == b->tw && a->everyStep == b->everyStep &&
+         a->noise == b->noise && a->delayMs == b->delayMs && a->attAI == b->attAI && a->defAI == b->defAI && a->noEarly == b->noEarly;
+}
+// Hit rate of network g (as flown) on the fixed validation set of the settings in use; -1 when the backend failed.
+// New settings rebuild the set when its scenarios differ, and restart the stall check.
+static double validate(const float* g) {
+  BrParams P; setup_params(&P, &T.run, T.run.valScen);
+  if (!T.valReady || T.val.n != P.S || !scen_same(&T.valCfg, &T.run)) { Rng r; rng_seed(&r, 4242); scen_make(&T.val, P.S, &r, &T.run, &P); T.valReady = 1; }
+  if (!val_same(&T.valCfg, &T.run)) { T.valCfg = T.run; T.stall = 0; T.bestVal = 0; T.bestFitAvg = -1e30; }
+  float* out = (float*)malloc(sizeof(float) * BR_OUT * P.S);
+  int hits = 0, bad = eval_set(T.be, g, 1, &T.val, &P, out);
+  if (!bad) for (int i = 0; i < P.S; i++) hits += out[i * BR_OUT + 1] > 0.5f;
+  free(out); return bad ? -1 : (double)hits / P.S;
+}
+// Offers validated network g (as flown, score v) to the hall of fame. It is kept unless the kept network of the same
+// shape validates better on the same settings (it is re-validated first when the settings changed). `ifEmpty`: only
+// when nothing is kept yet. Returns 1 when g is kept, 0 if not, -1 when the backend failed.
+static int hof_offer(const float* g, double v, int gen, double fit, int ifEmpty) {
+  br_lock(&T.mx);
+  int same = star_ok(&T.hof, &T.P), stale = same && !(T.hofOk && val_same(&T.hofCfg, &T.run)), skip = T.reseedReq || (ifEmpty && T.hof.w);
+  float* hw = NULL; if (stale && !skip) { hw = (float*)malloc(sizeof(float) * T.P.nw); memcpy(hw, T.hof.w, sizeof(float) * T.P.nw); }
+  br_unlock(&T.mx);
+  if (skip) return 0;
+  double hv = hw ? validate(hw) : 0; int again = hw != NULL; free(hw); if (hv < 0) return -1;
+  br_lock(&T.mx);
+  if (T.reseedReq) { br_unlock(&T.mx); return 0; }   // a network was loaded meanwhile: it takes over
+  if (again) { T.hof.val = hv; T.hof.level = T.level; T.hofCfg = T.run; T.hofOk = 1; }
+  int keep = same && T.hof.val > v + 1e-9;
+  if (!keep) { if (T.hof.w && !same) T.hofNew = 1;   // a new network replaces one of another shape: back up its file
+    net_set(&T.hof, g, &T.P, &T.run); T.hof.gen = gen; T.hof.fit = fit; T.hof.val = v; T.hof.level = T.level; T.hofCfg = T.run; T.hofOk = 1; }
+  br_unlock(&T.mx);
+  return !keep;
+}
+// Validates this generation's star g (as flown) and offers it to the hall of fame. Returns its score, -1: backend failed.
+static double check_star(const float* g, int gen, double fit) {
+  double v = validate(g); if (v < 0) return -1;
+  br_lock(&T.mx); T.valHit = v; T.valGen = gen; br_unlock(&T.mx);
+  return hof_offer(g, v, gen, fit, 0) < 0 ? -1 : v;
+}
+
+static void struct_key(const TrainCfg* c, int* key) {   // settings the islands are built for
+  int k[9] = { c->layers, c->width, c->K, c->mem, c->pop, c->islands ? c->nIsl : 0, c->cma, c->optKind, c->normIn };
+  memcpy(key, k, sizeof k);
+}
+enum { BUILD_SETTINGS, BUILD_RESTART, BUILD_RESEED };
+// (Re)builds the islands around the kept network (else the star) when it fits the settings, else around a new network,
+// copied from the guidance algorithm when the head start is on. Anything but a restart starts the restart cycle over; a
+// loaded network resumes its own difficulty level; a new network starts a new chart, at the easy end when automatic
+// difficulty is on. Returns -1 when paused during the head start (the islands are built again on the next start).
+static int build_islands(int why) {
   free_islands(); g_optKind = T.cfg.optKind;
+  BrParams Q; setup_params(&Q, &T.cfg, T.cfg.scen);   // the network's shape (the level never changes it)
+  float* seed = (float*)malloc(sizeof(float) * Q.nw); int seeded = 0;
+  br_lock(&T.mx); T.reseedReq = 0;
+  const Net* src = star_ok(&T.hof, &Q) ? &T.hof : star_ok(&T.star, &Q) ? &T.star : NULL;
+  if (src) { memcpy(seed, src->w, sizeof(float) * Q.nw); seeded = 1; }
+  int loadedLevel = T.hof.level; br_unlock(&T.mx);
+  if (why != BUILD_RESTART) run_reset();
+  if (why == BUILD_RESEED) { T.level = loadedLevel; T.levelHits = 0; }
+  if (!seeded) { T.level = T.cfg.autoDiff ? 0 : 10; T.levelHits = 0; br_lock(&T.mx); T.histN = 0; T.gen = 0; T.valGen = 0; T.valHit = 0; br_unlock(&T.mx); }
   T.run = curriculum(&T.cfg, T.level); TrainCfg* c = &T.run; setup_params(&T.P, c, c->scen);
   int k = c->islands ? c->nIsl : 1; if (k > c->pop / 4) k = c->pop / 4 > 1 ? c->pop / 4 : 1;
-  if (T.popMul <= 0) T.popMul = 1;
   int per = (int)(c->pop * T.popMul) / k; if (per < 4) per = 4;
-  float* seed = (float*)malloc(sizeof(float) * T.P.nw); int seeded = 0, copiedStart = 0;
-  br_lock(&T.mx); if (star_matches(&T.P)) { memcpy(seed, T.star, sizeof(float) * T.P.nw); seeded = 1; } br_unlock(&T.mx);
-  for (int f = 0; f < BR_NI; f++) { T.normMu[f] = 0; T.normSd[f] = 1; } T.normOn = 0;   // statistics start neutral (no change)
+  // statistics start neutral (no change); an existing network has them measured after its first generation
+  for (int f = 0; f < BR_NI; f++) { T.normMu[f] = 0; T.normSd[f] = 1; } T.normOn = 0; T.normDue = seeded;
   if (!seeded && c->imitate && c->mode != BR_MODE_SWARM) { set_msg("head start: recording the guidance algorithm…");
-    if (!bc_flights(c, seed)) { seeded = 1; copiedStart = 1;
-      br_lock(&T.mx); if (T.starNw != T.P.nw) { free(T.star); T.star = (float*)malloc(sizeof(float) * T.P.nw); T.starNw = T.P.nw; }
-      memcpy(T.star, seed, sizeof(float) * T.P.nw); T.starNl = T.P.nl; memcpy(T.starArch, T.P.arch, sizeof(int) * (T.P.nl + 1)); T.starK = T.P.K; T.starMem = T.P.rec;
-      T.starDt = c->dt; T.starTw = c->tw; T.starEvery = c->everyStep; T.starVersion++; br_unlock(&T.mx);
-      if (T.be) { double v = validate(seed); set_msg("head start: the copy of the guidance algorithm scores %.0f%% on validation", v * 100); } } }
+    if (!bc_flights(c, seed)) { seeded = 1;
+      br_lock(&T.mx); net_set(&T.star, seed, &T.P, c); T.star.gen = 0; T.star.fit = T.star.val = 0; T.star.level = T.level; br_unlock(&T.mx);
+      if (T.be) { double v = validate(seed);
+        if (v >= 0) { set_msg("head start: the copy of the guidance algorithm scores %.0f%% on validation", v * 100); hof_offer(seed, v, 0, 0, 1); } } }
+    else if (T.stopReq) { free(seed); return -1; } }
   T.isl = (Island*)calloc(k, sizeof(Island)); T.nIsl = k;
   for (int i = 0; i < k; i++) {
     Island* I = &T.isl[i]; I->cma = c->cma; I->bestG = (float*)calloc(T.P.nw, sizeof(float)); I->bestF = -1e30;
@@ -802,53 +964,51 @@ static void build_islands(void) {
     free(s);
   }
   free(seed);
-  if (!seeded || copiedStart) T.level = 0;
-  if (!seeded) { br_lock(&T.mx); T.histN = 0; T.gen = 0; br_unlock(&T.mx); T.restarts = 0; T.stall = 0; T.bestVal = 0; T.popMul = 1; T.restartSigma = 0; T.bestFitAvg = -1e30; T.fitSum = 0; T.fitN = 0; }
-  T.structKey[0] = c->layers; T.structKey[1] = c->width; T.structKey[2] = c->K; T.structKey[3] = c->mem;
-  T.structKey[4] = c->pop; T.structKey[5] = c->islands ? c->nIsl : 0; T.structKey[6] = c->cma; T.structKey[7] = 1;
+  struct_key(&T.cfg, T.structKey);
   T.scenAge = 1 << 30;
+  return 0;
 }
-static int needs_rebuild(const TrainCfg* c) {
-  return !T.isl || T.structKey[0] != c->layers || T.structKey[1] != c->width || T.structKey[2] != c->K || T.structKey[3] != c->mem ||
-         T.structKey[4] != c->pop || T.structKey[5] != (c->islands ? c->nIsl : 0) || T.structKey[6] != c->cma;
-}
+static int needs_rebuild(const TrainCfg* c) { int key[9]; struct_key(c, key); return T.reseedReq || !T.isl || memcmp(T.structKey, key, sizeof key); }
+// The compute option in use. "auto" moves to the CPU for the rest of the session when the GPU cannot start or fails.
 static int ensure_backend(void) {
-  const char* want = strcmp(T.cfg.backend, "auto") ? T.cfg.backend : default_backend_id();
+  char buf[32]; int isAuto = !strcmp(T.cfg.backend, "auto");
+  const char* want = !isAuto ? T.cfg.backend : T.autoCpu ? "cpu" : default_backend_id(buf, sizeof buf);
   if (T.be && !strcmp(T.beId, want) && T.beThreads == T.cfg.threads) { T.be->wg = T.cfg.wg; T.be->chunkMs = T.cfg.chunkMs; T.be->swLayout = T.cfg.swLayout; return 0; }
   if (T.be) { T.be->destroy(T.be); T.be = NULL; }
   char err[256] = "";
   T.be = make_backend(want, &T.cfg, err, sizeof err);
+  if (!T.be && isAuto && strcmp(want, "cpu")) { set_msg("cannot start %s (%s): training on the CPU instead", want, err); T.autoCpu = 1; want = "cpu"; T.be = make_backend(want, &T.cfg, err, sizeof err); }
   if (!T.be) { set_msg("cannot start %s: %s", want, err); return -1; }
   snprintf(T.beId, sizeof T.beId, "%s", want); T.beThreads = T.cfg.threads; T.be->swLayout = T.cfg.swLayout;
-  br_lock(&T.mx); snprintf(T.beInfo, sizeof T.beInfo, "%s", T.be->info); br_unlock(&T.mx);
+  br_lock(&T.mx); snprintf(T.beInfo, sizeof T.beInfo, "%s%s", T.be->info, isAuto && T.autoCpu ? " (the GPU failed)" : ""); br_unlock(&T.mx);
   return 0;
 }
-
-static double validate(const float* g) {
-  BrParams P; setup_params(&P, &T.run, T.run.valScen);
-  if (!T.valReady || T.val.n != P.S || !scen_same(&T.valCfg, &T.run)) {
-    Rng r; rng_seed(&r, 4242); scen_make(&T.val, P.S, &r, &T.run, &P); T.valCfg = T.run; T.valReady = 1;
-  }
-  float* out = (float*)malloc(sizeof(float) * BR_OUT * P.S);
-  int hits = 0; if (!eval_set(T.be, g, 1, &T.val, &P, out)) for (int i = 0; i < P.S; i++) hits += out[i * BR_OUT + 1] > 0.5f;
-  free(out); return (double)hits / P.S;
+// A backend call failed: "auto" carries on with the CPU (returns 1); a chosen compute option stops training (returns 0).
+static int backend_failed(const char* what) {
+  if (!strcmp(T.cfg.backend, "auto") && strcmp(T.beId, "cpu")) {
+    set_msg("%s failed on %s: training continues on the CPU", what, T.be->info); T.autoCpu = 1; T.be->destroy(T.be); T.be = NULL; return 1; }
+  set_msg("%s failed on %s%s", what, T.be->info, strcmp(T.cfg.backend, "auto") ? ": choose another compute option" : ""); return 0;
 }
 
 // ---------------- swarm training: one optimizer per AI side; AI vs AI is self-play against a pool of recent stars
 #define SW_POOL 16
 typedef struct {
-  int ai, nin, nout, nw, key[8], live;   // key: the network/optimizer layout this side was built for
+  int ai, nin, nout, nw, key[9], live;   // key: the network/optimizer layout this side was built for (key[7]: its population)
   CMA cma;
-  float* star; double starFit, best, mean; int starVersion;
+  float* star; double starFit, best, mean;
+  // kept network (hall of fame): the best validated so far, saved and restarted from. hofCfg: the settings hofVal was
+  // measured on (hofOk = 0: not in this session); hofNew: a new network, so the side's file is backed up before its first save.
+  float* hof; double hofVal, hofFit; int hofGen, hofLevel, hofOk, hofNew; TrainCfg hofCfg;
   float* pool; int poolN, poolNext;       // this side's recent stars: the other side trains against them
   double poolWin[SW_POOL];                // the other side's success rate against each of them (PFSP)
-  double val; int valGen;                 // validation vs the algorithm: catch rate (defenders) or leak rate (attackers)
-  double bestVal, fitSum, bestFitAvg; int stall, restarts, fitN;   // restarts when validation and the training score stall
+  double val;                             // validation vs the algorithm: catch rate (defenders) or leak rate (attackers)
+  // restarts when validation and the training score stall (bigMul: the large-population regime's multiplier)
+  double bestVal, fitSum, bestFitAvg, bigMul; int stall, restarts, fitN;
 } SwSide;
 static struct {
   SwSide side[2];                         // 0 = attackers, 1 = defenders
   ScenSet scen, val; int scenAge, valReady; TrainCfg scenCfg, valCfg;
-  double catchRate, leakRate, battlesPerS, ballStepsPerS;
+  double catchRate, leakRate;
 } SW;
 // After a validation: two in a row at diffAt or better move up a level (and restart the stall counters).
 static void curriculum_check(double val) {
@@ -861,40 +1021,37 @@ static void curriculum_check(double val) {
 }
 static const char* sw_side_name(int side) { return side ? "defend" : "attack"; }
 // One saved star per side and matchup: commander brains depend on both counts; nearest-K brains only on K.
-static const char* sw_save_path(const TrainCfg* c, int side) {
-  static char p[1024]; char name[128]; const char* h = getenv("HOME");
-  int cmd = side ? c->defCmd : c->attCmd;
+static const char* sw_save_path(const TrainCfg* c, int side, char* p, int len) {
+  char name[128]; int cmd = side ? c->defCmd : c->attCmd;
   if (cmd) snprintf(name, sizeof name, "BallArena-star-swarm-cmd-A%d-D%d-%s.json", c->attN, c->defN, sw_side_name(side));
   else snprintf(name, sizeof name, "BallArena-star-swarm-nk-K%d-%s.json", c->swK, sw_side_name(side));
-#ifdef _WIN32
-  if (!h) h = getenv("USERPROFILE");
-  snprintf(p, sizeof p, "%s\\%s", h ? h : ".", name);
-#else
-  snprintf(p, sizeof p, "%s/%s", h ? h : ".", name);
-#endif
-  return p;
+  return home_path(name, p, len);
 }
 static void sw_arch(const BrParams* P, int side, int* arch) {
   for (int l = 0; l <= P->nl; l++) arch[l] = P->arch[l];
   arch[0] = side ? P->defNin : P->attNin; arch[P->nl] = side ? P->defNout : P->attNout;
 }
-static void sw_save(const TrainCfg* c, const BrParams* P, int side) {
-  SwSide* S = &SW.side[side]; if (!S->star) return;
+// Saves a side's kept network, with the matchup and physics of the settings (not a difficulty level's easier ones).
+static void sw_save(const BrParams* P, int side) {
+  const TrainCfg* c = &T.cfg; SwSide* S = &SW.side[side]; if (!S->hof) return;
   int arch[BR_MAXL + 1]; sw_arch(P, side, arch);
   Sb o = {0};
   sb_printf(&o, "{\"format\":\"ball-arena-network\",\"mode\":\"swarm\",\"side\":\"%s\",\"brain\":\"%s\",\"attackers\":%d,\"defenders\":%d,\"K\":%d,\"arch\":[",
     sw_side_name(side), (side ? c->defCmd : c->attCmd) ? "commander" : "nearest-k", c->attN, c->defN, c->swK);
   for (int l = 0; l <= P->nl; l++) sb_printf(&o, "%s%d", l ? "," : "", arch[l]);
-  sb_printf(&o, "],\"dt\":%g,\"ctrlEvery\":%d,\"thrustToWeight\":%g,\"runnerThrustToWeight\":%g,\"generation\":%d,\"fitness\":%.4f,\"validation\":%.4f,\"weights\":[",
-    c->dt, c->everyStep ? 1 : 2, c->tw, c->twRunner, T.gen, S->starFit, S->val);
-  for (int i = 0; i < S->nw; i++) sb_printf(&o, "%s%.7g", i ? "," : "", S->star[i]);
+  sb_printf(&o, "],\"dt\":%g,\"ctrlEvery\":%d,\"thrustToWeight\":%g,\"runnerThrustToWeight\":%g,\"generation\":%d,\"fitness\":%.4f,\"validation\":%.4f,\"level\":%d,\"weights\":[",
+    c->dt, c->everyStep ? 1 : 2, c->tw, c->twRunner, S->hofGen, S->hofFit, S->hofVal, S->hofLevel);
+  for (int i = 0; i < S->nw; i++) sb_printf(&o, "%s%.7g", i ? "," : "", S->hof[i]);
   sb_printf(&o, "]}");
-  FILE* f = fopen(sw_save_path(c, side), "w"); if (f) { fwrite(o.s, 1, o.n, f); fclose(f); }
+  char p[1024]; sw_save_path(c, side, p, sizeof p);
+  if (S->hofNew) { backup(p); S->hofNew = 0; }
+  FILE* f = fopen(p, "w"); if (f) { fwrite(o.s, 1, o.n, f); fclose(f); }
   free(o.s);
 }
-// Weights of this side's saved star if its layer sizes match the current settings (NULL otherwise).
-static float* sw_load(const TrainCfg* c, const BrParams* P, int side) {
-  char* j = NULL; { FILE* f = fopen(sw_save_path(c, side), "rb"); if (!f) return NULL; fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+// Weights of this side's saved star if its layer sizes match the current settings (NULL otherwise). Its validation and
+// difficulty level go to *val and *level when asked.
+static float* sw_load(const TrainCfg* c, const BrParams* P, int side, double* val, int* level) {
+  char pb[1024]; char* j = NULL; { FILE* f = fopen(sw_save_path(c, side, pb, sizeof pb), "rb"); if (!f) return NULL; fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
     j = (char*)malloc(n + 1); n = (long)fread(j, 1, n, f); j[n] = 0; fclose(f); }
   int arch[BR_MAXL + 1], want[BR_MAXL + 1], nl = -1; sw_arch(P, side, want);
   const char* a = strstr(j, "\"arch\""); const char* w = strstr(j, "\"weights\""); const char* p = a ? strchr(a, '[') : NULL;
@@ -905,25 +1062,39 @@ static float* sw_load(const TrainCfg* c, const BrParams* P, int side) {
   if (ok) { g = (float*)malloc(sizeof(float) * nw); p = strchr(w, '['); int n = 0;
     if (p) { p++; while (n < nw && *p && *p != ']') { g[n++] = strtof(p, (char**)&p); while (*p == ',' || *p == ' ') p++; } }
     if (n != nw) { free(g); g = NULL; } }
+  if (g && val) *val = jnum(j, "validation", 0);
+  if (g && level) *level = clampi((int)jnum(j, "level", 10), 0, 10);
   free(j); return g;
 }
-static void sw_side_free(SwSide* S) { if (S->live) cma_free(&S->cma); free(S->star); free(S->pool); memset(S, 0, sizeof *S); }
-// (Re)build a side when its network or population layout changed: seeded from its saved star when that fits.
-static void sw_build(const TrainCfg* c, const BrParams* P, int side, int lam) {
-  SwSide* S = &SW.side[side]; int ai = side ? c->defAI : c->attAI, cmd = side ? c->defCmd : c->attCmd;
-  int key[8] = { ai, c->layers, c->width, cmd, cmd ? c->attN : 0, cmd ? c->defN : 0, cmd ? 0 : c->swK, lam };
-  if (S->live == ai && !memcmp(S->key, key, sizeof key)) return;
-  sw_side_free(S); memcpy(S->key, key, sizeof key); S->ai = ai; g_optKind = c->optKind; S->bestFitAvg = -1e30;
-  if (!ai) return;
-  S->nin = side ? P->defNin : P->attNin; S->nout = side ? P->defNout : P->attNout; S->nw = side ? P->defNw : P->attNw;
-  float* seed = sw_load(c, P, side); int seeded = seed != NULL, copied = 0;
-  if (!seeded) T.level = 0;   // a new network starts at the easy end (automatic difficulty)
-  if (!seed) { seed = (float*)malloc(sizeof(float) * S->nw); for (int i = 0; i < S->nw; i++) seed[i] = (float)((urand(&T.rng) * 2 - 1) * 0.1);
-    if (c->imitate) { set_msg("%s head start: recording the guidance algorithm…", side ? "defenders" : "attackers"); copied = !bc_battles(c, P, side, seed); } }
-  cma_init(&S->cma, S->nw, lam, seed, seeded ? 0.02 : copied ? 0.05 : 0.25); S->live = 1;
-  S->star = seed; S->starFit = -1e30; S->pool = (float*)malloc(sizeof(float) * S->nw * SW_POOL);
-  memcpy(S->pool, seed, sizeof(float) * S->nw); S->poolN = 1; S->poolNext = 1; S->poolWin[0] = 0.5;
+static void sw_side_free(SwSide* S) { if (S->live) cma_free(&S->cma); free(S->star); free(S->hof); free(S->pool); memset(S, 0, sizeof *S); }
+static void sw_key(const TrainCfg* c, int side, int lam, int* key) {   // the layout a side is built for
+  int ai = side ? c->defAI : c->attAI, cmd = side ? c->defCmd : c->attCmd;
+  int k[9] = { ai, c->layers, c->width, cmd, cmd ? c->attN : 0, cmd ? c->defN : 0, cmd ? 0 : c->swK, lam, c->optKind };
+  memcpy(key, k, sizeof k);
+}
+static int sw_stale(int side, const int* key) { const SwSide* S = &SW.side[side]; return S->live != key[0] || memcmp(S->key, key, sizeof S->key); }
+// (Re)builds a side for a new network or population layout: from its saved star `seed` when one fits (validation sv,
+// level sl), else as a new network, copied from the guidance algorithm when the head start is on. Takes over `seed`.
+// The star is swapped in under the lock (battle playback reads it). Returns -1 when paused while copying (the side is
+// built again on the next start).
+static int sw_build(const TrainCfg* c, const BrParams* P, int side, const int* key, float* seed, double sv, int sl) {
+  SwSide* S = &SW.side[side]; int ai = key[0], nw = side ? P->defNw : P->attNw, seeded = seed != NULL, copied = 0;
+  br_lock(&T.mx); sw_side_free(S); memcpy(S->key, key, sizeof S->key); S->ai = ai; br_unlock(&T.mx);
+  if (!ai) return 0;
+  if (!seed) { seed = (float*)malloc(sizeof(float) * nw); for (int i = 0; i < nw; i++) seed[i] = (float)((urand(&T.rng) * 2 - 1) * 0.1);
+    if (c->imitate) { set_msg("%s head start: recording the guidance algorithm…", side ? "defenders" : "attackers"); copied = !bc_battles(c, P, side, seed);
+      if (T.stopReq) { free(seed); br_lock(&T.mx); memset(S, 0, sizeof *S); br_unlock(&T.mx); return -1; } } }
+  float* pool = (float*)malloc(sizeof(float) * nw * SW_POOL); memcpy(pool, seed, sizeof(float) * nw);
+  float* hof = NULL; if (seeded) { hof = (float*)malloc(sizeof(float) * nw); memcpy(hof, seed, sizeof(float) * nw); }
+  CMA cm; g_optKind = c->optKind; cma_init(&cm, nw, key[7], seed, seeded ? 0.02 : copied ? 0.05 : 0.25);
+  br_lock(&T.mx);
+  S->cma = cm; S->live = 1; S->nin = side ? P->defNin : P->attNin; S->nout = side ? P->defNout : P->attNout; S->nw = nw;
+  S->star = seed; S->starFit = -1e30; S->bestFitAvg = -1e30; S->bigMul = 1;
+  S->hof = hof; S->hofVal = sv; S->hofLevel = sl; S->hofNew = !seeded;   // hofOk = 0: a saved star is re-validated first
+  S->pool = pool; S->poolN = 1; S->poolNext = 1; S->poolWin[0] = 0.5;
+  br_unlock(&T.mx);
   set_msg("%s: %s", side ? "defenders" : "attackers", seeded ? "continuing from the saved star" : copied ? "new network, started by copying the guidance algorithm" : "new network");
+  return 0;
 }
 // Score of one battle for one side (normalised by the counts, so scores compare across swarm sizes).
 static double sw_fit(const float* o, int side, const TrainCfg* c) {
@@ -931,39 +1102,69 @@ static double sw_fit(const float* o, int side, const TrainCfg* c) {
   if (side) return (5 * o[0] - 5 * o[1]) / nA + 0.5 * o[3] / nD;   // defenders: catches, leaks, closeness to attackers
   return (5 * o[1] - 2 * o[0]) / nA + 0.5 * o[2] / nA;             // attackers: leaks, losses, closeness to the point
 }
-// Validation: each AI side's star against the algorithm on a fixed set of battles.
-static void sw_validate(const TrainCfg* c) {
+// One side's network w against the algorithm on the validation battles: catch rate (defenders) or leak rate (attackers);
+// -1 when the backend failed.
+static double sw_score(const float* w, int side, const BrParams* P, const int* bat, float* out) {
+  BrParams Q = *P; if (side) Q.attAI = 0; else Q.defAI = 0;   // the other side: the algorithm
+  if (T.be->evalBattles(T.be, side ? NULL : w, side ? w : NULL, bat, P->S, SW.val.sc, SW.val.traj, SW.val.trajFloats, &Q, out)) return -1;
+  double n = 0; for (int i = 0; i < P->S; i++) n += out[i * BR_SWOUT + (side ? 0 : 1)];
+  return n / ((double)P->S * P->attN);
+}
+// Validation: each AI side's star against the algorithm on a fixed set of battles. Each side keeps the better of its star
+// and its kept network (re-validated first when the settings changed). With `track`, stalls restart that side's
+// optimizer around its kept network (BIPOP-style). Returns -1 when the backend failed.
+static int sw_validate(const TrainCfg* c, int track) {
   BrParams P; setup_params(&P, c, c->valScen);
-  if (!SW.valReady || SW.val.n != P.S || !scen_same(&SW.valCfg, c)) { Rng r; rng_seed(&r, 4242); scen_make(&SW.val, P.S, &r, c, &P); SW.valCfg = *c; SW.valReady = 1; }
-  int* bat = (int*)calloc((size_t)P.S * 3, sizeof(int)); float* out = (float*)malloc(sizeof(float) * BR_SWOUT * P.S);
+  if (!SW.valReady || SW.val.n != P.S || !scen_same(&SW.valCfg, c)) { Rng r; rng_seed(&r, 4242); scen_make(&SW.val, P.S, &r, c, &P); SW.valReady = 1; }
+  if (!val_same(&SW.valCfg, c)) { SW.valCfg = *c; for (int side = 0; side < 2; side++) { SW.side[side].stall = 0; SW.side[side].bestVal = 0; SW.side[side].bestFitAvg = -1e30; } }
+  int* bat = (int*)calloc((size_t)P.S * 3, sizeof(int)); float* out = (float*)malloc(sizeof(float) * BR_SWOUT * P.S); int fail = 0, scored = 0;
   for (int i = 0; i < P.S; i++) bat[i * 3 + 2] = i;
-  for (int side = 0; side < 2; side++) {
-    SwSide* S = &SW.side[side]; if (!S->ai || !S->star) continue;
-    BrParams Q = P; if (side) Q.attAI = 0; else Q.defAI = 0;   // the other side: the algorithm
-    if (T.be->evalBattles(T.be, side ? NULL : S->star, side ? S->star : NULL, bat, P.S, SW.val.sc, SW.val.traj, SW.val.trajFloats, &Q, out)) continue;
-    double n = 0; for (int i = 0; i < P.S; i++) n += out[i * BR_SWOUT + (side ? 0 : 1)];
-    br_lock(&T.mx); S->val = n / ((double)P.S * c->attN); S->valGen = T.gen; br_unlock(&T.mx);
+  for (int side = 0; side < 2 && !fail; side++) {
+    // a side still built for other settings (Pause cut its rebuild short) has another shape: it is not flown
+    SwSide* S = &SW.side[side]; if (!S->ai || !S->star || S->nw != (side ? P.defNw : P.attNw) || S->nin != (side ? P.defNin : P.attNin) || S->nout != (side ? P.defNout : P.attNout)) continue;
+    double v = sw_score(S->star, side, &P, bat, out); if (v < 0) { fail = 1; break; }
+    scored = 1;
+    br_lock(&T.mx); S->val = v; br_unlock(&T.mx);
+    if (S->hof && !(S->hofOk && val_same(&S->hofCfg, c))) { double hv = sw_score(S->hof, side, &P, bat, out); if (hv < 0) { fail = 1; break; }
+      S->hofVal = hv; S->hofLevel = T.level; S->hofCfg = *c; S->hofOk = 1; }
+    if (!S->hof || v + 1e-9 >= S->hofVal) { if (!S->hof) S->hof = (float*)malloc(sizeof(float) * S->nw);
+      memcpy(S->hof, S->star, sizeof(float) * S->nw); S->hofVal = v; S->hofFit = S->starFit; S->hofGen = T.gen; S->hofLevel = T.level; S->hofCfg = *c; S->hofOk = 1; }
+    if (!track) continue;
     double avg = S->fitN ? S->fitSum / S->fitN : -1e30; S->fitSum = 0; S->fitN = 0;
     int better = S->val > S->bestVal + 1e-9 || avg > S->bestFitAvg + 0.05;
-    if (S->val > S->bestVal) S->bestVal = S->val; if (avg > S->bestFitAvg) S->bestFitAvg = avg;
+    if (S->val > S->bestVal) S->bestVal = S->val;
+    if (avg > S->bestFitAvg) S->bestFitAvg = avg;
     if (better) S->stall = 0; else S->stall++;
-    if (c->restarts && S->stall >= 6 && S->bestVal < 1) {   // restart this side's optimizer around its star (BIPOP-style)
-      S->restarts++; S->stall = 0; int lam = S->cma.lam, big = S->restarts & 1;
-      int nl = big ? (lam * 2 > 4096 ? 4096 : lam * 2) : (lam / 2 > 8 ? lam / 2 : 8);
-      cma_free(&S->cma); g_optKind = c->optKind; cma_init(&S->cma, S->nw, nl, S->star, big ? 0.1 : 0.01);
+    if (c->restarts && S->stall >= 6 && S->bestVal < 1) {   // restart around the kept network: wide searches with a growing
+      S->restarts++; S->stall = 0; int base = S->key[7], big = S->restarts & 1;   // population, fine ones with a small one
+      if (big) S->bigMul = fmin(8, (S->bigMul > 1 ? S->bigMul : 1) * 2);
+      int nl = big ? (int)fmin(4096, base * S->bigMul) : (base / 2 > 8 ? base / 2 : 8);
+      cma_free(&S->cma); g_optKind = c->optKind; cma_init(&S->cma, S->nw, nl, S->hof, big ? 0.1 : 0.01);
       set_msg("%s: validation stalled at %.0f%%, restart %d (%s search)", side ? "defenders" : "attackers", S->bestVal * 100, S->restarts, big ? "wide" : "fine");
     }
   }
-  free(bat); free(out);
+  if (!fail && scored) { br_lock(&T.mx); T.valGen = T.gen; br_unlock(&T.mx); }
+  free(bat); free(out); return fail ? -1 : 0;
 }
-// One swarm generation. Returns -1 to stop training.
+// One swarm generation. Returns 0 to go on, -1 to stop training.
 static int sw_generation(void) {
   T.run = curriculum(&T.cfg, T.level); TrainCfg* c = &T.run;
   if (!c->attAI && !c->defAI) { set_msg("both sides fly the algorithm: set one side to AI to train"); return -1; }
-  if (!T.be->evalBattles) { set_msg("%s cannot fly swarm battles yet", T.be->info); return -1; }
+  if (!T.be->evalBattles) return backend_failed("flying swarm battles") ? 0 : -1;
   BrParams P; setup_params(&P, c, c->scen);
   int nAI = c->attAI + c->defAI, lam = c->pop / nAI; if (lam < 8) lam = 8;
-  for (int side = 0; side < 2; side++) sw_build(c, &P, side, lam);
+  // sides whose network or population layout changed are rebuilt, from their saved star when it fits. Both sides share the
+  // difficulty level: the lowest of their networks' (a new network starts at the easy end when automatic difficulty is on)
+  int key[2][9], stale[2], lv = 99, any = 0, sl[2] = { 10, 10 }; float* seed[2] = { NULL, NULL }; double sv[2] = { 0, 0 };
+  for (int side = 0; side < 2; side++) { sw_key(c, side, lam, key[side]); stale[side] = sw_stale(side, key[side]);
+    if (!key[side][0]) continue;
+    if (stale[side]) { seed[side] = sw_load(&T.cfg, &P, side, &sv[side], &sl[side]); if (!seed[side]) sl[side] = T.cfg.autoDiff ? 0 : 10;
+      any = 1; if (sl[side] < lv) lv = sl[side]; }
+    else if (T.level < lv) lv = T.level; }
+  if (any && lv != T.level) { T.level = lv; T.levelHits = 0; T.run = curriculum(&T.cfg, T.level); setup_params(&P, c, c->scen); }
+  for (int side = 0; side < 2; side++) if (stale[side] && sw_build(c, &P, side, key[side], seed[side], sv[side], sl[side])) {
+    if (!side) free(seed[1]);
+    return -1; }
   if (SW.scen.n != c->scen || SW.scenAge >= c->reuse || !scen_same(&SW.scenCfg, c)) { scen_make(&SW.scen, c->scen, &T.rng, c, &P); SW.scenCfg = *c; SW.scenAge = 0; }
   SW.scenAge++;
   double t0 = br_now(), bsteps = 0, catches = 0, leaks = 0; int battles = 0;
@@ -976,14 +1177,14 @@ static int sw_generation(void) {
     // opponents (AI vs AI): prioritised fictitious self-play. Each scenario gets one opponent from the other side's pool,
     // drawn with weight (1 − x)² + 0.02, x = this side's success rate against it, so the opponents it still loses to come up
     // most; every candidate meets the same opponent on the same scenario, so their scores stay comparable.
-    int oppOf[256] = {0};
+    int oppOf[CFG_MAXSCEN] = {0};
     if (O->ai) { double wsum = 0, w[SW_POOL]; for (int k = 0; k < O->poolN; k++) { double x = O->poolWin[k]; w[k] = (1 - x) * (1 - x) + 0.02; wsum += w[k]; }
       for (int j = 0; j < c->scen; j++) { double u = urand(&T.rng) * wsum; int k = 0; while (k < O->poolN - 1 && (u -= w[k]) > 0) k++; oppOf[j] = k; } }
     for (int i = 0; i < L; i++) for (int j = 0; j < c->scen; j++) { int b = i * c->scen + j, opp = oppOf[j];
       bat[b * 3] = side ? opp : i; bat[b * 3 + 1] = side ? i : opp; bat[b * 3 + 2] = j; }
     const float* mine = S->cma.X; const float* theirs = O->ai ? O->pool : NULL;
     if (T.be->evalBattles(T.be, side ? theirs : mine, side ? mine : theirs, bat, nb, SW.scen.sc, SW.scen.traj, SW.scen.trajFloats, &P, out)) {
-      free(bat); free(out); set_msg("battle evaluation failed on %s", T.be->info); return -1; }
+      free(bat); free(out); return backend_failed("battle evaluation") ? 0 : -1; }
     double* fit = (double*)malloc(sizeof(double) * L); int best = 0; double mean = 0;
     for (int i = 0; i < L; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + (size_t)(i * c->scen + j) * BR_SWOUT; f += sw_fit(o, side, c); bsteps += o[4]; }
       fit[i] = f / c->scen; mean += fit[i]; if (fit[i] > fit[best]) best = i; }
@@ -996,25 +1197,27 @@ static int sw_generation(void) {
     }
     battles += nb;
     br_lock(&T.mx);
-    memcpy(S->star, mine + (size_t)best * S->nw, sizeof(float) * S->nw); S->starFit = fit[best]; S->best = fit[best]; S->fitSum += fit[best]; S->fitN++; S->mean = mean / L; S->starVersion++;
+    memcpy(S->star, mine + (size_t)best * S->nw, sizeof(float) * S->nw); S->starFit = fit[best]; S->best = fit[best]; S->fitSum += fit[best]; S->fitN++; S->mean = mean / L;
     br_unlock(&T.mx);
     cma_tell(&S->cma, fit); if (c->decayOn) S->cma.sigma *= c->decay; if (S->cma.sigma < c->lrMin) S->cma.sigma = c->lrMin;
     free(fit); free(bat); free(out);
   }
   double dt = br_now() - t0; int gen;
   br_lock(&T.mx);
-  gen = ++T.gen; T.genTime = dt; SW.battlesPerS = battles / dt; SW.ballStepsPerS = bsteps / dt; T.flightsPerS = SW.battlesPerS; T.stepsPerS = SW.ballStepsPerS;
+  gen = ++T.gen; T.genTime = dt; T.flightsPerS = battles / dt; T.stepsPerS = bsteps / dt;
   SW.catchRate = catches / ((double)c->scen * nAI * c->attN); SW.leakRate = leaks / ((double)c->scen * nAI * c->attN);
-  T.best = c->defAI ? SW.side[1].best : SW.side[0].best; T.mean = c->defAI ? SW.side[1].mean : SW.side[0].mean;
-  T.sigma = c->defAI ? SW.side[1].cma.sigma : SW.side[0].cma.sigma; T.starVersion++;
+  const SwSide* shown = &SW.side[c->defAI ? 1 : 0]; T.best = shown->best; T.sigma = shown->cma.sigma;
   if (T.histN == HIST_MAX) { memmove(T.hist, T.hist + 1, sizeof(Hist) * (HIST_MAX - 1)); T.histN--; }
-  Hist* h = &T.hist[T.histN++]; memset(h, 0, sizeof *h); h->gen = gen; h->best = (float)T.best; h->mean = (float)T.mean;
+  Hist* h = &T.hist[T.histN++]; memset(h, 0, sizeof *h); h->gen = gen; h->best = (float)T.best; h->mean = (float)shown->mean;
   h->isl[0] = (float)SW.side[0].best; h->isl[1] = (float)SW.side[1].best;
   br_unlock(&T.mx);
+  T.unval++; if (T.maxGen && gen >= T.maxGen) T.stopReq = 1;
   // self-play: every few generations each side's star joins its pool (the other side's opponents)
   if (gen % 5 == 0) for (int side = 0; side < 2; side++) { SwSide* S = &SW.side[side]; if (!S->ai) continue;
     memcpy(S->pool + (size_t)S->poolNext * S->nw, S->star, sizeof(float) * S->nw); S->poolWin[S->poolNext] = 0.5; S->poolNext = (S->poolNext + 1) % SW_POOL; if (S->poolN < SW_POOL) S->poolN++; }
-  if (gen % c->valEvery == 0) { sw_validate(c); for (int side = 0; side < 2; side++) if (SW.side[side].ai) sw_save(c, &P, side);
+  if (gen % c->valEvery == 0) {
+    if (sw_validate(c, 1)) return backend_failed("validation") ? 0 : -1;
+    T.unval = 0; for (int side = 0; side < 2; side++) if (SW.side[side].ai) sw_save(&P, side);
     double lo = 1; for (int side = 0; side < 2; side++) if (SW.side[side].ai && SW.side[side].val < lo) lo = SW.side[side].val;
     curriculum_check(lo); }   // every AI side must reach the target
   return 0;
@@ -1022,21 +1225,21 @@ static int sw_generation(void) {
 static void sw_autosave(void) {
   if (T.cfg.mode != BR_MODE_SWARM) return;
   BrParams P; setup_params(&P, &T.cfg, T.cfg.scen);
-  for (int side = 0; side < 2; side++) if (SW.side[side].ai && SW.side[side].star && SW.side[side].nw == (side ? P.defNw : P.attNw)) sw_save(&T.cfg, &P, side);
+  for (int side = 0; side < 2; side++) if (SW.side[side].ai && SW.side[side].hof && SW.side[side].nw == (side ? P.defNw : P.attNw)) sw_save(&P, side);
 }
 
 static void train_thread(void* arg) {
   (void)arg;
-  float* flat = NULL; size_t flatCap = 0; float* out = NULL; size_t outCap = 0; double* fit = NULL; int fitCap = 0;
+  float* flat = NULL; size_t flatCap = 0; float* out = NULL; size_t outCap = 0; double* fit = NULL; int fitCap = 0, failed = 0;
   set_msg("training");
   while (!T.stopReq) {
     if (T.hasPending) { br_lock(&T.mx); TrainCfg nc = T.pending; T.hasPending = 0; br_unlock(&T.mx);
       if (nc.mode != T.starMode) trainer_set_mode(nc.mode);
-      T.cfg = nc; }
-    if (ensure_backend()) break;
+      br_lock(&T.mx); T.cfg = nc; br_unlock(&T.mx); }
+    if (ensure_backend()) { failed = 1; break; }
     T.run = curriculum(&T.cfg, T.level);
-    if (T.cfg.mode == BR_MODE_SWARM) { if (sw_generation()) break; continue; }
-    if (needs_rebuild(&T.cfg)) build_islands();
+    if (T.cfg.mode == BR_MODE_SWARM) { if (sw_generation()) { failed = !T.stopReq; break; } continue; }
+    if (needs_rebuild(&T.cfg) && build_islands(T.reseedReq ? BUILD_RESEED : BUILD_SETTINGS)) break;
     TrainCfg* c = &T.run;
     setup_params(&T.P, c, c->scen);   // physics settings may have changed
     double tScen = br_now();   // tag scenarios fly the runner on the CPU: count that time
@@ -1053,14 +1256,15 @@ static void train_thread(void* arg) {
     { size_t o = 0; for (int i = 0; i < T.nIsl; i++) { size_t k = (size_t)isl_size(&T.isl[i]) * T.P.nw; memcpy(flat + o, isl_genomes(&T.isl[i]), sizeof(float) * k); o += k; } }
     const float* evalW = flat;   // the networks as flown: with sensor standardisation folded into the first layer
     if (T.normOn) { if (need > T.effCap) { T.eff = (float*)realloc(T.eff, sizeof(float) * need); T.effCap = need; }
-      for (int i = 0; i < n; i++) norm_fold(flat + (size_t)i * T.P.nw, T.eff + (size_t)i * T.P.nw, &T.P, 0); evalW = T.eff; }
+      for (int i = 0; i < n; i++) norm_fold(flat + (size_t)i * T.P.nw, T.eff + (size_t)i * T.P.nw, &T.P, 0);
+      evalW = T.eff; }
     double t0 = br_now();
-    if (eval_set(T.be, evalW, n, &T.scen, &T.P, out)) { set_msg("evaluation failed on %s", T.be->info); break; }
+    if (eval_set(T.be, evalW, n, &T.scen, &T.P, out)) { if (backend_failed("evaluation")) continue; failed = 1; break; }
     double dt = br_now() - t0 + tScen, steps = 0, mean = 0; int star = 0;
     for (int i = 0; i < n; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + ((size_t)i * c->scen + j) * BR_OUT; f += fitness(o, c->speedW, c->mode, T.scen.sc[j].atkHit, c->altOn, tag_r(c)); steps += o[3]; }
       fit[i] = f / c->scen; mean += fit[i]; if (fit[i] > fit[star]) star = i; }
     mean /= n;
-    int hits = 0; double miss = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + ((size_t)star * c->scen + j) * BR_OUT; hits += o[1] > 0.5f; miss += o[0]; }
+    int hits = 0; for (int j = 0; j < c->scen; j++) hits += out[((size_t)star * c->scen + j) * BR_OUT + 1] > 0.5f;
     // tell each island its slice; decay + floor; island bests for the chart
     float islBest[ISL_SHOW] = {0}; double sig = 0; int off = 0;
     for (int i = 0; i < T.nIsl; i++) {
@@ -1074,46 +1278,56 @@ static void train_thread(void* arg) {
     }
     int gen;
     br_lock(&T.mx);
+    if (T.reseedReq) { br_unlock(&T.mx); continue; }   // a network was loaded: rebuild from it instead of keeping this generation
     gen = ++T.gen;
-    if (T.starNw != T.P.nw) { free(T.star); T.star = (float*)malloc(sizeof(float) * T.P.nw); T.starNw = T.P.nw; }
-    memcpy(T.star, evalW + (size_t)star * T.P.nw, sizeof(float) * T.P.nw);
-    T.starNl = T.P.nl; memcpy(T.starArch, T.P.arch, sizeof(int) * (T.P.nl + 1)); T.starK = T.P.K; T.starMem = T.P.rec; T.starDt = c->dt; T.starTw = c->tw; T.starEvery = c->everyStep; T.starVersion++; T.starFit = fit[star];
-    T.best = fit[star]; T.mean = mean; T.fitSum += fit[star]; T.fitN++; T.sigma = sig / T.nIsl; T.genTime = dt; T.flightsPerS = n * c->scen / dt; T.stepsPerS = steps / dt;
-    T.starHits = (double)hits / c->scen; T.starMiss = miss / c->scen;
+    net_set(&T.star, evalW + (size_t)star * T.P.nw, &T.P, c); T.star.gen = gen; T.star.fit = fit[star]; T.star.val = 0; T.star.level = T.level;
+    T.best = fit[star]; T.fitSum += fit[star]; T.fitN++; T.sigma = sig / T.nIsl; T.genTime = dt; T.flightsPerS = n * c->scen / dt; T.stepsPerS = steps / dt;
+    T.starHits = (double)hits / c->scen;
     if (T.histN == HIST_MAX) { memmove(T.hist, T.hist + 1, sizeof(Hist) * (HIST_MAX - 1)); T.histN--; }
     Hist* h = &T.hist[T.histN++]; h->gen = gen; h->best = (float)T.best; h->mean = (float)mean; memcpy(h->isl, islBest, sizeof islBest);
     br_unlock(&T.mx);
-    if (c->normIn && c->mode != BR_MODE_SWARM && (gen == 5 || gen % 50 == 0)) { float* sc = (float*)malloc(sizeof(float) * T.P.nw);
-      br_lock(&T.mx); memcpy(sc, T.star, sizeof(float) * T.P.nw); br_unlock(&T.mx); norm_update(sc); free(sc); }
-    // islands: pass each island's best to the next one in a ring
+    T.unval++; if (T.maxGen && gen >= T.maxGen) T.stopReq = 1;
+    // islands: pass each island's best to the next one in a ring (before any new sensor statistics below, which
+    // re-express the island centres but not these bests)
     if (T.nIsl > 1 && gen % c->migrate == 0)
       for (int i = 0; i < T.nIsl; i++) { Island* to = &T.isl[(i + 1) % T.nIsl]; const float* g = T.isl[i].bestG;
         if (to->cma) for (int j = 0; j < T.P.nw; j++) to->c.m[j] = 0.5 * (to->c.m[j] + g[j]);
         else memcpy(to->ga.pop + (size_t)(to->ga.lam - 1) * T.P.nw, g, sizeof(float) * T.P.nw); }
+    if (c->normIn && (gen == 5 || gen % 50 == 0 || T.normDue)) { T.normDue = 0; norm_update(evalW + (size_t)star * T.P.nw); }
     if (gen % c->valEvery == 0) {
       float* g = (float*)malloc(sizeof(float) * T.P.nw); memcpy(g, evalW + (size_t)star * T.P.nw, sizeof(float) * T.P.nw);
-      double v = validate(g); free(g);
-      br_lock(&T.mx); T.valHit = v; T.valGen = gen; br_unlock(&T.mx);
+      double v = check_star(g, gen, fit[star]); free(g);
+      if (v < 0) { if (backend_failed("validation")) continue; failed = 1; break; }
+      T.unval = 0;
       // restarts: validation not better for 6 checks in a row (and not already perfect) restarts the optimizer around the
-      // star, alternating a large population with a wide search and a small one with a fine search (BIPOP-CMA-ES)
+      // kept network, alternating a growing population with a wide search and a small one with a fine search (BIPOP-CMA-ES)
       double avg = T.fitN ? T.fitSum / T.fitN : -1e30; T.fitSum = 0; T.fitN = 0;   // mean star fitness since the last check
       int better = v > T.bestVal + 1e-9 || avg > T.bestFitAvg + 0.05;
-      if (v > T.bestVal) T.bestVal = v; if (avg > T.bestFitAvg) T.bestFitAvg = avg;
+      if (v > T.bestVal) T.bestVal = v;
+      if (avg > T.bestFitAvg) T.bestFitAvg = avg;
       if (better) T.stall = 0; else T.stall++;   // stuck = neither validation nor the training score improved
       curriculum_check(v);
       if (c->restarts && c->cma && T.stall >= 6 && T.bestVal < 1) {
         T.restarts++; T.stall = 0;
-        if (T.restarts & 1) { T.popMul = fmin(8, (T.popMul > 1 ? T.popMul : 1) * 2); T.restartSigma = 0.1; }
+        if (T.restarts & 1) { T.bigMul = fmin(8, T.bigMul * 2); T.popMul = T.bigMul; T.restartSigma = 0.1; }
         else { T.popMul = 0.5; T.restartSigma = 0.01; }
         set_msg("validation stalled at %.0f%%: restart %d with a %s search (population ×%g)", T.bestVal * 100, T.restarts, T.restarts & 1 ? "wide" : "fine", T.popMul);
-        build_islands();   // seeded from the star, which is kept
+        build_islands(BUILD_RESTART);
       }
       autosave();
     }
   }
+  // stopping: a star flown since the last validation is validated once, so a better one is kept by the save on pause
+  if (T.stopReq && !failed && T.be && T.unval) {
+    if (T.cfg.mode == BR_MODE_SWARM) { if (!sw_validate(&T.run, 0)) T.unval = 0; }
+    else if (T.isl && !T.reseedReq) { br_lock(&T.mx); float* g = net_matches(&T.star, &T.P) ? (float*)malloc(sizeof(float) * T.P.nw) : NULL;
+      if (g) memcpy(g, T.star.w, sizeof(float) * T.P.nw);
+      int gen = T.star.gen; double f = T.star.fit; br_unlock(&T.mx);
+      if (g) { if (check_star(g, gen, f) >= 0) T.unval = 0; free(g); } }
+  }
   free(flat); free(out); free(fit);
   T.running = 0;
-  if (T.stopReq) set_msg("paused");
+  if (T.stopReq && !failed) set_msg("paused");
 }
 
 void trainer_start(const TrainCfg* c) {
@@ -1121,7 +1335,7 @@ void trainer_start(const TrainCfg* c) {
   if (T.running || T.tuning) return;
   if (T.threadLive) { br_thread_join(&T.th); T.threadLive = 0; }
   T.stopReq = 0; T.running = 1; T.threadLive = 1;
-  br_thread_start(&T.th, train_thread, NULL);
+  if (br_thread_start(&T.th, train_thread, NULL)) { T.running = 0; T.threadLive = 0; set_msg("could not start the training thread"); }
 }
 int trainer_busy(void) { return T.running || T.tuning; }
 void trainer_pause(void) {
@@ -1129,42 +1343,50 @@ void trainer_pause(void) {
   if (T.threadLive) { br_thread_join(&T.th); T.threadLive = 0; }
   T.running = 0; autosave(); sw_autosave();
 }
-void trainer_reset(void) {
+// Reset: forget the network of the mode (swarm: the matchup) named by `c`, as the page shows it, and start a new one on
+// the next Train. Its save files are not deleted but renamed to *.bak (replacing an older .bak), so a mistaken Reset can
+// be undone by renaming them back.
+void trainer_reset(const TrainCfg* c) {
   trainer_pause();
+  trainer_set_mode(c->mode);   // the page's mode (saves the current one first)
   free_islands();
   br_lock(&T.mx);
-  free(T.star); T.star = NULL; T.starNw = 0; T.starVersion++; T.gen = 0; T.histN = 0;
-  T.best = T.mean = T.sigma = T.genTime = T.flightsPerS = T.stepsPerS = T.starHits = T.starMiss = T.valHit = 0; T.valGen = 0; T.level = 0; T.levelHits = 0;
-  snprintf(T.msg, sizeof T.msg, "reset · training stopped");
+  net_free(&T.star); net_free(&T.hof); T.hofOk = 0; T.hofNew = 0; T.reseedReq = 0; T.cfg = *c; T.gen = 0; T.histN = 0; T.unval = 0;
+  T.best = T.sigma = T.genTime = T.flightsPerS = T.stepsPerS = T.starHits = T.valHit = 0; T.valGen = 0;
+  run_reset(); T.level = c->autoDiff ? 0 : 10; T.levelHits = 0;
+  snprintf(T.msg, sizeof T.msg, "reset · training stopped (the saved network is kept as a .bak file)");
+  for (int side = 0; c->mode == BR_MODE_SWARM && side < 2; side++) sw_side_free(&SW.side[side]);
   br_unlock(&T.mx);
-  if (T.cfg.mode == BR_MODE_SWARM) {   // swarm: forget both sides and delete this matchup's saved stars
-    for (int side = 0; side < 2; side++) { if ((side ? T.cfg.defAI : T.cfg.attAI)) remove(sw_save_path(&T.cfg, side)); sw_side_free(&SW.side[side]); }
-    return; }
-  remove(save_path());
+  char p[1024];
+  if (c->mode == BR_MODE_SWARM) { for (int side = 0; side < 2; side++) if (side ? c->defAI : c->attAI) backup(sw_save_path(c, side, p, sizeof p)); }
+  else { backup(save_path_mode(c->mode, p, sizeof p));   // reach: older saves too, which would be restored otherwise
+    for (int old = -1; c->mode == BR_MODE_REACH && old >= -2; old--) backup(save_path_mode(old, p, sizeof p)); }
 }
 
 void trainer_status_json(Sb* o, int since) {
   br_lock(&T.mx);
-  sb_printf(o, "{\"mode\":%d,\"running\":%s,\"tuning\":%s,\"gen\":%d,\"best\":%.4f,\"mean\":%.4f,\"starHits\":%.4f,\"starMiss\":%.2f,\"flightsPerS\":%.0f,\"stepsPerS\":%.0f,"
-    "\"genTime\":%.4f,\"sigma\":%.3g,\"valHit\":%.4f,\"valGen\":%d,\"starVersion\":%d,\"hasStar\":%s,\"islands\":%d,\"restarts\":%d,\"level\":%d,\"autoDiff\":%d,\"backend\":",
-    T.starMode, T.running ? "true" : "false", T.tuning ? "true" : "false", T.gen, T.best, T.mean, T.starHits, T.starMiss, T.flightsPerS, T.stepsPerS,
-    T.genTime, T.sigma, T.valHit, T.valGen, T.starVersion, T.star ? "true" : "false", T.nIsl, T.restarts, T.cfg.autoDiff ? T.level : 10, T.cfg.autoDiff);
+  int sw = T.starMode == BR_MODE_SWARM;
+  sb_printf(o, "{\"running\":%s,\"tuning\":%s,\"gen\":%d,\"best\":%.4f,\"starHits\":%.4f,\"flightsPerS\":%.0f,\"stepsPerS\":%.0f,"
+    "\"genTime\":%.4f,\"sigma\":%.3g,\"valHit\":%.4f,\"valGen\":%d,\"islands\":%d,\"restarts\":%d,\"level\":%d,\"autoDiff\":%d,\"backend\":",
+    T.running ? "true" : "false", T.tuning ? "true" : "false", T.gen, T.best, T.starHits, T.flightsPerS, T.stepsPerS,
+    T.genTime, T.sigma, T.valHit, T.valGen, T.nIsl, sw ? SW.side[0].restarts + SW.side[1].restarts : T.restarts, T.cfg.autoDiff ? T.level : 10, T.cfg.autoDiff);
   sb_jstr(o, T.beInfo); sb_printf(o, ",\"message\":"); sb_jstr(o, T.msg);
-  if (T.starMode == BR_MODE_SWARM)
-    sb_printf(o, ",\"swarm\":{\"attAI\":%d,\"defAI\":%d,\"attBest\":%.4f,\"defBest\":%.4f,\"catchRate\":%.4f,\"leakRate\":%.4f,\"valLeak\":%.4f,\"valCatch\":%.4f,\"attStar\":%s,\"defStar\":%s,\"battlesPerS\":%.0f}",
-      SW.side[0].ai, SW.side[1].ai, SW.side[0].best, SW.side[1].best, SW.catchRate, SW.leakRate, SW.side[0].val, SW.side[1].val,
-      SW.side[0].star ? "true" : "false", SW.side[1].star ? "true" : "false", SW.battlesPerS);
+  sb_printf(o, ",\"cfg\":"); cfg_to_json(T.hasPending ? &T.pending : &T.cfg, o);   // the settings in use (or about to be)
+  if (sw)
+    sb_printf(o, ",\"swarm\":{\"attAI\":%d,\"defAI\":%d,\"attBest\":%.4f,\"defBest\":%.4f,\"catchRate\":%.4f,\"leakRate\":%.4f,\"valLeak\":%.4f,\"valCatch\":%.4f,\"valGen\":%d}",
+      SW.side[0].ai, SW.side[1].ai, SW.side[0].best, SW.side[1].best, SW.catchRate, SW.leakRate, SW.side[0].val, SW.side[1].val, T.valGen);
   sb_printf(o, ",\"hist\":[");
   int first = 1;
   for (int i = 0; i < T.histN; i++) { Hist* h = &T.hist[i]; if (h->gen <= since) continue;
     sb_printf(o, "%s[%d,%.4f,%.4f", first ? "" : ",", h->gen, h->best, h->mean); first = 0;
-    int k = T.starMode == BR_MODE_SWARM ? 2 : T.nIsl > 1 ? (T.nIsl < ISL_SHOW ? T.nIsl : ISL_SHOW) : 0;   // swarm: attackers' and defenders' best
+    int k = sw ? 2 : T.nIsl > 1 ? (T.nIsl < ISL_SHOW ? T.nIsl : ISL_SHOW) : 0;   // swarm: attackers' and defenders' best
     for (int q = 0; q < k; q++) sb_printf(o, ",%.3f", h->isl[q]);
     sb_printf(o, "]"); }
   sb_printf(o, "]}");
   br_unlock(&T.mx);
 }
-void trainer_star_json(Sb* o) { br_lock(&T.mx); if (T.star) star_json_locked(o); else sb_printf(o, "{}"); br_unlock(&T.mx); }
+// Save network…: the kept (best validated) network, else the latest star.
+void trainer_star_json(Sb* o) { br_lock(&T.mx); const Net* n = T.hof.w ? &T.hof : &T.star; if (n->w) net_json(o, n, T.starMode); else sb_printf(o, "{}"); br_unlock(&T.mx); }
 
 void hardware_json(Sb* o) {
   sb_printf(o, "{\"cpuThreads\":%d,\"options\":[{\"id\":\"cpu\",\"label\":\"CPU (%d threads)\"}", br_cpu_count(), br_cpu_count());
@@ -1175,7 +1397,7 @@ void hardware_json(Sb* o) {
   { char n[32][160]; int g[32]; int k = opencl_devices(n, g, 32);
     for (int i = 0; i < k; i++) if (g[i]) { char l[200]; snprintf(l, sizeof l, "OpenCL, %s", n[i]); sb_printf(o, ",{\"id\":\"opencl:%d\",\"label\":", i); sb_jstr(o, l); sb_printf(o, "}"); } }
 #endif
-  sb_printf(o, "],\"default\":\"%s\",\"savePath\":", default_backend_id()); sb_jstr(o, save_path()); sb_printf(o, "}");
+  char d[32]; sb_printf(o, "],\"default\":\"%s\"}", T.autoCpu ? "cpu" : default_backend_id(d, sizeof d));   // after a GPU failure "auto" is the CPU
 }
 
 // ---------------- auto-tune: measure every compute option on this machine and keep the fastest
@@ -1187,8 +1409,10 @@ typedef struct { char id[32], label[160]; int n, wg; double chunk, sps, sec; } M
 
 // Throughput of one batch. genSec: CPU time to build a generation's scenarios (tag mode flies every runner), spread over the generations that reuse them, counted as part of each generation.
 static double g_tuneGenSec;
+// A failed batch returns 0 and a time of 1e9 s, so it is never mistaken for a fast one.
 static double measure(Backend* b, const float* G, int n, const ScenSet* sc, BrParams* P, float* out, double* secOut) {
-  eval_set(b, G, n < 32 ? n : 32, sc, P, out);   // warm-up
+  if (secOut) *secOut = 1e9;
+  if (eval_set(b, G, n < 32 ? n : 32, sc, P, out)) return 0;   // warm-up
   double best = 1e9, steps = 0;
   for (int r = 0; r < 2; r++) { double t0 = br_now(); if (eval_set(b, G, n, sc, P, out)) return 0; double t = br_now() - t0; if (t < best) best = t; }
   best += g_tuneGenSec;
@@ -1207,7 +1431,7 @@ static void sw_tune(const TrainCfg* cin) {
   ScenSet scs = {0}; scen_make(&scs, c.scen, &r, &c, &P);
   float* w[2] = { NULL, NULL };
   for (int side = 0; side < 2; side++) { if (!(side ? c.defAI : c.attAI)) continue;
-    int nw = side ? P.defNw : P.attNw; w[side] = (float*)malloc(sizeof(float) * (size_t)G * nw); float* st = sw_load(&c, &P, side);
+    int nw = side ? P.defNw : P.attNw; w[side] = (float*)malloc(sizeof(float) * (size_t)G * nw); float* st = sw_load(&c, &P, side, NULL, NULL);
     for (int k = 0; k < G; k++) for (int i = 0; i < nw; i++) w[side][(size_t)k * nw + i] = st ? st[i] + (float)(gauss(&r) * 0.02) : (float)((urand(&r) * 2 - 1) * 0.1);
     tlog("%s: %s", side ? "Defenders" : "Attackers", st ? "your saved star with small variations" : "random brains (no saved star for this matchup)"); free(st); }
   int* bat = (int*)malloc(sizeof(int) * 3 * nb); for (int i = 0; i < nb; i++) { bat[i * 3] = (i / c.scen) % G; bat[i * 3 + 1] = (i / c.scen + 3) % G; bat[i * 3 + 2] = i % c.scen; }
@@ -1248,7 +1472,8 @@ static void sw_tune(const TrainCfg* cin) {
     sb_jstr(&res, "Swarm: measured in battles per generation with your current matchup; population and scenarios are unchanged.");
     sb_printf(&res, ",\"options\":[");
     for (int i = 0, first = 1; i < nRows; i++) { int top = 1; for (int j = 0; j < nRows; j++) if (!strcmp(rows[j].id, rows[i].id) && rows[j].sec < rows[i].sec) top = 0;
-      if (!top) continue; sb_printf(&res, "%s{\"backend\":\"%s\",\"label\":", first ? "" : ",", rows[i].id); sb_jstr(&res, rows[i].label); first = 0;
+      if (!top) continue;
+      sb_printf(&res, "%s{\"backend\":\"%s\",\"label\":", first ? "" : ",", rows[i].id); sb_jstr(&res, rows[i].label); first = 0;
       sb_printf(&res, ",\"stepsPerS\":%.0f,\"secPerGen\":%.4f,\"batchNetworks\":%d,\"wg\":%d,\"chunkMs\":40}", rows[i].sps, rows[i].sec, rows[i].n, rows[i].wg); }
     sb_printf(&res, "],\"rows\":[");
     for (int i = 0; i < nRows; i++) { sb_printf(&res, "%s{\"backend\":\"%s\",\"label\":", i ? "," : "", rows[i].id); sb_jstr(&res, rows[i].label);
@@ -1266,7 +1491,7 @@ static void tune_thread(void* arg) {
   // A realistic population: your star ball (if it matches the current network) plus small variations. Random networks
   // crash within seconds and would mislead the measurement, so without a star a quick CPU pre-training runs first.
   float* base = (float*)malloc(sizeof(float) * P.nw); int have = 0;
-  br_lock(&T.mx); if (star_matches(&P)) { memcpy(base, T.star, sizeof(float) * P.nw); have = 1; } br_unlock(&T.mx);
+  br_lock(&T.mx); { const Net* n = star_ok(&T.hof, &P) ? &T.hof : star_ok(&T.star, &P) ? &T.star : NULL; if (n) { memcpy(base, n->w, sizeof(float) * P.nw); have = 1; } } br_unlock(&T.mx);
   if (!have) {
     tlog("No trained network for this shape yet: pre-training a few seconds on the CPU so the test flights are realistic…");
     Backend* cpu = cpu_backend_create(0); BrParams Q; setup_params(&Q, &c, 8);
@@ -1285,13 +1510,13 @@ static void tune_thread(void* arg) {
     cma_free(&cm); free(o); free(f); scen_free(&sc8); cpu->destroy(cpu);
   }
   // candidate compute options
-  char ids[40][32], labels[40][160]; int nOpt = 0;
+  char ids[40][32], labels[40][300]; int nOpt = 0;
   strcpy(ids[nOpt], "cpu"); snprintf(labels[nOpt++], 160, "CPU (%d threads)", br_cpu_count());
 #ifdef BR_HAVE_METAL
   strcpy(ids[nOpt], "metal"); snprintf(labels[nOpt++], 160, "Metal");
 #endif
 #ifdef BR_HAVE_OPENCL
-  { char nm[32][160]; int g[32]; int k = opencl_devices(nm, g, 32); for (int i = 0; i < k && nOpt < 40; i++) if (g[i]) { snprintf(ids[nOpt], 32, "opencl:%d", i); snprintf(labels[nOpt++], 160, "OpenCL, %s", nm[i]); } }
+  { char nm[32][160]; int g[32]; int k = opencl_devices(nm, g, 32); for (int i = 0; i < k && nOpt < 40; i++) if (g[i]) { snprintf(ids[nOpt], 32, "opencl:%d", i); snprintf(labels[nOpt++], 300, "OpenCL, %s", nm[i]); } }
 #endif
   int useN = c.cma ? 512 : 256;   // one CMA-ES gains little beyond ~512 networks per generation (GA: ~256)
   ScenSet scs = {0}; double tg0 = br_now(); scen_make(&scs, P.S, &r, &c, &P);
@@ -1302,7 +1527,7 @@ static void tune_thread(void* arg) {
   for (int oi = 0; oi < nOpt; oi++) {
     char err[256] = ""; TrainCfg cc = c; Backend* b = make_backend(ids[oi], &cc, err, sizeof err);
     if (!b) { tlog("%s: not usable (%s)", labels[oi], err); continue; }
-    snprintf(labels[oi], 160, "%s", b->info);
+    snprintf(labels[oi], 300, "%s", b->info);
     int gpu = strcmp(ids[oi], "cpu") != 0;
     double mem = b->memBytes > 0 ? b->memBytes : 2e9;
     int nMaxMem = (int)fmin(262144.0, 0.3 * mem / (4.0 * (P.nw + (double)P.S * P.stride)));
@@ -1339,6 +1564,7 @@ static void tune_thread(void* arg) {
       FILL(n);
       tlog("%s: testing %d networks × %d scenarios = %d flights per batch…", b->info, n, P.S, n * P.S);
       sps = measure(b, G, n, sc, &P, out, &sec);
+      if (sps <= 0) { tlog("%s: %d networks per batch failed", b->info, n); break; }   // larger batches would fail too
       sweep[ns] = (Meas){ "", "", n, b->wg, b->chunkMs, sps, sec }; strcpy(sweep[ns].id, ids[oi]); strcpy(sweep[ns].label, b->info); ns++;
       if (nRows < 190) rows[nRows++] = sweep[ns - 1];
       if (n == useN) useSec = sec;
@@ -1397,7 +1623,7 @@ void autotune_start(const TrainCfg* c) {
   T.tuneCfg = *c; T.tuning = 1;
   if (T.tuneLive) br_thread_join(&T.tuneTh);
   T.tuneLive = 1;
-  br_thread_start(&T.tuneTh, tune_thread, NULL);
+  if (br_thread_start(&T.tuneTh, tune_thread, NULL)) { T.tuning = 0; T.tuneLive = 0; }
 }
 void autotune_status_json(Sb* o) {
   br_lock(&T.mx);
@@ -1408,18 +1634,17 @@ void autotune_status_json(Sb* o) {
 // ---------------- flight playback: fly the star ball natively and return the paths for the 3D view
 void fly_json(const char* req, Sb* o) {
   int count = (int)jnum(req, "count", 3); if (count < 1) count = 1; if (count > 12) count = 12;
-  double dist = jnum(req, "dist", 0);
+  double dist = fmin(100000, fmax(0, jnum(req, "dist", 0)));   // the range of reachMax: it may raise the flight time limit
   br_lock(&T.mx);
   TrainCfg c; cfg_defaults(&c); cfg_from_json(&c, req);   // the UI sends its current settings
-  if (!T.star || T.starMode != c.mode) { br_unlock(&T.mx); sb_printf(o, "{\"error\":\"no trained network for this mode yet\"}"); return; }
-  c.dt = T.starDt; c.tw = T.starTw; c.everyStep = T.starEvery;   // fly it with the physics it was trained with
+  if (!T.star.w || T.starMode != c.mode) { br_unlock(&T.mx); sb_printf(o, "{\"error\":\"no trained network for this mode yet\"}"); return; }
+  c.dt = T.star.dt; c.tw = T.star.tw; c.everyStep = T.star.every;   // fly it with the physics it was trained with
+  if (c.mode == BR_MODE_REACH) c.reachMax = fmax(c.reachMax, dist);   // the flight time limit grows with a far goal
   BrParams P; setup_params(&P, &c, 1);
-  int ok = P.nw == T.starNw && T.starNl == P.nl && T.starK == P.K && T.starMem == P.rec;
-  if (ok) for (int l = 0; l <= P.nl; l++) if (T.starArch[l] != P.arch[l]) ok = 0;
-  if (!ok) {   // the saved star has another shape: fly it with its own shape
-    c.layers = T.starNl - 1; c.width = T.starArch[1]; c.K = T.starK; c.mem = T.starMem; setup_params(&P, &c, 1);
-  }
-  float* g = (float*)malloc(sizeof(float) * P.nw); memcpy(g, T.star, sizeof(float) * P.nw);
+  if (!net_matches(&T.star, &P)) {   // the star has another shape: fly it with its own shape
+    c.layers = T.star.nl - 1; c.width = T.star.arch[1]; c.K = T.star.K; c.mem = T.star.mem; setup_params(&P, &c, 1); }
+  if (!net_matches(&T.star, &P)) { br_unlock(&T.mx); sb_printf(o, "{\"error\":\"cannot replay this network shape\"}"); return; }
+  float* g = (float*)malloc(sizeof(float) * P.nw); memcpy(g, T.star.w, sizeof(float) * P.nw);
   br_unlock(&T.mx);
   float* wt = (float*)malloc(sizeof(float) * P.nw); br_transpose_genome(g, wt, &P);
   float* st = (float*)malloc(sizeof(float) * P.stride);
@@ -1437,8 +1662,8 @@ void fly_json(const char* req, Sb* o) {
       int L = (int)sc.trajLen;
       br_init(st, &P, &sc);
       const float* rs = tr;
-      sb_printf(o, "%s{\"target\":[%.1f,%.1f,%.1f],\"wind\":[%.2f,0,%.2f],\"runnerStart\":[%.1f,%.1f,%.1f],\"start\":[%.1f,%.1f,%.1f],\"points\":[[%.2f,%.2f,%.2f,0]",
-        f ? "," : "", sc.tx, sc.ty, sc.tz, sc.wx, sc.wz, rs[0], rs[1], rs[2], sc.sx, sc.sy, sc.sz, sc.sx, sc.sy, sc.sz);
+      sb_printf(o, "%s{\"target\":[%.1f,%.1f,%.1f],\"runnerStart\":[%.1f,%.1f,%.1f],\"start\":[%.1f,%.1f,%.1f],\"points\":[[%.2f,%.2f,%.2f,0]",
+        f ? "," : "", sc.tx, sc.ty, sc.tz, rs[0], rs[1], rs[2], sc.sx, sc.sy, sc.sz, sc.sx, sc.sy, sc.sz);
       int k = 0;
       while (st[S_ALIVE] != 0) {
         br_run(st, &P, &sc, wt, tr, every); k = (int)st[S_K];
@@ -1450,8 +1675,7 @@ void fly_json(const char* req, Sb* o) {
       sb_printf(o, "],\"runner\":[");
       for (int j = 0, n = 0; ; j += every, n++) { if (j > endK) j = endK; const float* a = tr + (size_t)j * 6;
         sb_printf(o, "%s[%.2f,%.2f,%.2f]", n ? "," : "", a[0], a[1], a[2]); if (j == endK) break; }
-      sb_printf(o, "],\"hit\":%s,\"escaped\":%s,\"runnerHit\":%s,\"t\":%.2f,\"closest\":%.1f}",
-        hit ? "true" : "false", escaped ? "true" : "false", sc.atkHit > 0.5f && !hit ? "true" : "false", st[S_T], st[S_MIND]);
+      sb_printf(o, "],\"hit\":%s,\"escaped\":%s,\"t\":%.2f,\"closest\":%.1f}", hit ? "true" : "false", escaped ? "true" : "false", st[S_T], st[S_MIND]);
     }
     free(tr); sb_printf(o, "]}"); free(g); free(wt); free(st); return;
   }
@@ -1460,7 +1684,7 @@ void fly_json(const char* req, Sb* o) {
   for (int f = 0; f < count; f++) {
     BrScen sc; gen_scen(&sc, &r, dist, c.reachMax); sc.sx += ox; sc.sz += oz; sc.tx += ox; sc.tz += oz;
     br_init(st, &P, &sc);
-    sb_printf(o, "%s{\"target\":[%.1f,%.1f,%.1f],\"wind\":[%.2f,0,%.2f],\"points\":[[%.2f,%.2f,%.2f,0]", f ? "," : "", sc.tx, sc.ty, sc.tz, sc.wx, sc.wz, sc.sx, sc.sy, sc.sz);
+    sb_printf(o, "%s{\"target\":[%.1f,%.1f,%.1f],\"points\":[[%.2f,%.2f,%.2f,0]", f ? "," : "", sc.tx, sc.ty, sc.tz, sc.sx, sc.sy, sc.sz);
     while (st[S_ALIVE] != 0) {
       br_run(st, &P, &sc, wt, NULL, every);   // reach demo; the tag demo is added with the UI
       sb_printf(o, ",[%.2f,%.2f,%.2f,%.2f]", st[S_PX], st[S_PY], st[S_PZ], st[S_U0]);
@@ -1479,10 +1703,10 @@ static float* sw_star_for(const TrainCfg* c, const BrParams* P, int side) {
   br_lock(&T.mx);
   if (S->ai && S->star && S->nw == (side ? P->defNw : P->attNw) && S->nin == (side ? P->defNin : P->attNin)) { g = (float*)malloc(sizeof(float) * S->nw); memcpy(g, S->star, sizeof(float) * S->nw); }
   br_unlock(&T.mx);
-  return g ? g : sw_load(c, P, side);
+  return g ? g : sw_load(c, P, side, NULL, NULL);
 }
 static void sw_star_physics(const TrainCfg* c, int side, TrainCfg* out) {
-  FILE* f = fopen(sw_save_path(c, side), "rb"); if (!f) return;
+  char p[1024]; FILE* f = fopen(sw_save_path(c, side, p, sizeof p), "rb"); if (!f) return;
   char b[512]; size_t n = fread(b, 1, sizeof b - 1, f); b[n] = 0; fclose(f);   // the physics fields come before the weights
   out->dt = jnum(b, "dt", out->dt); out->tw = jnum(b, "thrustToWeight", out->tw); out->everyStep = jnum(b, "ctrlEvery", out->everyStep ? 1 : 2) == 1;
   out->twRunner = jnum(b, "runnerThrustToWeight", out->twRunner);
@@ -1515,14 +1739,14 @@ void battle_json(const char* req, Sb* o) {
       if (f != fate[b]) {
         const char* type = b < nA ? (f == 1 ? "leak" : f == 2 ? "caught" : "crash") : (f == 1 ? "catch" : "crash");
         if (!(b < nA && f == 2))   // a catch is reported once, by the defender
-          sb_printf(&ev, "%s{\"t\":%.2f,\"type\":\"%s\",\"ball\":%d,\"pos\":[%.1f,%.1f,%.1f]}", nev++ ? "," : "", t, type, b, q[S_PX], q[S_PY], q[S_PZ]);
+          sb_printf(&ev, "%s{\"t\":%.2f,\"type\":\"%s\",\"pos\":[%.1f,%.1f,%.1f]}", nev++ ? "," : "", t, type, q[S_PX], q[S_PY], q[S_PZ]);
         fate[b] = f;
       }
     }
   }
-  sb_printf(o, "{\"dt\":%g,\"mode\":\"swarm\",\"attN\":%d,\"defN\":%d,\"target\":[%.1f,%.1f,%.1f],\"radar\":%g,\"catchR\":%g,\"catches\":%d,\"leaks\":%d,\"t\":%.2f,\"balls\":[",
-    every * c.dt, nA, c.defN, sc.tx, sc.ty, sc.tz, c.detect, P.ballD, (int)g[SWH_CATCH], (int)g[SWH_LEAK], g[SWH_K] * P.dt);
-  for (int b = 0; b < nB; b++) { sb_printf(o, "%s{\"side\":\"%s\",\"fate\":%d,\"points\":[%s]}", b ? "," : "", b < nA ? "att" : "def", fate[b], pts[b].s ? pts[b].s : ""); free(pts[b].s); }
+  sb_printf(o, "{\"dt\":%g,\"mode\":\"swarm\",\"attN\":%d,\"defN\":%d,\"target\":[%.1f,%.1f,%.1f],\"radar\":%g,\"catches\":%d,\"leaks\":%d,\"t\":%.2f,\"balls\":[",
+    every * c.dt, nA, c.defN, sc.tx, sc.ty, sc.tz, c.detect, (int)g[SWH_CATCH], (int)g[SWH_LEAK], g[SWH_K] * P.dt);
+  for (int b = 0; b < nB; b++) { sb_printf(o, "%s{\"side\":\"%s\",\"points\":[%s]}", b ? "," : "", b < nA ? "att" : "def", pts[b].s ? pts[b].s : ""); free(pts[b].s); }
   sb_printf(o, "],\"events\":[%s]}", ev.s ? ev.s : "");
   free(ev.s); free(pts); free(fate); free(st); free(g); free(wA); free(wD); free(tA); free(tD);
 }
@@ -1563,6 +1787,7 @@ static void cli_cfg(TrainCfg* c, int argc, char** argv, int* mode, int* gens, ch
     else if (!strcmp(a, "--detect")) { c->detect = fmin(100000, fmax(0, atof(v))); i++; }
     else if (!strcmp(a, "--tw-runner")) { c->twRunner = fmin(5, fmax(1.2, atof(v))); i++; }
   }
+  cfg_clamp(c);   // the same limits as the interface (fixed-size buffers depend on them)
 }
 static char* read_file(const char* p) { FILE* f = fopen(p, "rb"); if (!f) return NULL; fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
   char* b = (char*)malloc(n + 1); n = (long)fread(b, 1, n, f); b[n] = 0; fclose(f); return b; }
@@ -1570,13 +1795,20 @@ static char* read_file(const char* p) { FILE* f = fopen(p, "rb"); if (!f) return
 int cli_main(int argc, char** argv) {
   TrainCfg c; cfg_defaults(&c); int mode = 0, gens = 100; char* load = NULL;
   cli_cfg(&c, argc, argv, &mode, &gens, &load);
-  if (mode == 5) { printf("Double-click the app to open the interface. Developer options: --bench, --compare, --train [--gens N], --list-devices,\n"
-                          "with --backend cpu|metal|opencl:N --pop --scen --layers --width --K --mem --opt cma|ga --dt --every-step --alt-reward --islands N --wg --load FILE\n"
-                          "Techniques: --opt sep|lm (CMA-ES variant)  --no-imitate (no head start)  --auto-diff (automatic difficulty)  --no-restarts  --no-norm  --val-every N\n"
-                          "Intercept (tag) mode: --mode reach|tag|swarm  --atk-range M (runner launch distance, 4000-100000 m)  --evade 0-1 (runner weave)\n"
+  if (mode == 5) { printf("Double-click the app to open the interface (--no-window: start it without opening a window).\n"
+                          "Developer options: --bench, --compare (CPU vs GPU on one batch), --train [--gens N], --list-devices, --ceiling, --help\n"
+                          "Compute: --backend auto|cpu|metal|opencl:N  --threads N (CPU threads, 0 = all)  --wg N (GPU work-group size)\n"
+                          "Network and training: --mode reach|tag|intercept|swarm  --pop N  --scen N (1-256)  --layers N (1-8)  --width N (4-128)  --K N (past frames, 0-4)\n"
+                          "  --mem 0|1 (memory neurons)  --opt cma|sep|lm|ga (CMA-ES automatic, sep-CMA-ES, LM-MA-ES or the genetic algorithm)  --islands N\n"
+                          "  --dt S (physics step)  --tw X (thrust-to-weight)  --every-step (decide every physics step)  --alt-reward  --load FILE\n"
+                          "Techniques: --no-imitate (no head start)  --auto-diff (automatic difficulty)  --no-restarts  --no-norm  --val-every N\n"
+                          "Reach mode: --reach-max M (goals 1.5 km to M m, 2000-100000)\n"
+                          "Intercept (tag) mode: --atk-range M (runner launch distance, 4000-100000 m)  --evade 0-1 (runner weave)\n"
                           "  --noise M (sensor noise sigma)  --delay MS (sensor delay)  --detect M (radar range: launch when the runner comes this close, 0 = launch at once)\n"
                           "  --tw-runner X (runner thrust-to-weight)  --blast M (catch radius, 0-10 m)\n"
-                          "Swarm mode: --mode swarm  --attackers N --defenders M (1-32)  --atk-range MIN --atk-range-max MAX (launch distance)  --att ai|algo --def ai|algo  --att-brain nk|cmd --def-brain nk|cmd  --k K (nearest-K, 1-8)\n"
+                          "  --ceiling: how often the guidance algorithm (perfect sensors) tags the runner on these settings\n"
+                          "Swarm mode: --attackers N --defenders M (1-32)  --atk-range MIN --atk-range-max MAX (launch distance)  --att ai|algo --def ai|algo\n"
+                          "  --att-brain nk|cmd --def-brain nk|cmd  --k K (nearest-K, 1-8)  --no-early (never end a battle early)\n"
                           "  --ceiling --mode swarm: algorithm vs algorithm battles;  --compare --mode swarm: the same battles on every backend and GPU layout\n"); return 0; }
   if (mode == 4) {
 #ifdef BR_HAVE_OPENCL
@@ -1587,16 +1819,17 @@ int cli_main(int argc, char** argv) {
   trainer_set_mode(c.mode);   // that mode's saved star (each mode keeps its own)
   if (load) { char* j = read_file(load); char m[200]; if (!j || trainer_load_json(j, m, sizeof m)) { fprintf(stderr, "cannot load %s\n", load); return 1; } free(j); }
   if (mode == 3) {   // headless training through the same service the interface uses
-    trainer_start(&c); int last = 0;
-    while (T.running || T.hasPending) {
-      br_sleep_ms(200);
+    T.maxGen = gens; trainer_start(&c); int last = 0, lastV = 0;   // the training thread stops itself after generation `gens`
+    for (int done = 0; !done; ) {
+      br_sleep_ms(200); done = !T.running && !T.hasPending;
       br_lock(&T.mx); int g = T.gen; double best = T.best, hits = T.starHits, val = T.valHit, sps = T.stepsPerS, gt = T.genTime; int vg = T.valGen; br_unlock(&T.mx);
-      if (g != last && c.mode == BR_MODE_SWARM) { br_lock(&T.mx);
-        printf("gen %5d  attackers %7.3f  defenders %7.3f  caught %3.0f%%  leaked %3.0f%%  validation vs algorithm: leak %3.0f%% catch %3.0f%%  %6.0f battles/s  %.3f s/gen  [%s]\n",
-          g, SW.side[0].best, SW.side[1].best, SW.catchRate * 100, SW.leakRate * 100, SW.side[0].val * 100, SW.side[1].val * 100, SW.battlesPerS, gt, T.beInfo);
-        br_unlock(&T.mx); last = g; fflush(stdout); }
+      char lv[24] = ""; if (c.autoDiff) snprintf(lv, sizeof lv, "level %d  ", T.level);   // automatic difficulty
+      if ((g != last || vg != lastV) && c.mode == BR_MODE_SWARM) { br_lock(&T.mx);
+        printf("gen %5d  attackers %7.3f  defenders %7.3f  caught %3.0f%%  leaked %3.0f%%  validation vs algorithm: leak %3.0f%% catch %3.0f%%  %6.0f battles/s  %.3f s/gen  %s[%s]\n",
+          g, SW.side[0].best, SW.side[1].best, SW.catchRate * 100, SW.leakRate * 100, SW.side[0].val * 100, SW.side[1].val * 100, T.flightsPerS, gt, lv, T.beInfo);
+        br_unlock(&T.mx); last = g; lastV = vg; fflush(stdout); }
       { static char lastMsg[256] = ""; br_lock(&T.mx); if (strcmp(lastMsg, T.msg) && strncmp(T.msg, "training", 8)) { snprintf(lastMsg, sizeof lastMsg, "%s", T.msg); printf("  [%s]\n", T.msg); } br_unlock(&T.mx); }
-      if (g != last) { printf("gen %5d  best %7.3f  star hits %3.0f%%  validation %3.0f%% (gen %d)  %6.1f M steps/s  %.3f s/gen  [%s]\n", g, best, hits * 100, val * 100, vg, sps / 1e6, gt, T.beInfo); last = g; fflush(stdout); }
+      if (g != last || vg != lastV) { printf("gen %5d  best %7.3f  star hits %3.0f%%  validation %3.0f%% (gen %d)  %6.1f M steps/s  %.3f s/gen  %s[%s]\n", g, best, hits * 100, val * 100, vg, sps / 1e6, gt, lv, T.beInfo); last = g; lastV = vg; fflush(stdout); }
       if (g >= gens) break;
     }
     trainer_pause(); return 0;
@@ -1628,7 +1861,7 @@ int cli_main(int argc, char** argv) {
     float* wA = (float*)malloc(sizeof(float) * (size_t)G * (P.attNw ? P.attNw : 1)); float* wD = (float*)malloc(sizeof(float) * (size_t)G * (P.defNw ? P.defNw : 1));
     for (size_t i = 0; i < (size_t)G * P.attNw; i++) wA[i] = (float)((urand(&r) * 2 - 1) * 0.5);
     for (size_t i = 0; i < (size_t)G * P.defNw; i++) wD[i] = (float)((urand(&r) * 2 - 1) * 0.5);
-    for (int side = 0; side < 2; side++) { float* st = (side ? c.defAI : c.attAI) ? sw_load(&c, &P, side) : NULL; if (!st) continue;   // trained brains make real catches
+    for (int side = 0; side < 2; side++) { float* st = (side ? c.defAI : c.attAI) ? sw_load(&c, &P, side, NULL, NULL) : NULL; if (!st) continue;   // trained brains make real catches
       int nw = side ? P.defNw : P.attNw; float* w = side ? wD : wA; for (int k = 0; k < G; k++) for (int i = 0; i < nw; i++) w[(size_t)k * nw + i] = st[i] + (k ? (float)(gauss(&r) * 0.01) : 0);
       printf("  (%s: the saved star, with small variations)\n", side ? "defenders" : "attackers"); free(st); }
     int* bat = (int*)malloc(sizeof(int) * 3 * N); for (int i = 0; i < N; i++) { bat[i * 3] = i / S; bat[i * 3 + 1] = (i / S + 7) % G; bat[i * 3 + 2] = i % S; }
@@ -1636,6 +1869,7 @@ int cli_main(int argc, char** argv) {
     const char* ids[5] = { "cpu", "metal", "metal", "opencl:0", "opencl:0" }; const int lay[5] = { 0, 1, 2, 1, 2 };
     for (int bi = 0; bi < 5; bi++) {
       char err[256] = ""; Backend* be = make_backend(ids[bi], &c, err, sizeof err); if (!be) { printf("  %-9s not available (%s)\n", ids[bi], err); continue; }
+      if (mode == 2) be->tail.on = 0;   // --compare checks the GPU itself (the CPU tail would fly much of the batch)
       be->swLayout = lay[bi]; if (lay[bi]) { char t[300]; snprintf(t, sizeof t, "%s, %s", be->info, lay[bi] == 2 ? "group per battle" : "thread per battle"); snprintf(be->info, sizeof be->info, "%s", t); }
       if (!be->evalBattles) { printf("  %-9s %-36s cannot fly battles\n", ids[bi], be->info); be->destroy(be); continue; }
       float* dst = bi == 0 ? ref : out; double best = 1e9;
@@ -1655,14 +1889,17 @@ int cli_main(int argc, char** argv) {
   ScenSet scs = {0}; scen_make(&scs, c.scen, &r, &c, &P); const ScenSet* sc = &scs;
   float* G = (float*)malloc(sizeof(float) * (size_t)c.pop * P.nw);
   for (int i = 0; i < c.pop; i++) random_genome(G + (size_t)i * P.nw, &P, &r);
-  if (T.star && star_matches(&P)) for (int i = 0; i < c.pop; i++) for (int j = 0; j < P.nw; j++) G[(size_t)i * P.nw + j] = T.star[j] + (i ? (float)(gauss(&r) * 0.02) : 0);
+  { const Net* st = star_ok(&T.hof, &P) ? &T.hof : NULL;   // the saved star with small variations, when it fits
+    if (st) for (int i = 0; i < c.pop; i++) for (int j = 0; j < P.nw; j++) G[(size_t)i * P.nw + j] = st->w[j] + (i ? (float)(gauss(&r) * 0.02) : 0); }
   size_t n = (size_t)c.pop * c.scen; float* ref = (float*)malloc(sizeof(float) * BR_OUT * n); float* out = (float*)malloc(sizeof(float) * BR_OUT * n);
   const char* ids[8] = { "cpu", "metal", "opencl:0" }; int nIds = 3;
   for (int b = 0; b < nIds; b++) {
     char err[256] = ""; Backend* be = make_backend(ids[b], &c, err, sizeof err); if (!be) { printf("  %-9s not available (%s)\n", ids[b], err); continue; }
+    if (mode == 2) be->tail.on = 0;   // --compare checks the GPU itself (the CPU tail would fly much of the batch)
     float* dst = b == 0 ? ref : out;
-    eval_set(be, G, c.pop < 32 ? c.pop : 32, sc, &P, dst);
-    double best = 1e9; for (int k = 0; k < 2; k++) { double t0 = br_now(); eval_set(be, G, c.pop, sc, &P, dst); double t = br_now() - t0; if (t < best) best = t; }
+    int bad = eval_set(be, G, c.pop < 32 ? c.pop : 32, sc, &P, dst);
+    double best = 1e9; for (int k = 0; k < 2 && !bad; k++) { double t0 = br_now(); bad = eval_set(be, G, c.pop, sc, &P, dst); double t = br_now() - t0; if (t < best) best = t; }
+    if (bad) { printf("  %-9s %-36s failed\n", ids[b], be->info); be->destroy(be); continue; }
     double steps = 0, hits = 0; for (size_t k = 0; k < n; k++) { steps += dst[k * BR_OUT + 3]; hits += dst[k * BR_OUT + 1]; }
     double sumD = 0; for (size_t k = 0; k < n; k++) sumD += dst[k * BR_OUT + 0];   // regression fingerprint
     printf("  %-9s %-36s %7.1f M steps/s  %5.0f hits  steps %.0f  sum closest %.1f", ids[b], be->info, steps / best / 1e6, hits, steps, sumD);
