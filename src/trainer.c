@@ -835,12 +835,13 @@ static double validate(const float* g) {
 }
 
 // ---------------- swarm training: one optimizer per AI side; AI vs AI is self-play against a pool of recent stars
-#define SW_POOL 8
+#define SW_POOL 16
 typedef struct {
   int ai, nin, nout, nw, key[8], live;   // key: the network/optimizer layout this side was built for
   CMA cma;
   float* star; double starFit, best, mean; int starVersion;
   float* pool; int poolN, poolNext;       // this side's recent stars: the other side trains against them
+  double poolWin[SW_POOL];                // the other side's success rate against each of them (PFSP)
   double val; int valGen;                 // validation vs the algorithm: catch rate (defenders) or leak rate (attackers)
   double bestVal, fitSum, bestFitAvg; int stall, restarts, fitN;   // restarts when validation and the training score stall
 } SwSide;
@@ -921,7 +922,7 @@ static void sw_build(const TrainCfg* c, const BrParams* P, int side, int lam) {
     if (c->imitate) { set_msg("%s head start: recording the guidance algorithm…", side ? "defenders" : "attackers"); copied = !bc_battles(c, P, side, seed); } }
   cma_init(&S->cma, S->nw, lam, seed, seeded ? 0.02 : copied ? 0.05 : 0.25); S->live = 1;
   S->star = seed; S->starFit = -1e30; S->pool = (float*)malloc(sizeof(float) * S->nw * SW_POOL);
-  memcpy(S->pool, seed, sizeof(float) * S->nw); S->poolN = 1; S->poolNext = 1;
+  memcpy(S->pool, seed, sizeof(float) * S->nw); S->poolN = 1; S->poolNext = 1; S->poolWin[0] = 0.5;
   set_msg("%s: %s", side ? "defenders" : "attackers", seeded ? "continuing from the saved star" : copied ? "new network, started by copying the guidance algorithm" : "new network");
 }
 // Score of one battle for one side (normalised by the counts, so scores compare across swarm sizes).
@@ -972,7 +973,13 @@ static int sw_generation(void) {
     cma_ask(&S->cma, &T.rng);
     int L = S->cma.lam;   // this side's population (a restart may have changed it)
     int nb = L * c->scen; int* bat = (int*)malloc(sizeof(int) * 3 * nb); float* out = (float*)malloc(sizeof(float) * BR_SWOUT * nb);
-    for (int i = 0; i < L; i++) for (int j = 0; j < c->scen; j++) { int b = i * c->scen + j, opp = O->ai ? (i + j) % O->poolN : 0;
+    // opponents (AI vs AI): prioritised fictitious self-play. Each scenario gets one opponent from the other side's pool,
+    // drawn with weight (1 − x)² + 0.02, x = this side's success rate against it, so the opponents it still loses to come up
+    // most; every candidate meets the same opponent on the same scenario, so their scores stay comparable.
+    int oppOf[256] = {0};
+    if (O->ai) { double wsum = 0, w[SW_POOL]; for (int k = 0; k < O->poolN; k++) { double x = O->poolWin[k]; w[k] = (1 - x) * (1 - x) + 0.02; wsum += w[k]; }
+      for (int j = 0; j < c->scen; j++) { double u = urand(&T.rng) * wsum; int k = 0; while (k < O->poolN - 1 && (u -= w[k]) > 0) k++; oppOf[j] = k; } }
+    for (int i = 0; i < L; i++) for (int j = 0; j < c->scen; j++) { int b = i * c->scen + j, opp = oppOf[j];
       bat[b * 3] = side ? opp : i; bat[b * 3 + 1] = side ? i : opp; bat[b * 3 + 2] = j; }
     const float* mine = S->cma.X; const float* theirs = O->ai ? O->pool : NULL;
     if (T.be->evalBattles(T.be, side ? theirs : mine, side ? mine : theirs, bat, nb, SW.scen.sc, SW.scen.traj, SW.scen.trajFloats, &P, out)) {
@@ -981,6 +988,12 @@ static int sw_generation(void) {
     for (int i = 0; i < L; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + (size_t)(i * c->scen + j) * BR_SWOUT; f += sw_fit(o, side, c); bsteps += o[4]; }
       fit[i] = f / c->scen; mean += fit[i]; if (fit[i] > fit[best]) best = i; }
     for (int j = 0; j < c->scen; j++) { const float* o = out + (size_t)(best * c->scen + j) * BR_SWOUT; catches += o[0]; leaks += o[1]; }
+    if (O->ai) {   // update this side's success rate against each opponent it met (all candidates' battles)
+      double sum[SW_POOL] = {0}; int cnt[SW_POOL] = {0};
+      for (int b = 0; b < nb; b++) { const float* o = out + (size_t)b * BR_SWOUT; int k = oppOf[b % c->scen];
+        sum[k] += (side ? o[0] : o[1]) / c->attN; cnt[k]++; }   // defenders: share caught; attackers: share through
+      for (int k = 0; k < O->poolN; k++) if (cnt[k]) O->poolWin[k] = 0.8 * O->poolWin[k] + 0.2 * (sum[k] / cnt[k]);
+    }
     battles += nb;
     br_lock(&T.mx);
     memcpy(S->star, mine + (size_t)best * S->nw, sizeof(float) * S->nw); S->starFit = fit[best]; S->best = fit[best]; S->fitSum += fit[best]; S->fitN++; S->mean = mean / L; S->starVersion++;
@@ -1000,7 +1013,7 @@ static int sw_generation(void) {
   br_unlock(&T.mx);
   // self-play: every few generations each side's star joins its pool (the other side's opponents)
   if (gen % 5 == 0) for (int side = 0; side < 2; side++) { SwSide* S = &SW.side[side]; if (!S->ai) continue;
-    memcpy(S->pool + (size_t)S->poolNext * S->nw, S->star, sizeof(float) * S->nw); S->poolNext = (S->poolNext + 1) % SW_POOL; if (S->poolN < SW_POOL) S->poolN++; }
+    memcpy(S->pool + (size_t)S->poolNext * S->nw, S->star, sizeof(float) * S->nw); S->poolWin[S->poolNext] = 0.5; S->poolNext = (S->poolNext + 1) % SW_POOL; if (S->poolN < SW_POOL) S->poolN++; }
   if (gen % c->valEvery == 0) { sw_validate(c); for (int side = 0; side < 2; side++) if (SW.side[side].ai) sw_save(c, &P, side);
     double lo = 1; for (int side = 0; side < 2; side++) if (SW.side[side].ai && SW.side[side].val < lo) lo = SW.side[side].val;
     curriculum_check(lo); }   // every AI side must reach the target
