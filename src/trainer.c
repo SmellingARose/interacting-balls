@@ -79,7 +79,7 @@ void cfg_from_json(TrainCfg* c, const char* j) {
   c->pop = clampi((int)jnum(j, "pop", c->pop), 8, 262144); c->scen = clampi((int)jnum(j, "scen", c->scen), 1, 256);
   c->reuse = clampi((int)jnum(j, "reuse", c->reuse), 1, 1000); c->islands = jnum(j, "islands", c->islands) != 0;
   c->nIsl = clampi((int)jnum(j, "nIsl", c->nIsl), 2, 256); c->migrate = clampi((int)jnum(j, "migrate", c->migrate), 1, 1000);
-  c->cma = jnum(j, "cma", c->cma) != 0; c->decayOn = jnum(j, "decayOn", c->decayOn) != 0; c->decay = jnum(j, "decay", c->decay); c->lrMin = jnum(j, "lrMin", c->lrMin);
+  c->cma = jnum(j, "cma", c->cma) != 0; c->optKind = clampi((int)jnum(j, "optKind", c->optKind), 0, 2); c->decayOn = jnum(j, "decayOn", c->decayOn) != 0; c->decay = jnum(j, "decay", c->decay); c->lrMin = jnum(j, "lrMin", c->lrMin);
   c->dt = jnum(j, "dt", c->dt); if (c->dt < 0.005) c->dt = 0.005; if (c->dt > 0.04) c->dt = 0.04;
   c->tw = jnum(j, "tw", c->tw); c->speedW = jnum(j, "speedW", c->speedW); c->everyStep = jnum(j, "everyStep", c->everyStep) != 0;
   c->altOn = jnum(j, "altOn", c->altOn) != 0;
@@ -97,11 +97,11 @@ void cfg_from_json(TrainCfg* c, const char* j) {
 }
 void cfg_to_json(const TrainCfg* c, char* o, int len) {
   snprintf(o, len, "{\"backend\":\"%s\",\"wg\":%d,\"chunkMs\":%g,\"layers\":%d,\"width\":%d,\"K\":%d,\"mem\":%d,\"pop\":%d,\"scen\":%d,\"reuse\":%d,"
-    "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d,\"altOn\":%d,"
+    "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"optKind\":%d,\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d,\"altOn\":%d,"
     "\"mode\":%d,\"blast\":%g,\"reachMax\":%g,\"range\":%g,\"evade\":%g,\"noise\":%g,\"delayMs\":%g,\"detect\":%g,\"twRunner\":%g,"
     "\"rangeMax\":%g,\"attN\":%d,\"defN\":%d,\"attAI\":%d,\"defAI\":%d,\"attCmd\":%d,\"defCmd\":%d,\"swK\":%d}",
     c->backend, c->wg, c->chunkMs, c->layers, c->width, c->K, c->mem, c->pop, c->scen, c->reuse, c->islands, c->nIsl, c->migrate,
-    c->cma, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW, c->everyStep, c->altOn,
+    c->cma, c->optKind, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW, c->everyStep, c->altOn,
     c->mode, c->blast, c->reachMax, c->range, c->evade, c->noise, c->delayMs, c->detect, c->twRunner,
     c->rangeMax, c->attN, c->defN, c->attAI, c->defAI, c->attCmd, c->defCmd, c->swK);
 }
@@ -338,7 +338,13 @@ static void random_genome(float* g, const BrParams* P, Rng* r) {
 
 // ---------------- optimizers (GA and sep-CMA-ES)
 typedef struct { int n, lam; float* pop; double sigma; } GA;
-typedef struct { int n, lam, mu; double* w; double mueff, cs, ds, cc, c1, cmu, chiN, sigma; double *m, *C, *ps, *pc; float *Z, *Y, *X; int g; } CMA;
+// sep-CMA-ES (diagonal covariance), or for large networks LM-MA-ES (Loshchilov, Glasmachers & Beyer 2017): a few
+// memory vectors learn the main directions of the search at O(n) cost, where a covariance model would be too slow.
+// Both draw mirrored pairs (z, −z), which halves the noise of each update at no extra cost.
+typedef struct { int n, lam, mu; double* w; double mueff, cs, ds, cc, c1, cmu, chiN, sigma; double *m, *C, *ps, *pc; float *Z, *Y, *X; int g;
+  int lm, nm; double *Mv, *cdv, *ccv; } CMA;
+#define LM_AUTO_N 2000   // networks with more weights use LM-MA-ES (optKind 0 = automatic)
+static int g_optKind = 0;   // 0 automatic, 1 sep-CMA-ES, 2 LM-MA-ES (set from the settings before an optimizer is built)
 typedef struct { int cma; GA ga; CMA c; float* bestG; double bestF; } Island;
 
 static const double* g_sortFit;
@@ -380,12 +386,27 @@ static void cma_init(CMA* c, int n, int lam, const float* seed, double sigma0) {
   for (int i = 0; i < n; i++) { c->m[i] = seed[i]; c->C[i] = 1; }
   c->sigma = sigma0;
   c->Z = (float*)malloc(sizeof(float) * (size_t)n * lam); c->Y = (float*)malloc(sizeof(float) * (size_t)n * lam); c->X = (float*)malloc(sizeof(float) * (size_t)n * lam);
+  c->lm = g_optKind == 2 || (g_optKind == 0 && n > LM_AUTO_N);
+  if (c->lm) {   // LM-MA-ES settings from the paper
+    c->nm = 4 + (int)floor(3 * log((double)n)); c->Mv = (double*)calloc((size_t)c->nm * n, sizeof(double));
+    c->cdv = (double*)malloc(sizeof(double) * c->nm); c->ccv = (double*)malloc(sizeof(double) * c->nm);
+    for (int j = 0; j < c->nm; j++) { c->cdv[j] = 1 / (pow(1.5, j) * n); c->ccv[j] = fmin(1, lam / (pow(4, j) * n)); }
+    c->cs = fmin(0.5, 2.0 * lam / n);
+  }
 }
 static void cma_ask(CMA* c, Rng* r) {
   int n = c->n;
-  for (int k = 0; k < c->lam; k++) for (int i = 0; i < n; i++) {
-    size_t o = (size_t)k * n + i; double z = gauss(r), y = sqrt(c->C[i]) * z;
-    c->Z[o] = (float)z; c->Y[o] = (float)y; c->X[o] = (float)(c->m[i] + c->sigma * y);
+  for (int k = 0; k < c->lam; k++) {
+    float* Z = c->Z + (size_t)k * n; float* Y = c->Y + (size_t)k * n; float* X = c->X + (size_t)k * n;
+    if (k & 1) { const float* Zp = Z - n; for (int i = 0; i < n; i++) Z[i] = -Zp[i]; }   // mirrored: the opposite of the previous one
+    else for (int i = 0; i < n; i++) Z[i] = (float)gauss(r);
+    if (c->lm) {   // d = z, then pulled toward each memory direction in turn
+      double* d = (double*)malloc(sizeof(double) * n); for (int i = 0; i < n; i++) d[i] = Z[i];
+      for (int j = 0; j < c->nm; j++) { const double* M = c->Mv + (size_t)j * n; double dot = 0; for (int i = 0; i < n; i++) dot += M[i] * d[i];
+        double a = 1 - c->cdv[j], b = c->cdv[j] * dot; for (int i = 0; i < n; i++) d[i] = a * d[i] + b * M[i]; }
+      for (int i = 0; i < n; i++) { Y[i] = (float)d[i]; X[i] = (float)(c->m[i] + c->sigma * d[i]); }
+      free(d);
+    } else for (int i = 0; i < n; i++) { double y = sqrt(c->C[i]) * Z[i]; Y[i] = (float)y; X[i] = (float)(c->m[i] + c->sigma * y); }
   }
 }
 static void cma_tell(CMA* c, const double* f) {
@@ -393,6 +414,14 @@ static void cma_tell(CMA* c, const double* f) {
   double* ym = (double*)calloc(n, sizeof(double)); double* zm = (double*)calloc(n, sizeof(double));
   for (int k = 0; k < mu; k++) { const float* y = c->Y + (size_t)ord[k] * n; const float* z = c->Z + (size_t)ord[k] * n; double wk = c->w[k];
     for (int i = 0; i < n; i++) { ym[i] += wk * y[i]; zm[i] += wk * z[i]; } }
+  if (c->lm) {   // LM-MA-ES update: mean, step-size path, memory directions, step size
+    double cs = c->cs, a = sqrt(cs * (2 - cs) * c->mueff), psn2 = 0;
+    for (int i = 0; i < n; i++) { c->m[i] += c->sigma * ym[i]; c->ps[i] = (1 - cs) * c->ps[i] + a * zm[i]; psn2 += c->ps[i] * c->ps[i]; }
+    for (int j = 0; j < c->nm; j++) { double* M = c->Mv + (size_t)j * n; double cj = c->ccv[j], b = sqrt(c->mueff * cj * (2 - cj));
+      for (int i = 0; i < n; i++) M[i] = (1 - cj) * M[i] + b * zm[i]; }
+    c->g++; c->sigma = fmin(2, c->sigma * exp(cs / 2 * (psn2 / n - 1)));
+    free(ym); free(zm); free(ord); return;
+  }
   double cs = c->cs, cc = c->cc, a = sqrt(cs * (2 - cs) * c->mueff), b = sqrt(cc * (2 - cc) * c->mueff), psn = 0;
   for (int i = 0; i < n; i++) { c->m[i] += c->sigma * ym[i]; c->ps[i] = (1 - cs) * c->ps[i] + a * zm[i]; psn += c->ps[i] * c->ps[i]; }
   psn = sqrt(psn); c->g++;
@@ -405,7 +434,7 @@ static void cma_tell(CMA* c, const double* f) {
   c->sigma = fmin(2, c->sigma * exp((cs / c->ds) * (psn / c->chiN - 1)));
   free(ym); free(zm); free(ord);
 }
-static void cma_free(CMA* c) { free(c->w); free(c->m); free(c->C); free(c->ps); free(c->pc); free(c->Z); free(c->Y); free(c->X); }
+static void cma_free(CMA* c) { free(c->w); free(c->m); free(c->C); free(c->ps); free(c->pc); free(c->Z); free(c->Y); free(c->X); free(c->Mv); free(c->cdv); free(c->ccv); }
 
 static const float* isl_genomes(Island* I) { return I->cma ? I->c.X : I->ga.pop; }
 static int isl_size(Island* I) { return I->cma ? I->c.lam : I->ga.lam; }
@@ -533,7 +562,7 @@ static void free_islands(void) {
   free(T.isl); T.isl = NULL; T.nIsl = 0;
 }
 static void build_islands(void) {
-  free_islands();
+  free_islands(); g_optKind = T.cfg.optKind;
   TrainCfg* c = &T.cfg; setup_params(&T.P, c, c->scen);
   int k = c->islands ? c->nIsl : 1; if (k > c->pop / 4) k = c->pop / 4 > 1 ? c->pop / 4 : 1;
   int per = c->pop / k; if (per < 4) per = 4;
@@ -647,7 +676,7 @@ static void sw_build(const TrainCfg* c, const BrParams* P, int side, int lam) {
   SwSide* S = &SW.side[side]; int ai = side ? c->defAI : c->attAI, cmd = side ? c->defCmd : c->attCmd;
   int key[8] = { ai, c->layers, c->width, cmd, cmd ? c->attN : 0, cmd ? c->defN : 0, cmd ? 0 : c->swK, lam };
   if (S->live == ai && !memcmp(S->key, key, sizeof key)) return;
-  sw_side_free(S); memcpy(S->key, key, sizeof key); S->ai = ai;
+  sw_side_free(S); memcpy(S->key, key, sizeof key); S->ai = ai; g_optKind = c->optKind;
   if (!ai) return;
   S->nin = side ? P->defNin : P->attNin; S->nout = side ? P->defNout : P->attNout; S->nw = side ? P->defNw : P->attNw;
   float* seed = sw_load(c, P, side); int seeded = seed != NULL;
@@ -1227,7 +1256,7 @@ static void cli_cfg(TrainCfg* c, int argc, char** argv, int* mode, int* gens, ch
     else if (!strcmp(a, "--pop")) { c->pop = atoi(v); i++; } else if (!strcmp(a, "--scen")) { c->scen = atoi(v); i++; }
     else if (!strcmp(a, "--layers")) { c->layers = atoi(v); i++; } else if (!strcmp(a, "--width")) { c->width = atoi(v); i++; }
     else if (!strcmp(a, "--K")) { c->K = atoi(v); i++; } else if (!strcmp(a, "--mem")) { c->mem = atoi(v); i++; }
-    else if (!strcmp(a, "--opt")) { c->cma = strcmp(v, "ga") != 0; i++; } else if (!strcmp(a, "--dt")) { c->dt = atof(v); i++; }
+    else if (!strcmp(a, "--opt")) { c->cma = strcmp(v, "ga") != 0; c->optKind = !strcmp(v, "sep") ? 1 : !strcmp(v, "lm") ? 2 : 0; i++; } else if (!strcmp(a, "--dt")) { c->dt = atof(v); i++; }
     else if (!strcmp(a, "--gens")) { *gens = atoi(v); i++; } else if (!strcmp(a, "--load")) { *load = (char*)v; i++; }
     else if (!strcmp(a, "--wg")) { c->wg = atoi(v); i++; } else if (!strcmp(a, "--threads")) { c->threads = atoi(v); i++; }
     // intercept (tag) mode
