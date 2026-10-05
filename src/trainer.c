@@ -65,7 +65,7 @@ void cfg_defaults(TrainCfg* c) {
   memset(c, 0, sizeof *c);
   strcpy(c->backend, "auto"); c->wg = 64; c->chunkMs = 40;
   c->layers = 1; c->width = 32; c->pop = 256; c->scen = 16; c->reuse = 5; c->nIsl = 4; c->migrate = 10;
-  c->cma = 1; c->restarts = 1; c->decayOn = 1; c->decay = 0.995; c->lrMin = 1e-4;
+  c->cma = 1; c->restarts = 1; c->normIn = 1; c->decayOn = 1; c->decay = 0.995; c->lrMin = 1e-4;
   c->dt = 0.02; c->tw = 2.5; c->valEvery = 10; c->valScen = 64;
   c->mode = 0; c->range = 7000; c->twRunner = 2.5; c->reachMax = 7000; c->blast = 0;
   c->rangeMax = 8500; c->attN = 4; c->defN = 4; c->attAI = 0; c->defAI = 1; c->attCmd = 0; c->defCmd = 0; c->swK = 2;
@@ -79,7 +79,7 @@ void cfg_from_json(TrainCfg* c, const char* j) {
   c->pop = clampi((int)jnum(j, "pop", c->pop), 8, 262144); c->scen = clampi((int)jnum(j, "scen", c->scen), 1, 256);
   c->reuse = clampi((int)jnum(j, "reuse", c->reuse), 1, 1000); c->islands = jnum(j, "islands", c->islands) != 0;
   c->nIsl = clampi((int)jnum(j, "nIsl", c->nIsl), 2, 256); c->migrate = clampi((int)jnum(j, "migrate", c->migrate), 1, 1000);
-  c->cma = jnum(j, "cma", c->cma) != 0; c->optKind = clampi((int)jnum(j, "optKind", c->optKind), 0, 2); c->restarts = jnum(j, "restarts", c->restarts) != 0; c->decayOn = jnum(j, "decayOn", c->decayOn) != 0; c->decay = jnum(j, "decay", c->decay); c->lrMin = jnum(j, "lrMin", c->lrMin);
+  c->cma = jnum(j, "cma", c->cma) != 0; c->optKind = clampi((int)jnum(j, "optKind", c->optKind), 0, 2); c->restarts = jnum(j, "restarts", c->restarts) != 0; c->normIn = jnum(j, "normIn", c->normIn) != 0; c->decayOn = jnum(j, "decayOn", c->decayOn) != 0; c->decay = jnum(j, "decay", c->decay); c->lrMin = jnum(j, "lrMin", c->lrMin);
   c->dt = jnum(j, "dt", c->dt); if (c->dt < 0.005) c->dt = 0.005; if (c->dt > 0.04) c->dt = 0.04;
   c->tw = jnum(j, "tw", c->tw); c->speedW = jnum(j, "speedW", c->speedW); c->everyStep = jnum(j, "everyStep", c->everyStep) != 0;
   c->altOn = jnum(j, "altOn", c->altOn) != 0;
@@ -97,11 +97,11 @@ void cfg_from_json(TrainCfg* c, const char* j) {
 }
 void cfg_to_json(const TrainCfg* c, char* o, int len) {
   snprintf(o, len, "{\"backend\":\"%s\",\"wg\":%d,\"chunkMs\":%g,\"layers\":%d,\"width\":%d,\"K\":%d,\"mem\":%d,\"pop\":%d,\"scen\":%d,\"reuse\":%d,"
-    "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"optKind\":%d,\"restarts\":%d,\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d,\"altOn\":%d,"
+    "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"optKind\":%d,\"restarts\":%d,\"normIn\":%d,\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d,\"altOn\":%d,"
     "\"mode\":%d,\"blast\":%g,\"reachMax\":%g,\"range\":%g,\"evade\":%g,\"noise\":%g,\"delayMs\":%g,\"detect\":%g,\"twRunner\":%g,"
     "\"rangeMax\":%g,\"attN\":%d,\"defN\":%d,\"attAI\":%d,\"defAI\":%d,\"attCmd\":%d,\"defCmd\":%d,\"swK\":%d}",
     c->backend, c->wg, c->chunkMs, c->layers, c->width, c->K, c->mem, c->pop, c->scen, c->reuse, c->islands, c->nIsl, c->migrate,
-    c->cma, c->optKind, c->restarts, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW, c->everyStep, c->altOn,
+    c->cma, c->optKind, c->restarts, c->normIn, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW, c->everyStep, c->altOn,
     c->mode, c->blast, c->reachMax, c->range, c->evade, c->noise, c->delayMs, c->detect, c->twRunner,
     c->rangeMax, c->attN, c->defN, c->attAI, c->defAI, c->attCmd, c->defCmd, c->swK);
 }
@@ -459,6 +459,8 @@ static struct {
   char msg[256]; char beInfo[256];
   // restarts (BIPOP-style): population multiplier and starting step size of the current run, stalled validations
   int restarts, stall; double popMul, restartSigma, bestVal, fitSum, bestFitAvg; int fitN;
+  // sensor normalisation: the optimizer works on networks that see standardised sensors; mean / spread per sensor
+  int normOn; double normMu[BR_NI], normSd[BR_NI]; float* eff; size_t effCap;
   // auto-tune
   br_thread tuneTh; volatile int tuning, tuneLive; TrainCfg tuneCfg; Sb tuneLog; Sb tuneResult;
 } T;
@@ -565,6 +567,67 @@ static void free_islands(void) {
   for (int i = 0; i < T.nIsl; i++) { if (T.isl[i].cma) cma_free(&T.isl[i].c); else ga_free(&T.isl[i].ga); free(T.isl[i].bestG); }
   free(T.isl); T.isl = NULL; T.nIsl = 0;
 }
+// ---------------- sensor normalisation (reach and intercept)
+// The optimizer searches over networks whose first layer sees standardised sensors, (x − μ) / σ per sensor (past frames
+// use their sensor's statistics; memory inputs are left alone). Before a network is flown, the standardisation is folded
+// into its first layer: W' = W / σ, b' = b − W μ / σ, so the simulation and every backend are unchanged, and the star
+// (and its saved file) is an ordinary network. Unfolding is the inverse.
+static void norm_fold(const float* g, float* e, const BrParams* P, int unfold) {
+  int ni = P->arch[0], no = P->arch[1], nn = BR_NI * (P->K + 1);
+  memcpy(e, g, sizeof(float) * P->nw);
+  const float* W = g; const float* B = g + no * ni; float* We = e; float* Be = e + no * ni;
+  for (int j = 0; j < no; j++) {
+    double b = B[j];
+    for (int i = 0; i < nn; i++) { int f = i % BR_NI; double mu = T.normMu[f], sd = T.normSd[f];
+      if (!unfold) { double w = W[j * ni + i] / sd; We[j * ni + i] = (float)w; b -= w * mu; }
+      else { double w = W[j * ni + i]; We[j * ni + i] = (float)(w * sd); b += w * mu; } }
+    Be[j] = (float)b;
+  }
+}
+// Sensor statistics from flying network `w` (an ordinary, folded network) on this generation's scenarios on the CPU.
+static int norm_measure(const float* w, double* mu, double* sd) {
+  BrParams P = T.P; P.S = 1; P.nRoll = 1; int stride = P.stride;
+  float* st = (float*)malloc(sizeof(float) * stride); float* wt = (float*)malloc(sizeof(float) * P.nw); br_transpose_genome(w, wt, &P);
+  double s1[BR_NI] = {0}, s2[BR_NI] = {0}; long n = 0;
+  for (int si = 0; si < T.scen.n && si < 16; si++) {
+    const BrScen* sc = &T.scen.sc[si]; br_init(st, &P, sc);
+    BrState s; br_load(&s, st); BrTgt tg; memset(&tg, 0, sizeof tg);
+    float* hist = st + S_HIST; float* mem = st + S_HIST + BR_NI * P.K;
+    for (int k = 0; k < 200000 && s.alive; k++) {
+      if (!br_target(&s, &P, sc, T.scen.traj, &tg)) break;
+      if (s.k % P.ctrl == 0) { float x[MAXW]; br_inputs(&s, &tg, x); for (int f = 0; f < BR_NI; f++) { s1[f] += x[f]; s2[f] += (double)x[f] * x[f]; } n++;
+        br_control(&s, &P, &tg, wt, hist, mem); }
+      s.k++; br_step(&s, &P, sc, &tg);
+    }
+  }
+  free(st); free(wt);
+  if (n < 50) return -1;
+  for (int f = 0; f < BR_NI; f++) { mu[f] = s1[f] / n; double v = s2[f] / n - mu[f] * mu[f]; sd[f] = sqrt(v > 1e-6 ? v : 1e-6); if (sd[f] < 0.05) sd[f] = 0.05; }
+  return 0;
+}
+// New statistics (blended half-way with the old ones), keeping every network the optimizer holds behaviourally the same:
+// each island's centre (and GA population) is re-expressed for the new statistics.
+static void norm_update(const float* star) {
+  double mu[BR_NI], sd[BR_NI]; if (norm_measure(star, mu, sd)) return;
+  int nw = T.P.nw; float* e = (float*)malloc(sizeof(float) * nw); float* g = (float*)malloc(sizeof(float) * nw);
+  double om[BR_NI], os[BR_NI]; memcpy(om, T.normMu, sizeof om); memcpy(os, T.normSd, sizeof os);
+  double nm[BR_NI], ns[BR_NI]; for (int f = 0; f < BR_NI; f++) { nm[f] = T.normOn ? 0.5 * (om[f] + mu[f]) : mu[f]; ns[f] = T.normOn ? 0.5 * (os[f] + sd[f]) : sd[f]; }
+  for (int i = 0; i < T.nIsl; i++) { Island* I = &T.isl[i];
+    int cnt = I->cma ? 1 : I->ga.lam;
+    for (int q = 0; q < cnt; q++) {
+      if (I->cma) for (int j = 0; j < nw; j++) g[j] = (float)I->c.m[j]; else memcpy(g, I->ga.pop + (size_t)q * nw, sizeof(float) * nw);
+      memcpy(T.normMu, om, sizeof om); memcpy(T.normSd, os, sizeof os); norm_fold(g, e, &T.P, 0);   // the network it is now
+      memcpy(T.normMu, nm, sizeof nm); memcpy(T.normSd, ns, sizeof ns); norm_fold(e, g, &T.P, 1);   // the same network, new statistics
+      if (I->cma) { for (int j = 0; j < nw; j++) I->c.m[j] = g[j];
+        int ni = T.P.arch[0], no = T.P.arch[1], nn = BR_NI * (T.P.K + 1);   // search widths follow the rescaled weights
+        if (!I->c.lm) for (int jj = 0; jj < no; jj++) for (int ii = 0; ii < nn; ii++) { double k = ns[ii % BR_NI] / os[ii % BR_NI]; I->c.C[jj * ni + ii] *= k * k; } }
+      else memcpy(I->ga.pop + (size_t)q * nw, g, sizeof(float) * nw);
+    }
+  }
+  memcpy(T.normMu, nm, sizeof nm); memcpy(T.normSd, ns, sizeof ns); T.normOn = 1;
+  free(e); free(g);
+}
+
 static void build_islands(void) {
   free_islands(); g_optKind = T.cfg.optKind;
   TrainCfg* c = &T.cfg; setup_params(&T.P, c, c->scen);
@@ -573,6 +636,7 @@ static void build_islands(void) {
   int per = (int)(c->pop * T.popMul) / k; if (per < 4) per = 4;
   float* seed = (float*)malloc(sizeof(float) * T.P.nw); int seeded = 0;
   br_lock(&T.mx); if (star_matches(&T.P)) { memcpy(seed, T.star, sizeof(float) * T.P.nw); seeded = 1; } br_unlock(&T.mx);
+  for (int f = 0; f < BR_NI; f++) { T.normMu[f] = 0; T.normSd[f] = 1; } T.normOn = 0;   // statistics start neutral (no change)
   T.isl = (Island*)calloc(k, sizeof(Island)); T.nIsl = k;
   for (int i = 0; i < k; i++) {
     Island* I = &T.isl[i]; I->cma = c->cma; I->bestG = (float*)calloc(T.P.nw, sizeof(float)); I->bestF = -1e30;
@@ -803,8 +867,11 @@ static void train_thread(void* arg) {
     size_t needO = (size_t)n * c->scen * BR_OUT; if (needO > outCap) { out = (float*)realloc(out, sizeof(float) * needO); outCap = needO; }
     if (n > fitCap) { fit = (double*)realloc(fit, sizeof(double) * n); fitCap = n; }
     { size_t o = 0; for (int i = 0; i < T.nIsl; i++) { size_t k = (size_t)isl_size(&T.isl[i]) * T.P.nw; memcpy(flat + o, isl_genomes(&T.isl[i]), sizeof(float) * k); o += k; } }
+    const float* evalW = flat;   // the networks as flown: with sensor standardisation folded into the first layer
+    if (T.normOn) { if (need > T.effCap) { T.eff = (float*)realloc(T.eff, sizeof(float) * need); T.effCap = need; }
+      for (int i = 0; i < n; i++) norm_fold(flat + (size_t)i * T.P.nw, T.eff + (size_t)i * T.P.nw, &T.P, 0); evalW = T.eff; }
     double t0 = br_now();
-    if (eval_set(T.be, flat, n, &T.scen, &T.P, out)) { set_msg("evaluation failed on %s", T.be->info); break; }
+    if (eval_set(T.be, evalW, n, &T.scen, &T.P, out)) { set_msg("evaluation failed on %s", T.be->info); break; }
     double dt = br_now() - t0 + tScen, steps = 0, mean = 0; int star = 0;
     for (int i = 0; i < n; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + ((size_t)i * c->scen + j) * BR_OUT; f += fitness(o, c->speedW, c->mode, T.scen.sc[j].atkHit, c->altOn, tag_r(c)); steps += o[3]; }
       fit[i] = f / c->scen; mean += fit[i]; if (fit[i] > fit[star]) star = i; }
@@ -825,20 +892,22 @@ static void train_thread(void* arg) {
     br_lock(&T.mx);
     gen = ++T.gen;
     if (T.starNw != T.P.nw) { free(T.star); T.star = (float*)malloc(sizeof(float) * T.P.nw); T.starNw = T.P.nw; }
-    memcpy(T.star, flat + (size_t)star * T.P.nw, sizeof(float) * T.P.nw);
+    memcpy(T.star, evalW + (size_t)star * T.P.nw, sizeof(float) * T.P.nw);
     T.starNl = T.P.nl; memcpy(T.starArch, T.P.arch, sizeof(int) * (T.P.nl + 1)); T.starK = T.P.K; T.starMem = T.P.rec; T.starDt = c->dt; T.starTw = c->tw; T.starEvery = c->everyStep; T.starVersion++; T.starFit = fit[star];
     T.best = fit[star]; T.mean = mean; T.fitSum += fit[star]; T.fitN++; T.sigma = sig / T.nIsl; T.genTime = dt; T.flightsPerS = n * c->scen / dt; T.stepsPerS = steps / dt;
     T.starHits = (double)hits / c->scen; T.starMiss = miss / c->scen;
     if (T.histN == HIST_MAX) { memmove(T.hist, T.hist + 1, sizeof(Hist) * (HIST_MAX - 1)); T.histN--; }
     Hist* h = &T.hist[T.histN++]; h->gen = gen; h->best = (float)T.best; h->mean = (float)mean; memcpy(h->isl, islBest, sizeof islBest);
     br_unlock(&T.mx);
+    if (c->normIn && c->mode != BR_MODE_SWARM && (gen == 5 || gen % 50 == 0)) { float* sc = (float*)malloc(sizeof(float) * T.P.nw);
+      br_lock(&T.mx); memcpy(sc, T.star, sizeof(float) * T.P.nw); br_unlock(&T.mx); norm_update(sc); free(sc); }
     // islands: pass each island's best to the next one in a ring
     if (T.nIsl > 1 && gen % c->migrate == 0)
       for (int i = 0; i < T.nIsl; i++) { Island* to = &T.isl[(i + 1) % T.nIsl]; const float* g = T.isl[i].bestG;
         if (to->cma) for (int j = 0; j < T.P.nw; j++) to->c.m[j] = 0.5 * (to->c.m[j] + g[j]);
         else memcpy(to->ga.pop + (size_t)(to->ga.lam - 1) * T.P.nw, g, sizeof(float) * T.P.nw); }
     if (gen % c->valEvery == 0) {
-      float* g = (float*)malloc(sizeof(float) * T.P.nw); memcpy(g, flat + (size_t)star * T.P.nw, sizeof(float) * T.P.nw);
+      float* g = (float*)malloc(sizeof(float) * T.P.nw); memcpy(g, evalW + (size_t)star * T.P.nw, sizeof(float) * T.P.nw);
       double v = validate(g); free(g);
       br_lock(&T.mx); T.valHit = v; T.valGen = gen; br_unlock(&T.mx);
       // restarts: validation not better for 6 checks in a row (and not already perfect) restarts the optimizer around the
@@ -1300,7 +1369,7 @@ static void cli_cfg(TrainCfg* c, int argc, char** argv, int* mode, int* gens, ch
     else if (!strcmp(a, "--blast")) { c->blast = fmin(10, fmax(0, atof(v))); i++; }
     else if (!strcmp(a, "--reach-max")) { c->reachMax = fmin(100000, fmax(2000, atof(v))); i++; }
     else if (!strcmp(a, "--val-every")) { c->valEvery = atoi(v) > 0 ? atoi(v) : 10; i++; }
-    else if (!strcmp(a, "--no-early")) c->noEarly = 1; else if (!strcmp(a, "--no-restarts")) c->restarts = 0;
+    else if (!strcmp(a, "--no-early")) c->noEarly = 1; else if (!strcmp(a, "--no-restarts")) c->restarts = 0; else if (!strcmp(a, "--no-norm")) c->normIn = 0;
     else if (!strcmp(a, "--atk-range-max")) { c->rangeMax = fmin(100000, fmax(4000, atof(v))); i++; }
     else if (!strcmp(a, "--atk-range")) { c->range = fmin(100000, fmax(4000, atof(v))); i++; }
     else if (!strcmp(a, "--evade")) { c->evade = fmin(1, fmax(0, atof(v))); i++; }
