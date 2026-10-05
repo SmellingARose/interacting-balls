@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 390" width="760" height="390" role="img" aria-labelledby="t d">
+  <title id="t">Mirrored pairs, and why only the better one counts</title>
+  <desc id="d">From the current centre, three random nudges are each tried in both directions. In every pair the end closer to the best score is kept (green) and the other is dropped (grey). The next centre is a weighted average of the kept tries, so it moves toward the best score.</desc>
+  <style>
+    text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #1d2733; }
+    .h { font-size: 19px; font-weight: 600; }
+    .lab { font-size: 13px; }
+    .b { font-weight: 600; }
+    .sm { font-size: 12px; fill: #5b6b7a; }
+    .ring { fill: none; stroke: #e1e7ed; stroke-width: 1.3; }
+    .keep { stroke: #3aa76d; stroke-width: 2.4; }
+    .drop { stroke: #9aa7b4; stroke-width: 1.6; stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <clipPath id="area"><rect x="32" y="80" width="420" height="280" rx="12"/></clipPath>
+    <marker id="ab" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2b8cc4"/>
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="758" height="388" rx="16" fill="#f8fafc" stroke="#dde3ea"/>
+  <text class="h" x="32" y="44">Mirrored pairs, and why only the better one counts</text>
+
+  <rect x="32" y="80" width="420" height="280" rx="12" fill="#ffffff" stroke="#e3e8ee"/>
+  <g clip-path="url(#area)">
+    <circle class="ring" cx="400" cy="92" r="70"/>
+    <circle class="ring" cx="400" cy="92" r="140"/>
+    <circle class="ring" cx="400" cy="92" r="210"/>
+    <circle class="ring" cx="400" cy="92" r="280"/>
+  </g>
+  <path d="M400,83 l2.6,5.4 5.9,0.8 -4.3,4.1 1,5.9 -5.2,-2.8 -5.2,2.8 1,-5.9 -4.3,-4.1 5.9,-0.8 z" fill="#e4572e"/>
+  <text class="sm" x="388" y="124" text-anchor="end" style="fill:#b8401c">best score</text>
+
+  <!-- three mirrored pairs from the centre (220,230) -->
+  <line class="keep" x1="220" y1="230" x2="302" y2="173"/>
+  <line class="drop" x1="220" y1="230" x2="138" y2="287"/>
+  <line class="keep" x1="220" y1="230" x2="194" y2="133"/>
+  <line class="drop" x1="220" y1="230" x2="246" y2="327"/>
+  <line class="drop" x1="220" y1="230" x2="123" y2="204"/>
+  <line class="keep" x1="220" y1="230" x2="317" y2="256"/>
+  <g fill="#3aa76d">
+    <circle cx="302" cy="173" r="7"/><circle cx="194" cy="133" r="7"/><circle cx="317" cy="256" r="7"/>
+  </g>
+  <g fill="#ffffff" stroke="#9aa7b4" stroke-width="2">
+    <circle cx="138" cy="287" r="7"/><circle cx="246" cy="327" r="7"/><circle cx="123" cy="204" r="7"/>
+  </g>
+  <text class="lab b" x="312" y="168" style="fill:#1f7a4a">+z</text>
+  <text class="lab b" x="122" y="306" style="fill:#5b6b7a">−z</text>
+
+  <!-- the centre moves to the weighted average of the kept tries -->
+  <line x1="220" y1="230" x2="290" y2="197" stroke="#2b8cc4" stroke-width="2" stroke-dasharray="3 3" marker-end="url(#ab)"/>
+  <circle cx="298" cy="194" r="8" fill="none" stroke="#2b8cc4" stroke-width="3"/>
+  <circle cx="220" cy="230" r="6" fill="#1d2733"/>
+  <text class="sm" x="210" y="253" text-anchor="end">centre</text>
+
+  <!-- steps -->
+  <text class="lab" x="484" y="104"><tspan class="b">1</tspan>  Draw a random nudge z.</text>
+  <text class="lab" x="484" y="128"><tspan class="b">2</tspan>  Try its mirror −z too.</text>
+  <text class="lab" x="484" y="152"><tspan class="b">3</tspan>  Fly both; keep the better one.</text>
+  <text class="lab" x="484" y="176"><tspan class="b">4</tspan>  Move the centre toward the kept</text>
+  <text class="lab" x="500" y="194">tries; better ranks count more.</text>
+
+  <circle cx="491" cy="226" r="6" fill="#3aa76d"/>
+  <text class="sm" x="504" y="230">kept: the better of its pair</text>
+  <circle cx="491" cy="250" r="6" fill="#ffffff" stroke="#9aa7b4" stroke-width="2"/>
+  <text class="sm" x="504" y="254">dropped</text>
+  <circle cx="491" cy="274" r="6.5" fill="none" stroke="#2b8cc4" stroke-width="3"/>
+  <text class="sm" x="504" y="278">next centre</text>
+
+  <text class="sm" x="484" y="314">Why drop one? If both halves of a pair</text>
+  <text class="sm" x="484" y="331">joined the average, z and −z would cancel.</text>
+  <text class="sm" x="484" y="348">The centre would not move, and the</text>
+  <text class="sm" x="484" y="365">step size would shrink for nothing.</text>
+</svg>

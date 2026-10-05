@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 424" width="760" height="424" role="img" aria-labelledby="t d">
+  <title id="t">One flight's score: closer is better, a hit is a jackpot</title>
+  <desc id="d">Points against closest approach on a log scale from 1 metre to 30 kilometres. The distance score rises in a straight line from minus 6.9 at 30 km to 0 at 30 m. Reach stops there: within 30 m is a hit worth 5 more points. Intercept keeps counting down to the 2 m catch distance, worth 2.7, and a tag adds 5 more, for 7.7.</desc>
+  <style>
+    text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #1d2733; }
+    .h { font-size: 19px; font-weight: 600; }
+    .sub { font-size: 13px; fill: #5b6b7a; }
+    .lab { font-size: 13px; }
+    .b { font-weight: 600; }
+    .sm { font-size: 12px; fill: #5b6b7a; }
+    .tick { font-size: 12px; fill: #5b6b7a; }
+    .grid { stroke: #e6ebf0; stroke-width: 1; }
+    .axis { stroke: #9aa7b4; stroke-width: 1.3; }
+  </style>
+
+  <rect x="1" y="1" width="758" height="422" rx="16" fill="#f8fafc" stroke="#dde3ea"/>
+  <text class="h" x="32" y="42">One flight's score: closer is better, a hit is a jackpot</text>
+  <text class="sub" x="32" y="66">Distance counts on a log scale: each halving of the closest approach adds the same 0.69 points.</text>
+
+  <rect x="96" y="104" width="620" height="240" fill="#ffffff"/>
+  <g class="grid">
+    <line x1="96" y1="321.5" x2="716" y2="321.5"/><line x1="96" y1="291.5" x2="716" y2="291.5"/>
+    <line x1="96" y1="261.5" x2="716" y2="261.5"/><line x1="96" y1="201.5" x2="716" y2="201.5"/>
+    <line x1="96" y1="171.5" x2="716" y2="171.5"/><line x1="96" y1="141.5" x2="716" y2="141.5"/>
+    <line x1="96" y1="111.5" x2="716" y2="111.5"/>
+    <line x1="137.7" y1="104" x2="137.7" y2="344"/><line x1="234.5" y1="104" x2="234.5" y2="344"/>
+    <line x1="300.6" y1="104" x2="300.6" y2="344"/><line x1="373" y1="104" x2="373" y2="344"/>
+    <line x1="511.4" y1="104" x2="511.4" y2="344"/><line x1="649.9" y1="104" x2="649.9" y2="344"/>
+  </g>
+  <line x1="96" y1="231.5" x2="716" y2="231.5" stroke="#cfd7df" stroke-width="1.3"/>
+
+  <!-- distance score: -ln(max(d, floor) / 30 m) -->
+  <line x1="300.6" y1="231.5" x2="137.7" y2="190.9" stroke="#3aa76d" stroke-width="2.8" stroke-linecap="round"/>
+  <line x1="716" y1="335.1" x2="300.6" y2="231.5" stroke="#1d2733" stroke-width="2.8" stroke-linecap="round"/>
+  <!-- hits -->
+  <line x1="300.6" y1="231.5" x2="300.6" y2="163" stroke="#2b8cc4" stroke-width="2" stroke-dasharray="4 3"/>
+  <circle cx="300.6" cy="156.5" r="6.5" fill="#2b8cc4"/>
+  <text class="lab b" x="310" y="199" style="fill:#1d6a99">+5</text>
+  <line x1="137.7" y1="190.9" x2="137.7" y2="122.4" stroke="#3aa76d" stroke-width="2" stroke-dasharray="4 3"/>
+  <circle cx="137.7" cy="115.9" r="6.5" fill="#3aa76d"/>
+  <text class="lab b" x="147" y="160" style="fill:#1f7a4a">+5</text>
+
+  <!-- legend -->
+  <line x1="452" y1="124" x2="482" y2="124" stroke="#1d2733" stroke-width="2.8"/>
+  <text class="lab" x="490" y="128">distance score, both modes</text>
+  <line x1="452" y1="148" x2="482" y2="148" stroke="#3aa76d" stroke-width="2.8"/>
+  <text class="lab" x="490" y="152">intercept: down to 2 m (+2.7)</text>
+  <circle cx="467" cy="172" r="6" fill="#2b8cc4"/>
+  <text class="lab" x="490" y="176">reach hit, within 30 m: +5</text>
+  <circle cx="467" cy="196" r="6" fill="#3aa76d"/>
+  <text class="lab" x="490" y="200">intercept tag at 2 m: 7.7</text>
+
+  <line class="axis" x1="96" y1="104" x2="96" y2="344"/>
+  <line class="axis" x1="96" y1="344" x2="716" y2="344"/>
+  <g class="tick" text-anchor="end">
+    <text x="88" y="115.5">8</text><text x="88" y="145.5">6</text><text x="88" y="175.5">4</text><text x="88" y="205.5">2</text>
+    <text x="88" y="235.5">0</text><text x="88" y="265.5">−2</text><text x="88" y="295.5">−4</text><text x="88" y="325.5">−6</text>
+  </g>
+  <text class="sm" x="32" y="96">points</text>
+  <g class="tick" text-anchor="middle">
+    <text x="137.7" y="362">2 m</text><text x="234.5" y="362">10 m</text><text x="300.6" y="362">30 m</text><text x="373" y="362">100 m</text>
+    <text x="511.4" y="362">1 km</text><text x="649.9" y="362">10 km</text><text x="716" y="362">30 km</text>
+  </g>
+  <text class="sm" x="406" y="382" text-anchor="middle">closest approach (log scale)</text>
+  <text class="sm" x="32" y="408">Extras: a hit loses 0.01 per second flown (or earns a speed bonus); intercept: −2 if the runner gets through.</text>
+</svg>

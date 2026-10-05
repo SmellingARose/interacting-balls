@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 420" width="760" height="420" role="img" aria-labelledby="t d">
+  <title id="t">Self-play: which old opponent to meet next</title>
+  <desc id="d">A falling curve shows each old opponent's weight, (1 minus x) squared plus 0.02, against x, this side's success rate against it. Opponents it still loses to get the most weight; beaten ones keep a small weight of 0.02. In a pool of three opponents with success rates of 10, 50 and 90 percent, the chances of being picked are 73, 24 and 3 percent.</desc>
+  <style>
+    text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #1d2733; }
+    .h { font-size: 19px; font-weight: 600; }
+    .sub { font-size: 13px; fill: #5b6b7a; }
+    .lab { font-size: 13px; }
+    .b { font-weight: 600; }
+    .sm { font-size: 12px; fill: #5b6b7a; }
+    .tick { font-size: 12px; fill: #5b6b7a; }
+    .grid { stroke: #e6ebf0; stroke-width: 1; }
+    .axis { stroke: #9aa7b4; stroke-width: 1.3; }
+  </style>
+
+  <rect x="1" y="1" width="758" height="418" rx="16" fill="#f8fafc" stroke="#dde3ea"/>
+  <text class="h" x="32" y="42">Self-play: which old opponent to meet next</text>
+  <text class="sub" x="32" y="66">Weight = (1 − x)² + 0.02, where x is how often this side already wins against that opponent.</text>
+
+  <rect x="96" y="110" width="360" height="220" fill="#ffffff"/>
+  <g class="grid">
+    <line x1="96" y1="225.2" x2="456" y2="225.2"/><line x1="96" y1="120.5" x2="456" y2="120.5"/>
+    <line x1="186" y1="110" x2="186" y2="330"/><line x1="276" y1="110" x2="276" y2="330"/>
+    <line x1="366" y1="110" x2="366" y2="330"/><line x1="456" y1="110" x2="456" y2="330"/>
+  </g>
+  <polyline fill="none" stroke="#2b8cc4" stroke-width="2.6" stroke-linejoin="round" points="96,116.3 103.2,124.6 110.4,132.7 117.6,140.7 124.8,148.5 132,156.1 139.2,163.6 146.4,170.8 153.6,178 160.8,184.9 168,191.7 175.2,198.3 182.4,204.8 189.6,211.1 196.8,217.2 204,223.1 211.2,228.9 218.4,234.5 225.6,240 232.8,245.3 240,250.4 247.2,255.3 254.4,260.1 261.6,264.7 268.8,269.2 276,273.4 283.2,277.5 290.4,281.5 297.6,285.2 304.8,288.8 312,292.3 319.2,295.6 326.4,298.7 333.6,301.6 340.8,304.4 348,307 355.2,309.4 362.4,311.6 369.6,313.7 376.8,315.7 384,317.4 391.2,319 398.4,320.4 405.6,321.7 412.8,322.8 420,323.7 427.2,324.5 434.4,325.1 441.6,325.5 448.8,325.7 456,325.8"/>
+  <circle cx="132" cy="156.1" r="5.5" fill="#e4572e"/>
+  <circle cx="276" cy="273.4" r="5.5" fill="#9aa7b4"/>
+  <circle cx="420" cy="323.7" r="5.5" fill="#3aa76d"/>
+  <text class="lab" x="146" y="150">loses to it: picked often</text>
+  <text class="lab" x="290" y="262">even: sometimes</text>
+  <text class="lab" x="420" y="291" text-anchor="middle">beats it: rarely,</text>
+  <text class="lab" x="420" y="306" text-anchor="middle">never quite zero</text>
+
+  <line class="axis" x1="96" y1="110" x2="96" y2="330"/>
+  <line class="axis" x1="96" y1="330" x2="456" y2="330"/>
+  <text class="tick" x="88" y="124.5" text-anchor="end">1</text>
+  <text class="tick" x="88" y="229.2" text-anchor="end">0.5</text>
+  <text class="tick" x="88" y="334" text-anchor="end">0</text>
+  <text class="sm" x="32" y="100">weight</text>
+  <g class="tick" text-anchor="middle">
+    <text x="96" y="348">0%</text><text x="186" y="348">25%</text><text x="276" y="348">50%</text><text x="366" y="348">75%</text><text x="456" y="348">100%</text>
+  </g>
+  <text class="sm" x="276" y="368" text-anchor="middle">x: this side's success rate against that opponent</text>
+
+  <!-- chances in a pool of three -->
+  <rect x="496" y="110" width="232" height="220" rx="12" fill="#ffffff" stroke="#e3e8ee"/>
+  <text class="lab b" x="514" y="136">Chance of being picked</text>
+  <text class="sm" x="514" y="154">in a pool of these three</text>
+  <text class="lab" x="514" y="186">loses to it (x = 10%)</text>
+  <rect x="514" y="194" width="132" height="14" rx="3" fill="#e4572e"/>
+  <text class="lab b" x="654" y="206">73%</text>
+  <text class="lab" x="514" y="238">even (x = 50%)</text>
+  <rect x="514" y="246" width="43" height="14" rx="3" fill="#9aa7b4"/>
+  <text class="lab b" x="565" y="258">24%</text>
+  <text class="lab" x="514" y="290">beats it (x = 90%)</text>
+  <rect x="514" y="298" width="5" height="14" rx="2" fill="#3aa76d"/>
+  <text class="lab b" x="527" y="310">3%</text>
+
+  <text class="sm" x="32" y="400">The pool holds the other side's last 16 stars; a new one joins every 5 generations.</text>
+</svg>

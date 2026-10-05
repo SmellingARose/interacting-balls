@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 420" width="760" height="420" role="img" aria-labelledby="t d">
+  <title id="t">Decay alone: times 0.995 versus times 0.9 per generation</title>
+  <desc id="d">Step size on a log scale over 1,200 generations, starting at 0.02 with a floor of 0.0001. With decay 0.995 it halves every 138 generations and reaches the floor after 1,058 generations. With decay 0.9 it halves every 6.6 generations and reaches the floor after 51.</desc>
+  <style>
+    text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #1d2733; }
+    .h { font-size: 19px; font-weight: 600; }
+    .sub { font-size: 13px; fill: #5b6b7a; }
+    .lab { font-size: 13px; }
+    .sm { font-size: 12px; fill: #5b6b7a; }
+    .tick { font-size: 12px; fill: #5b6b7a; }
+    .grid { stroke: #e6ebf0; stroke-width: 1; }
+    .axis { stroke: #9aa7b4; stroke-width: 1.3; }
+  </style>
+
+  <rect x="1" y="1" width="758" height="418" rx="16" fill="#f8fafc" stroke="#dde3ea"/>
+  <text class="h" x="32" y="42">Decay alone: × 0.995 versus × 0.9 per generation</text>
+  <text class="sub" x="32" y="66">Start 0.02 (a head-start copy or a saved network), floor 10⁻⁴. Each grid line is ten times smaller.</text>
+
+  <rect x="96" y="104" width="620" height="230" fill="#ffffff"/>
+  <!-- grid -->
+  <g class="grid">
+    <line x1="96" y1="145.1" x2="716" y2="145.1"/><line x1="96" y1="227.2" x2="716" y2="227.2"/>
+    <line x1="199.3" y1="104" x2="199.3" y2="334"/><line x1="302.7" y1="104" x2="302.7" y2="334"/>
+    <line x1="406" y1="104" x2="406" y2="334"/><line x1="509.3" y1="104" x2="509.3" y2="334"/>
+    <line x1="612.7" y1="104" x2="612.7" y2="334"/><line x1="716" y1="104" x2="716" y2="334"/>
+  </g>
+  <!-- floor -->
+  <line x1="96" y1="309.4" x2="716" y2="309.4" stroke="#9aa7b4" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text class="sm" x="200" y="301">floor: the minimum step size, 10⁻⁴</text>
+
+  <!-- curves: sigma = max(1e-4, 0.02 * d^g) -->
+  <polyline points="96,120.3 122,309.4 716,309.4" fill="none" stroke="#e4572e" stroke-width="2.6" stroke-linejoin="round"/>
+  <polyline points="96,120.3 642.1,309.4 716,309.4" fill="none" stroke="#2b8cc4" stroke-width="2.6" stroke-linejoin="round"/>
+  <circle cx="122" cy="309.4" r="4.5" fill="#e4572e"/>
+  <circle cx="642.1" cy="309.4" r="4.5" fill="#2b8cc4"/>
+  <text class="sm" x="122" y="327" text-anchor="middle" style="fill:#b8401c">51</text>
+  <text class="sm" x="642.1" y="327" text-anchor="middle" style="fill:#1d6a99">1,058</text>
+
+  <circle cx="167.4" cy="145.1" r="4" fill="#2b8cc4"/>
+  <text class="lab" x="180" y="137" style="fill:#1d6a99">× 0.995 halves it every 138 generations</text>
+  <text class="lab" x="134" y="250" style="fill:#b8401c">× 0.9 halves it every 6.6 generations</text>
+
+  <!-- legend -->
+  <line x1="470" y1="124" x2="500" y2="124" stroke="#2b8cc4" stroke-width="2.6"/>
+  <text class="lab" x="508" y="128">× 0.995 per generation (default)</text>
+  <line x1="470" y1="148" x2="500" y2="148" stroke="#e4572e" stroke-width="2.6"/>
+  <text class="lab" x="508" y="152">× 0.9 per generation</text>
+
+  <!-- axes -->
+  <line class="axis" x1="96" y1="104" x2="96" y2="334"/>
+  <line class="axis" x1="96" y1="334" x2="716" y2="334"/>
+  <text class="tick" x="88" y="124.3" text-anchor="end">0.02</text>
+  <text class="tick" x="88" y="149.1" text-anchor="end">0.01</text>
+  <text class="tick" x="88" y="231.2" text-anchor="end">0.001</text>
+  <text class="tick" x="88" y="313.4" text-anchor="end">0.0001</text>
+  <text class="sm" x="32" y="96">step size</text>
+  <g class="tick" text-anchor="middle">
+    <text x="96" y="352">0</text><text x="199.3" y="352">200</text><text x="302.7" y="352">400</text><text x="406" y="352">600</text>
+    <text x="509.3" y="352">800</text><text x="612.7" y="352">1,000</text><text x="716" y="352">1,200</text>
+  </g>
+  <text class="sm" x="406" y="372" text-anchor="middle">generation</text>
+  <text class="sm" x="32" y="402">CMA-ES also grows or shrinks the step size every generation; this chart shows only the decay's steady pull.</text>
+</svg>

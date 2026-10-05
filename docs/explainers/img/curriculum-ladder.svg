@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 410" width="760" height="410" role="img" aria-labelledby="t d">
+  <title id="t">Automatic difficulty: a ladder of 11 levels</title>
+  <desc id="d">A staircase of levels 0 to 10. Level 0 is an easy version of the settings and level 10 is the settings themselves. A ball on level 3 climbs to level 4 when validation reaches 80 percent twice in a row. A side panel lists what level 0 makes easier.</desc>
+  <style>
+    text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #1d2733; }
+    .h { font-size: 19px; font-weight: 600; }
+    .sub { font-size: 13px; fill: #5b6b7a; }
+    .lab { font-size: 13px; }
+    .b { font-weight: 600; }
+    .sm { font-size: 12px; fill: #5b6b7a; }
+    .tick { font-size: 12px; fill: #5b6b7a; }
+    .step { fill: #2b8cc4; }
+  </style>
+  <defs>
+    <marker id="ag" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3aa76d"/>
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="758" height="408" rx="16" fill="#f8fafc" stroke="#dde3ea"/>
+  <text class="h" x="32" y="42">Automatic difficulty: a ladder of 11 levels</text>
+  <text class="sub" x="32" y="66">Each level moves a tenth of the way from an easy version to your settings. Level 10 is your settings.</text>
+
+  <!-- the ladder: level i is 18 + 20 i tall -->
+  <g class="step">
+    <rect x="52" y="312" width="32" height="18" rx="3" fill-opacity="0.16"/>
+    <rect x="90" y="292" width="32" height="38" rx="3" fill-opacity="0.22"/>
+    <rect x="128" y="272" width="32" height="58" rx="3" fill-opacity="0.28"/>
+    <rect x="166" y="252" width="32" height="78" rx="3" fill-opacity="0.34"/>
+    <rect x="204" y="232" width="32" height="98" rx="3" fill-opacity="0.40"/>
+    <rect x="242" y="212" width="32" height="118" rx="3" fill-opacity="0.46"/>
+    <rect x="280" y="192" width="32" height="138" rx="3" fill-opacity="0.52"/>
+    <rect x="318" y="172" width="32" height="158" rx="3" fill-opacity="0.58"/>
+    <rect x="356" y="152" width="32" height="178" rx="3" fill-opacity="0.64"/>
+    <rect x="394" y="132" width="32" height="198" rx="3" fill-opacity="0.70"/>
+    <rect x="432" y="112" width="32" height="218" rx="3" fill-opacity="0.92"/>
+  </g>
+  <line x1="44" y1="330" x2="472" y2="330" stroke="#9aa7b4" stroke-width="1.3"/>
+  <g class="tick" text-anchor="middle">
+    <text x="68" y="348">0</text><text x="106" y="348">1</text><text x="144" y="348">2</text><text x="182" y="348">3</text>
+    <text x="220" y="348">4</text><text x="258" y="348">5</text><text x="296" y="348">6</text><text x="334" y="348">7</text>
+    <text x="372" y="348">8</text><text x="410" y="348">9</text><text x="448" y="348">10</text>
+  </g>
+  <text class="lab" x="52" y="372">easy version</text>
+  <text class="lab" x="464" y="372" text-anchor="end">your settings</text>
+  <text class="sm" x="258" y="372" text-anchor="middle">level</text>
+
+  <!-- the network climbing -->
+  <path d="M186,229 C190,204 208,200 217,221" fill="none" stroke="#3aa76d" stroke-width="2.4" marker-end="url(#ag)"/>
+  <circle cx="182" cy="241" r="9" fill="#1d2733" stroke="#ffffff" stroke-width="2"/>
+  <text class="lab" x="56" y="178">Step up when validation</text>
+  <text class="lab" x="56" y="196">reaches <tspan class="b">80%</tspan> twice in a row</text>
+
+  <!-- what level 0 eases -->
+  <rect x="496" y="96" width="232" height="250" rx="12" fill="#ffffff" stroke="#e3e8ee"/>
+  <text class="lab b" x="514" y="124">Level 0 makes it easier</text>
+  <text class="sm b" x="514" y="152" style="fill:#1d2733">Intercept</text>
+  <text class="lab" x="514" y="172">• runner starts 4 km out</text>
+  <text class="lab" x="514" y="191">• no weaving, noise or delay</text>
+  <text class="lab" x="514" y="210">• runner thrust-to-weight 1.5</text>
+  <text class="lab" x="514" y="229">• catch radius 10 m</text>
+  <text class="lab" x="514" y="248">• radar sees the runner sooner</text>
+  <text class="sm b" x="514" y="276" style="fill:#1d2733">Reach</text>
+  <text class="lab" x="514" y="296">• goals at most 3 km away</text>
+  <text class="sm b" x="514" y="324" style="fill:#1d2733">Swarm</text>
+  <text class="sm" x="560" y="324">similar, with fewer balls</text>
+
+  <text class="sm" x="32" y="396">Off by default. A new network starts at level 0. The network's shape never changes with the level.</text>
+</svg>
