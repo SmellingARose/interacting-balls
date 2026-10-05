@@ -2,196 +2,290 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Ball Arena Trainer</title>
 <style>
-/* Layout: full-bleed 3D range; controls on the left, live training on the right, like a flight-test console. Single dark look. */
-:root{ --bg:#0b1118; --panel:linear-gradient(180deg,rgba(16,25,35,.90),rgba(9,15,22,.90)); --line:rgba(150,180,205,.18); --fg:#e3ebf2; --dim:#8ea2b4;
-  --ai:#5fd1ff; --ok:#6fe39a; --bad:#ff6b6b; --warm:#ffb347;
+/* Layout: the 3D range fills the window; settings on the left, the live run (Training above, Watch below) in a column
+   on the right, so the panels never overlap. Narrow windows stack everything in one scrolling column. Single dark look. */
+:root{ --panel:rgba(11,18,26,.9); --line:rgba(150,180,205,.2); --fg:#e3ebf2; --dim:#a3b5c5; --fill:rgba(255,255,255,.06);
+  --ai:#5fd1ff; --ok:#6fe39a; --bad:#ff7d7d; --gap:16px; --lw:300px; --rw:min(460px,calc(100vw - var(--lw) - 3*var(--gap)));
   --display:"Saira Condensed","Arial Narrow",sans-serif; --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace; color-scheme:dark; }
+*,*::before,*::after{box-sizing:border-box}
 [hidden]{display:none!important}
-html,body{height:100%;margin:0;background:radial-gradient(120% 90% at 50% 0%,#18293a 0%,#0b1118 60%) fixed;color:var(--fg);font:12px var(--mono);overflow:hidden}
+html,body{height:100%;margin:0}
+body{background:#0b1118 radial-gradient(120% 90% at 50% 0%,#18293a 0%,#0b1118 60%) fixed;color:var(--fg);font:12px/1.45 var(--mono);overflow:hidden}
 #c{position:fixed;inset:0;width:100%;height:100%;display:block}
-.panel{position:fixed;background:var(--panel);border:1px solid var(--line);border-top-color:rgba(95,209,255,.35);border-radius:10px;padding:14px;backdrop-filter:blur(10px) saturate(1.2);box-shadow:0 10px 30px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.04);display:flex;flex-direction:column;gap:8px;overflow:auto;max-height:calc(100% - 32px)}
+p{margin:0}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;backdrop-filter:blur(10px);box-shadow:0 8px 24px rgba(0,0,0,.35);display:flex;flex-direction:column;gap:10px;overflow:auto;overscroll-behavior:contain}
 .panel>*{flex-shrink:0}
-#left{left:16px;top:16px;width:270px}
-#right{right:16px;top:16px;width:min(470px,calc(100% - 330px))}
-#flyp{left:50%;transform:translateX(-50%);bottom:16px;width:min(500px,calc(100% - 640px));min-width:300px}
-#flyp h2{white-space:nowrap}
-h1{font:700 21px/1 var(--display);white-space:nowrap;letter-spacing:.04em;margin:0;background:linear-gradient(90deg,#e3ebf2,#5fd1ff);-webkit-background-clip:text;background-clip:text;color:transparent}
-h2{font:500 13px var(--display);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:8px 0 0;display:flex;align-items:center;gap:8px}
-#left h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}
-.sub,.note{color:var(--dim);font-size:11px;line-height:1.45}
-label{display:grid;grid-template-columns:1fr auto;gap:2px 8px;color:var(--dim);font-size:11px}
-label input[type=range]{grid-column:1/-1;width:100%;accent-color:var(--ai);-webkit-appearance:none;appearance:none;height:16px;background:transparent;margin:0}
-input[type=range]::-webkit-slider-runnable-track{height:3px;border-radius:2px;background:linear-gradient(90deg,rgba(95,209,255,.55),rgba(150,180,205,.22))}
-input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;margin-top:-5px;border-radius:50%;background:#e3ebf2;border:2px solid var(--ai);box-shadow:0 0 8px rgba(95,209,255,.45);transition:transform .12s}
-input[type=range]:hover::-webkit-slider-thumb{transform:scale(1.18)}
-input[type=range]:disabled{opacity:.35}
+.panel,#tuneLog{scrollbar-width:thin;scrollbar-color:rgba(150,180,205,.35) transparent}
+#left{position:fixed;left:var(--gap);top:var(--gap);width:var(--lw);max-height:calc(100% - 2*var(--gap))}
+#rcol{position:fixed;right:var(--gap);top:var(--gap);bottom:var(--gap);width:var(--rw);display:flex;flex-direction:column;justify-content:space-between;gap:var(--gap);pointer-events:none}
+#rcol>.panel{pointer-events:auto;flex:0 1 auto;min-height:0}
+#rcol>#right:not(.min){min-height:150px} #rcol>#flyp:not(.min){min-height:96px}
+#secMore{border-top:1px solid var(--line);padding-top:10px}
+h1{font:700 20px/1 var(--display);letter-spacing:.05em;margin:0;white-space:nowrap}
+h2{font:500 13px/1.2 var(--display);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0}
+h3{font:600 11px var(--mono);color:var(--fg);margin:2px 0 0}
+.head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.head h1,.head h2{flex:1}
+/* sections: the heading holds a button that folds the body */
+.sec{display:flex;flex-direction:column;gap:10px}
+.sec+.sec,#left>.head+.sec,#left>.hint+.sec{border-top:1px solid var(--line);padding-top:10px}
+.secBody{display:flex;flex-direction:column;gap:10px}
+button.fold{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:8px;width:100%;cursor:pointer;border-radius:4px;font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit}
+button.fold::before{content:'▾';font-size:10px;width:10px;transition:transform .15s}
+button.fold[aria-expanded=false]::before{transform:rotate(-90deg)}
+button.fold:hover{color:var(--fg)}
+.note,.hint,.empty{color:var(--dim);font-size:11px;line-height:1.5;overflow-wrap:anywhere}
+#modeText{color:var(--fg)}
+#netNote{white-space:pre-line}
+body:not(.help) #ui .hint{display:none}
+label{display:grid;grid-template-columns:1fr auto;gap:3px 8px;color:var(--dim);font-size:11px}
 label b{color:var(--fg);font-weight:600;font-variant-numeric:tabular-nums}
-label.chk{display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--fg)}
-label.chk input{accent-color:var(--ai);margin:0}
-select{font:12px var(--mono);background:rgba(255,255,255,.06);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:6px}
+label input[type=range]{grid-column:1/-1;width:100%;margin:0;height:18px;accent-color:var(--ai);-webkit-appearance:none;appearance:none;background:transparent}
+input[type=range]::-webkit-slider-runnable-track{height:3px;border-radius:2px;background:rgba(150,180,205,.3)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;margin-top:-5px;border-radius:50%;background:var(--fg);border:2px solid var(--ai)}
+input[type=range]:disabled{opacity:.4}
+label.chk{display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--fg)}
+label.chk input{accent-color:var(--ai);margin:0;width:14px;height:14px}
+label:has(input:disabled){opacity:.5;cursor:default}
+label.stack{display:flex;flex-direction:column;gap:4px}
+.field{display:flex;flex-direction:column;gap:4px;color:var(--dim);font-size:11px}
+select{font:12px var(--mono);background:var(--fill);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px}
 .row{display:flex;gap:6px;flex-wrap:wrap}
-button{font:600 11px var(--mono);color:var(--fg);background:rgba(255,255,255,.06);border:1px solid var(--line);border-radius:6px;padding:7px 9px;cursor:pointer;flex:1;white-space:nowrap;transition:background .15s,border-color .15s,box-shadow .15s}
-button.primary{border-color:rgba(95,209,255,.6);color:var(--ai)}
-button:hover{background:rgba(255,255,255,.12);border-color:rgba(150,180,205,.4)} button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--ai);outline-offset:1px}
-button:disabled{opacity:.35;cursor:not-allowed}
-button.on{background:linear-gradient(180deg,#7fdcff,var(--ai));color:#04121a;border-color:var(--ai);box-shadow:0 0 14px rgba(95,209,255,.35)}
-button.warn{color:var(--bad);border-color:rgba(255,107,107,.5)}
-.seg{display:flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}.seg button{border:0;border-radius:0;padding:6px 8px}
-.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:6px 12px;font-variant-numeric:tabular-nums}
-.stats div{display:flex;flex-direction:column;background:rgba(255,255,255,.035);border:1px solid rgba(150,180,205,.08);border-radius:6px;padding:5px 8px}.stats small{color:var(--dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase}.stats b{font-size:14px}
-#chart{width:100%;height:110px;display:block;background:rgba(0,0,0,.18);border-radius:6px}
-.status{color:var(--dim);font-size:11px}
-#tuneLog{max-height:120px;overflow:auto;font-size:10px;color:var(--dim);display:flex;flex-direction:column;gap:2px}
-#log{display:flex;flex-direction:column;gap:3px;font-size:11px}#log div{display:flex;justify-content:space-between;gap:8px;padding:2px 4px;border-radius:4px;animation:pop .35s ease-out}
-#log div:first-child:not(.sub){background:rgba(255,255,255,.05)}
-@keyframes pop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+button{font:600 11px var(--mono);color:var(--fg);background:var(--fill);border:1px solid var(--line);border-radius:6px;padding:7px 9px;cursor:pointer;flex:1;white-space:nowrap;transition:background .15s,border-color .15s}
+.head button{flex:0 0 auto}
+button:hover{background:rgba(255,255,255,.12);border-color:rgba(150,180,205,.45)}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.primary{border-color:rgba(95,209,255,.65);color:var(--ai)}
+button.warn{color:var(--bad);border-color:rgba(255,125,125,.5)}
+button.on{background:var(--ai);color:#04121a;border-color:var(--ai)}
+button.icon{width:28px;padding:5px 0;font-size:12px;line-height:1}
+:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
+button.fold:focus-visible{outline:2px solid var(--ai);outline-offset:3px}
+.seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg button{border:0;border-radius:0;padding:6px 8px}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button:focus-visible{outline-offset:-2px}
+button.on:focus-visible{outline-color:#fff}   /* visible on the filled cyan too */
+.side{display:flex;flex-direction:column;gap:8px;padding:8px;border:1px solid var(--line);border-radius:8px}
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:5px;font-variant-numeric:tabular-nums}
+.stats div{display:flex;flex-direction:column;gap:1px;background:rgba(255,255,255,.035);border:1px solid rgba(150,180,205,.1);border-radius:6px;padding:5px 6px;min-width:0}
+.stats small{color:var(--dim);font-size:10px;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stats b{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#right{container-type:inline-size}   /* the figures stay in two rows of four as long as they fit */
+@container (max-width:414px){ .stats{grid-template-columns:repeat(4,minmax(0,1fr))} .stats small{font-size:9px} .stats b{font-size:13px} }
+@container (max-width:360px){ .stats{grid-template-columns:repeat(2,minmax(0,1fr))} .stats small{font-size:10px} }
+#chart{width:100%;height:110px;display:block;background:rgba(0,0,0,.2);border-radius:6px}
+.status{color:var(--dim);font-size:11px;min-height:1.5em;overflow-wrap:anywhere}
+#resetNote{color:var(--bad)}
+#tuneLog{max-height:120px;overflow:auto;font-size:10px;color:var(--dim);display:flex;flex-direction:column;gap:2px;border-left:2px solid var(--line);padding-left:8px}
+#log{display:flex;flex-direction:column;gap:3px;font-size:11px}
+#log div{display:flex;justify-content:space-between;gap:8px;padding:2px 4px;border-radius:4px}
+#log div:first-child{background:rgba(255,255,255,.05)}
 .chip{font-size:10px;padding:1px 5px;border-radius:3px;border:1px solid currentColor}
-#dlg{left:50%;top:50%;transform:translate(-50%,-50%);width:min(760px,calc(100% - 32px));z-index:5;background:rgba(10,16,23,.97)}
-#dlg table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
-#dlg td,#dlg th{border-bottom:1px solid var(--line);padding:4px 6px;text-align:right;font-size:11px}
-#dlg th{color:var(--dim);font-weight:400} #dlg td:first-child,#dlg th:first-child{text-align:left}
-#dlg p,#dlg li{color:var(--dim);font-size:11px;line-height:1.6;max-width:75ch} #dlg ul{margin:0;padding-left:18px}
-#dlg .eq{font:600 13px/1.9 var(--mono);background:rgba(127,127,127,.12);border-radius:6px;padding:8px 12px;overflow-x:auto;white-space:nowrap}
-.best td{color:var(--ok)}
-#offline{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(5,9,13,.85);z-index:9;font:600 16px var(--display);letter-spacing:.1em}
-/* collapsible sections and panels; help text hidden unless "?" is on */
-h2.fold{cursor:pointer;user-select:none;border-radius:4px}
-h2.fold::before{content:'▾';font-size:10px;width:10px;transition:transform .15s;color:var(--dim)}
-h2.fold.closed::before{transform:rotate(-90deg)}
-h2.fold:hover{color:var(--fg)}
-.secBody{display:flex;flex-direction:column;gap:8px}
-.head{display:flex;align-items:center;gap:6px}
-.head h1,.head h2{flex:1;margin:0}
-button.icon{flex:0 0 auto;width:26px;padding:4px 0;font-size:12px;line-height:1}
 .panel.min>:not(.head):not(.keep){display:none!important}
-.panel.min{gap:6px}
-body:not(.help) .note:not(#netNote):not(#tuneNote):not(#modeText),body:not(.help) #left .sub{display:none}
-#modeText{color:var(--fg);opacity:.75}
-@media (max-width:1000px){ #right{left:300px;width:auto} #flyp{display:none} }
+#offline{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;background:rgba(5,9,13,.88);z-index:9;font:600 16px var(--display);letter-spacing:.1em;text-transform:uppercase}
+dialog{width:min(760px,calc(100% - 32px));max-height:calc(100% - 32px);padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:rgba(10,16,23,.98);color:var(--fg);font:12px/1.45 var(--mono)}
+dialog::backdrop{background:rgba(3,6,9,.5)}
+dialog .head{margin-bottom:10px}
+dialog table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;margin:8px 0}
+dialog td,dialog th{border-bottom:1px solid var(--line);padding:4px 6px;text-align:right;font-size:11px}
+dialog th{color:var(--dim);font-weight:400} dialog td:first-child,dialog th:first-child{text-align:left}
+dialog p,dialog li{color:var(--dim);font-size:11px;line-height:1.6;max-width:75ch;margin:6px 0} dialog ul{margin:0;padding-left:18px}
+dialog b{color:var(--fg)}
+dialog summary{cursor:pointer;color:var(--dim);font-size:11px;margin-top:8px}
+dialog h3{margin-top:12px}
+.eq{font:600 13px/1.9 var(--mono);background:rgba(127,127,127,.12);border-radius:6px;padding:8px 12px;overflow-x:auto;white-space:nowrap}
+.best td{color:var(--ok)}
+@media (max-width:700px){
+  body{overflow:auto}
+  #ui{display:flex;flex-direction:column;gap:12px;padding:42vh 12px 12px;pointer-events:none}
+  #ui .panel{pointer-events:auto}
+  #left,#rcol{position:static;width:auto;max-height:none}
+  #rcol{order:-1;gap:12px}
+  #rcol>.panel{flex:none}
+  .panel{overflow:visible}
+}
+@media (prefers-reduced-motion:reduce){ *{transition:none!important} }
 </style></head><body>
-<canvas id="c"></canvas>
-<div id="offline" hidden>THE TRAINER APP IS NOT RUNNING · START IT AGAIN TO CONTINUE</div>
+<canvas id="c" role="img" aria-label="3D view of the flights"></canvas>
+<div id="offline" role="alert" hidden>The trainer app is not running · start it again to continue</div>
 
-<div class="panel" id="left">
-  <div class="head"><h1>BALL ARENA TRAINER</h1><button class="icon" id="bHelp" title="Show help text">?</button><button class="icon" data-min="left" title="Collapse panel">–</button></div>
-  <div class="sub">Everything runs natively on this computer. This window only shows it. Closing it keeps training running; open the app again to come back. The app quits by itself after 2 idle minutes.</div>
+<div id="ui">
+<aside class="panel" id="left" aria-label="Settings">
+  <div class="head"><h1>BALL ARENA TRAINER</h1>
+    <button class="icon" id="bHelp" aria-pressed="false" aria-label="Help text" title="Show help text">?</button>
+    <button class="icon" data-min="left" aria-label="Settings panel" title="Collapse panel">–</button></div>
+  <p class="hint">Everything runs natively on this computer; this window only shows it. Closing it keeps training running: open the app again to come back. The app quits by itself after 2 idle minutes.</p>
 
-  <h2>Mode</h2>
-  <div class="seg" role="group" aria-label="Mode"><button id="mReach" class="on">Reach target</button><button id="mInt">Intercept</button><button id="mSwarm">Swarm</button></div>
-  <div class="note" id="modeText"></div>
-  <div id="reachOpts">
-    <label>Max goal distance <b id="vReachMax"></b><input id="sReachMax" type="range" min="2000" max="100000" step="1000" value="7000"></label>
-    <div class="note">Training goals are 1.5 km to this far. Raise it gradually: a ball trained on short hops needs time to learn long flights.</div>
-  </div>
-  <div id="swarmOpts" hidden>
-    <h2>Attackers</h2>
-    <div class="seg" role="group" aria-label="Attackers fly"><button id="aAlgo">Algorithm</button><button id="aAI">AI</button></div>
-    <div class="seg aiOnly" id="aBrain" role="group" aria-label="Attacker brain"><button id="aNK">Nearest-K</button><button id="aCmd">Commander</button></div>
-    <label>Attackers <b id="vAttN"></b><input id="sAttN" type="range" min="1" max="32" step="1" value="4"></label>
-    <h2>Defenders</h2>
-    <div class="seg" role="group" aria-label="Defenders fly"><button id="dAlgo">Algorithm</button><button id="dAI">AI</button></div>
-    <div class="seg aiOnly" id="dBrain" role="group" aria-label="Defender brain"><button id="dNK">Nearest-K</button><button id="dCmd">Commander</button></div>
-    <label>Defenders <b id="vDefN"></b><input id="sDefN" type="range" min="1" max="32" step="1" value="4"></label>
-    <label id="swKRow">Nearest-K sees <b id="vSwK"></b><input id="sSwK" type="range" min="1" max="8" step="1" value="2"></label>
-    <div class="note" id="swNote"></div>
-  </div>
-  <div id="tagOpts" hidden>
+  <section class="sec" data-open>
+    <h2>Mode</h2>
+    <div class="secBody">
+      <div class="seg" role="group" aria-label="Mode"><button id="mReach">Reach target</button><button id="mInt">Intercept</button><button id="mSwarm">Swarm</button></div>
+      <p class="note" id="modeText"></p>
+      <div id="reachOpts" class="secBody">
+        <label>Max goal distance <b id="vReachMax"></b><input id="sReachMax" type="range" min="2000" max="100000" step="1000"></label>
+        <p class="hint">Training goals are 1.5 km to this far. Raise it gradually: a ball trained on short hops needs time to learn long flights.</p>
+      </div>
+      <div id="swarmOpts" class="secBody" hidden>
+        <div class="side"><h3>Attackers</h3>
+          <div class="seg" role="group" aria-label="Attackers flown by"><button id="aAlgo">Algorithm</button><button id="aAI">AI</button></div>
+          <div class="seg" id="aBrain" role="group" aria-label="Attacker brain"><button id="aNK">Nearest-K</button><button id="aCmd">Commander</button></div>
+          <label>Number of attackers <b id="vAttN"></b><input id="sAttN" type="range" min="1" max="32" step="1"></label></div>
+        <div class="side"><h3>Defenders</h3>
+          <div class="seg" role="group" aria-label="Defenders flown by"><button id="dAlgo">Algorithm</button><button id="dAI">AI</button></div>
+          <div class="seg" id="dBrain" role="group" aria-label="Defender brain"><button id="dNK">Nearest-K</button><button id="dCmd">Commander</button></div>
+          <label>Number of defenders <b id="vDefN"></b><input id="sDefN" type="range" min="1" max="32" step="1"></label></div>
+        <label id="swKRow">Nearest-K sees <b id="vSwK"></b><input id="sSwK" type="range" min="1" max="8" step="1"></label>
+        <p class="hint" id="swNote"></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="tagOpts" data-open hidden>
     <h2 id="tagTitle">Intercept</h2>
-    <label>Blast radius <b id="vBlast"></b><input id="sBlast" type="range" min="0" max="10" step="0.5" value="0"></label>
-    <div class="note">Off: your ball must touch the runner (2 m). On: getting this close counts as a catch, like a proximity warhead.</div>
-    <label id="rangeLbl">Runner launch range <b id="vRange"></b><input id="sRange" type="range" min="4000" max="100000" step="500" value="7000"></label>
-    <label id="rangeMaxRow">Attackers launch up to <b id="vRangeMax"></b><input id="sRangeMax" type="range" min="4000" max="100000" step="500" value="8500"></label>
-    <label>Runner weaving <b id="vEvade"></b><input id="sEvade" type="range" min="0" max="1" step="0.1" value="0"></label>
-    <label>Sensor noise <b id="vNoise"></b><input id="sNoise" type="range" min="0" max="50" step="1" value="0"></label>
-    <label id="delayRow">Sensor delay <b id="vDelay"></b><input id="sDelay" type="range" min="0" max="400" step="20" value="0"></label>
-    <label>Radar range <b id="vDetect"></b><input id="sDetect" type="range" min="0" max="100000" step="500" value="0"></label>
-    <div class="note">Your ball waits on its pad until its radar sees the runner within this range, then launches. Off: it launches at once.</div>
-    <label>Runner thrust-to-weight <b id="vTwR"></b><input id="sTwR" type="range" min="1.2" max="5" step="0.1" value="2.5"></label>
-  </div>
+    <div class="secBody">
+      <label>Blast radius <b id="vBlast"></b><input id="sBlast" type="range" min="0" max="10" step="0.5"></label>
+      <p class="hint">Off: the balls must touch (2 m). On: getting this close counts as a catch, like a proximity warhead.</p>
+      <label><span id="rangeTxt">Runner launch range</span> <b id="vRange"></b><input id="sRange" type="range" min="4000" max="100000" step="500"></label>
+      <label id="rangeMaxRow">Attackers launch up to <b id="vRangeMax"></b><input id="sRangeMax" type="range" min="4000" max="100000" step="500"></label>
+      <label><span id="evadeTxt">Runner weaving</span> <b id="vEvade"></b><input id="sEvade" type="range" min="0" max="1" step="0.1"></label>
+      <label><span id="twRTxt">Runner thrust-to-weight</span> <b id="vTwR"></b><input id="sTwR" type="range" min="1.2" max="5" step="0.1"></label>
+      <label>Sensor noise <b id="vNoise"></b><input id="sNoise" type="range" min="0" max="50" step="1"></label>
+      <p class="hint">Uniform noise on every position the ball senses, with this standard deviation (up to 1.7 times it either way).</p>
+      <label id="delayRow">Sensor delay <b id="vDelay"></b><input id="sDelay" type="range" min="0" max="400" step="20"></label>
+      <label>Radar range <b id="vDetect"></b><input id="sDetect" type="range" min="0" max="100000" step="500"></label>
+      <p class="hint" id="detectHint">Your ball waits on its pad until its radar sees the runner within this range, then launches. Off: it launches at once.</p>
+    </div>
+  </section>
 
-  <h2>Compute</h2>
-  <select id="selBackend" aria-label="Compute"></select>
-  <div class="row"><button id="bTune">Auto-tune for this computer</button></div>
-  <div id="tuneBox" hidden><div id="tuneLog"></div></div>
-  <div class="note" id="tuneNote">Auto-tune measures every option on this machine (CPU, GPU work-group sizes, dispatch length, batch size) and picks the fastest.</div>
+  <section class="sec">
+    <h2>Compute</h2>
+    <div class="secBody">
+      <label class="stack">Compute option<select id="selBackend"></select></label>
+      <button id="bTune">Auto-tune for this computer</button>
+      <div id="tuneLog" role="log" aria-label="Auto-tune progress" hidden></div>
+      <p class="note" id="tuneNote" hidden></p>
+      <p class="hint" id="tuneHint"></p>
+    </div>
+  </section>
 
-  <h2>Network</h2>
-  <label>Hidden layers <b id="vLay"></b><input id="sLay" type="range" min="1" max="8" step="1" value="1"></label>
-  <label>Neurons per layer <b id="vWid"></b><input id="sWid" type="range" min="8" max="128" step="8" value="32"></label>
-  <label id="kRow">Past frames K <b id="vK"></b><input id="sK" type="range" min="0" max="4" step="1" value="0"></label>
-  <label class="chk" id="memRow"><input type="checkbox" id="cMem"> Memory neurons</label>
-  <div class="note" id="netNote"></div>
+  <section class="sec">
+    <h2>Network</h2>
+    <div class="secBody">
+      <label>Hidden layers <b id="vLay"></b><input id="sLay" type="range" min="1" max="8" step="1"></label>
+      <label>Neurons per layer <b id="vWid"></b><input id="sWid" type="range" min="8" max="128" step="8"></label>
+      <label id="kRow">Past frames <b id="vK"></b><input id="sK" type="range" min="0" max="4" step="1"></label>
+      <label class="chk" id="memRow"><input type="checkbox" id="cMem"> Memory neurons</label>
+      <p class="note" id="netNote"></p>
+      <p class="hint">Changing the shape starts a new network. Each mode keeps its own.</p>
+    </div>
+  </section>
 
-  <h2>Training</h2>
-  <div class="seg" role="group" aria-label="Optimizer"><button id="opCMA" class="on">CMA-ES</button><button id="opGA">Genetic</button></div>
-  <label>Population <b id="vPop"></b><input id="sPop" type="range" min="16" max="16384" step="16" value="256"></label>
-  <label>Scenarios per network <b id="vScen"></b><input id="sScen" type="range" min="1" max="256" step="1" value="16"></label>
-  <label>New scenarios every <b id="vReuse"></b><input id="sReuse" type="range" min="1" max="50" step="1" value="5"></label>
-  <label class="chk"><input type="checkbox" id="cIsl"> Islands</label>
-  <label>Islands <b id="vIsl"></b><input id="sIsl" type="range" min="2" max="256" step="1" value="8"></label>
-  <label>Migrate every <b id="vMig"></b><input id="sMig" type="range" min="1" max="50" step="1" value="10"></label>
-  <label class="chk"><input type="checkbox" id="cDecay" checked> Decay step size</label>
-  <label>Decay per generation <b id="vDecay"></b><input id="sDecay" type="range" min="0.9" max="0.999" step="0.001" value="0.995"></label>
-  <label>Minimum step size <b id="vLrMin"></b><input id="sLrMin" type="range" min="-6" max="-1" step="0.25" value="-4"></label>
-  <label class="chk"><input type="checkbox" id="cAlt"> Reward staying above 5 m</label>
-  <div class="note">Small bonus (up to +0.5) for flying above 5 m through mid-flight: from 3 s after launch until 300 m from the target.</div>
-  <label class="chk"><input type="checkbox" id="cSpeed"> Reward speed</label>
-  <label>Speed weight <b id="vSpw"></b><input id="sSpw" type="range" min="0.5" max="10" step="0.5" value="3"></label>
+  <section class="sec">
+    <h2>Training</h2>
+    <div class="secBody">
+      <div class="seg" id="optSeg" role="group" aria-label="Optimizer"><button id="opCMA">CMA-ES</button><button id="opGA">Genetic</button></div>
+      <label>Population <b id="vPop"></b><input id="sPop" type="range" min="4" max="14" step="0.0625"></label>
+      <label><span id="scenTxt">Scenarios per network</span> <b id="vScen"></b><input id="sScen" type="range" min="1" max="256" step="1"></label>
+      <label>New scenarios every <b id="vReuse"></b><input id="sReuse" type="range" min="1" max="50" step="1"></label>
+      <div id="islRows" class="secBody">
+        <label class="chk"><input type="checkbox" id="cIsl"> Use islands</label>
+        <label>Number of islands <b id="vIsl"></b><input id="sIsl" type="range" min="2" max="256" step="1"></label>
+        <label>Migrate every <b id="vMig"></b><input id="sMig" type="range" min="1" max="50" step="1"></label>
+      </div>
+      <label class="chk"><input type="checkbox" id="cDecay"> Decay step size</label>
+      <label>Decay per generation <b id="vDecay"></b><input id="sDecay" type="range" min="0.9" max="0.999" step="0.001"></label>
+      <label>Minimum step size <b id="vLrMin"></b><input id="sLrMin" type="range" min="-6" max="-1" step="0.25"></label>
+      <div id="rewardRows" class="secBody">
+        <label class="chk"><input type="checkbox" id="cAlt"> Reward staying above 5 m</label>
+        <p class="hint">Small bonus (up to +0.5) for flying above 5 m through mid-flight: from 3 s after launch until 300 m from the target.</p>
+        <label class="chk"><input type="checkbox" id="cSpeed"> Reward speed</label>
+        <label>Speed weight <b id="vSpw"></b><input id="sSpw" type="range" min="0.5" max="10" step="0.5"></label>
+      </div>
+    </div>
+  </section>
 
-  <h2>Techniques</h2>
-  <label class="chk"><input type="checkbox" id="cImitate" checked> Head start: copy the guidance algorithm</label>
-  <div class="note">A new network first learns to imitate the algorithm (behaviour cloning with DAgger), then evolves from there.</div>
-  <label class="chk"><input type="checkbox" id="cAutoDiff"> Automatic difficulty</label>
-  <label>Step up at validation <b id="vDiffAt"></b><input id="sDiffAt" type="range" min="0.3" max="1" step="0.05" value="0.8"></label>
-  <div class="note">A new network starts on an easy version of your settings and steps up a level (of 10) each time validation reaches this twice in a row. Level 10 is your settings.</div>
-  <label class="chk"><input type="checkbox" id="cRestarts" checked> Restart when stuck</label>
-  <div class="note">When neither validation nor the training score improves for 6 checks, the optimizer restarts around the best network, alternating a wide search with a big population and a fine one with a small population.</div>
-  <label class="chk"><input type="checkbox" id="cNorm" checked> Normalise sensors</label>
-  <div class="note">Rescales each sensor by its running mean and spread (reach and intercept). Folded into the network's first layer, so saved networks are unchanged.</div>
-  <label>CMA-ES variant <b id="vOptKind"></b><input id="sOptKind" type="range" min="0" max="2" step="1" value="0"></label>
-  <div class="note">Automatic uses sep-CMA-ES up to 2,000 weights and LM-MA-ES above. Both draw mirrored pairs of candidates.</div>
+  <section class="sec">
+    <h2>Techniques</h2>
+    <div class="secBody">
+      <label class="chk"><input type="checkbox" id="cImitate"> Head start: copy the guidance algorithm</label>
+      <p class="hint">A new network first learns to imitate the algorithm (behaviour cloning with DAgger), then evolves from there.</p>
+      <label class="chk"><input type="checkbox" id="cAutoDiff"> Automatic difficulty</label>
+      <label>Step up at validation <b id="vDiffAt"></b><input id="sDiffAt" type="range" min="0.3" max="1" step="0.05"></label>
+      <p class="hint">A new network starts on an easy version of your settings and steps up a level (of 10) each time validation reaches this twice in a row. Level 10 is your settings.</p>
+      <label class="chk"><input type="checkbox" id="cRestarts"> Restart when stuck</label>
+      <p class="hint">When neither validation nor the training score improves for 6 checks, CMA-ES restarts around the best network, alternating a wide search with a big population and a fine one with a small population.</p>
+      <div id="normRow" class="secBody">
+        <label class="chk"><input type="checkbox" id="cNorm"> Normalise sensors</label>
+        <p class="hint">Rescales each sensor by its running mean and spread. Folded into the network's first layer, so saved networks are unchanged.</p>
+      </div>
+      <div class="field"><span id="lOptKind">CMA-ES variant</span>
+        <div class="seg" role="group" aria-labelledby="lOptKind"><button id="ok0">Automatic</button><button id="ok1">sep-CMA-ES</button><button id="ok2">LM-MA-ES</button></div></div>
+      <p class="hint">Automatic uses sep-CMA-ES up to 2,000 weights and LM-MA-ES above. Both draw mirrored pairs of candidates.</p>
+    </div>
+  </section>
 
-  <h2>Physics</h2>
-  <label>Physics step <b id="vDt"></b><input id="sDt" type="range" min="5" max="40" step="1" value="20"></label>
-  <label class="chk"><input type="checkbox" id="cEvery"> Brain decides every physics step</label>
-  <label>Thrust-to-weight <b id="vTw"></b><input id="sTw" type="range" min="1.2" max="20" step="0.1" value="2.5"></label>
-  <div class="note" id="physNote">The ball starts 10 m above the pad, pointing straight up. Targets are 1.5–7 km away with up to 15 m/s of wind.</div>
-</div>
+  <section class="sec">
+    <h2>Physics</h2>
+    <div class="secBody">
+      <label>Physics step <b id="vDt"></b><input id="sDt" type="range" min="5" max="40" step="1"></label>
+      <label class="chk"><input type="checkbox" id="cEvery"> Brain decides every physics step</label>
+      <label><span id="twTxt">Thrust-to-weight</span> <b id="vTw"></b><input id="sTw" type="range" min="1.2" max="20" step="0.1"></label>
+      <p class="hint" id="physNote"></p>
+    </div>
+  </section>
+</aside>
 
-<div class="panel" id="right">
-  <div class="head"><h2 style="flex:2">Training</h2>
-    <button id="bTrain" class="primary">Train</button><button class="warn" id="bReset">Reset</button><button class="icon" data-min="right" title="Collapse panel">–</button></div>
-  <div class="stats keep">
+<div id="rcol">
+<section class="panel" id="right" aria-labelledby="hTrain">
+  <div class="head"><h2 id="hTrain">Training</h2>
+    <button id="bTrain" class="primary">Train</button><button class="warn" id="bReset">Reset</button>
+    <button class="icon" data-min="right" aria-label="Training panel" title="Collapse panel">–</button></div>
+  <p class="note keep" id="resetNote" role="status" hidden></p>
+  <div class="stats keep" role="group" aria-label="Training figures">
     <div><small>Generation</small><b id="sGen">0</b></div>
     <div><small id="lBest">Best fitness</small><b id="sBest">—</b></div>
     <div><small id="lHit">Star hits</small><b id="sHit">—</b></div>
-    <div><small id="lVal">Validation</small><b id="sVal">—</b></div>
-    <div><small id="lSps">M steps/s</small><b id="sSps">—</b></div>
+    <div><small>Validation</small><b id="sVal">—</b></div>
+    <div><small id="lSps">Steps/s</small><b id="sSps">—</b></div>
     <div><small id="lFps">Flights/s</small><b id="sFps">—</b></div>
-    <div><small>Gen time</small><b id="sGt">—</b></div>
-    <div><small>Step size σ</small><b id="sSig">—</b></div>
+    <div><small>Time per gen</small><b id="sGt">—</b></div>
+    <div><small>Step size</small><b id="sSig">—</b></div>
   </div>
-  <div class="status" id="status">Connecting…</div>
-  <canvas id="chart"></canvas>
-  <h2 id="moreH">More</h2>
-  <div class="note" id="valNote">Validation = the star ball flown every 10 generations on a fixed set of 64 scenarios it never trains on: the honest hit rate, comparable over time. The star ball is saved automatically and restored next time.</div>
-  <div class="row"><button id="bSave">Save network…</button><button id="bLoad">Load network…</button><input type="file" id="fLoad" accept=".json" hidden></div>
-  <div class="row"><button id="bResults">Auto-tune results</button><button id="bMath">Network math</button><button id="bGuide">Training guide</button></div>
-  <div class="row"><button class="warn" id="bQuit">Quit app</button></div>
-</div>
+  <p class="status keep" id="status" role="status">Connecting…</p>
+  <canvas id="chart" role="img" aria-label="Fitness per generation"></canvas>
+  <section class="sec" id="secMore">
+    <h2>More</h2>
+    <div class="secBody">
+      <p class="hint" id="valNote"></p>
+      <div class="row" id="saveRow"><button id="bSave">Save network…</button><button id="bLoad">Load network…</button><input type="file" id="fLoad" accept=".json,application/json" hidden></div>
+      <p class="note" id="swSaveNote" hidden>Swarm stars are saved automatically in your home folder, one file per side and matchup, and picked up again when you train that matchup.</p>
+      <p class="note" id="moreMsg" role="status" hidden></p>
+      <div class="row"><button id="bResults">Auto-tune results</button><button id="bMath">Network math</button><button id="bGuide">Training guide</button></div>
+      <div class="row"><button class="warn" id="bQuit">Quit app</button></div>
+    </div>
+  </section>
+</section>
 
-<div class="panel" id="flyp">
-  <div class="head"><h2>Watch</h2><button id="b3d" class="on" title="Turn the 3D view off to stop all drawing">3D on</button><button id="bFly1">Fly 1</button><button id="bFly5">Fly 5</button><button id="bLaunch" hidden>Launch</button><button id="bClear">Clear</button><button class="icon" data-min="flyp" title="Collapse panel">–</button></div>
-  <div class="row" id="viewRow" hidden><div class="seg" role="group" aria-label="Follow"><button id="vwAtt">Follow attackers</button><button id="vwDef" class="on">Follow defenders</button></div><button id="bPrev" title="Previous ball ( [ )">◀</button><button id="bNext" title="Next ball ( ] )">▶</button><button id="bOver">Overview</button></div>
+<section class="panel" id="flyp" aria-labelledby="hWatch">
+  <div class="head"><h2 id="hWatch">Watch</h2>
+    <button id="b3d" aria-pressed="true" title="Turn the 3D view off to stop all drawing">3D view</button>
+    <button class="icon" data-min="flyp" aria-label="Watch panel" title="Collapse panel">–</button></div>
+  <div class="row keep"><button id="bFly1" class="primary">Fly 1</button><button id="bFly5">Fly 5</button><button id="bLaunch" class="primary" hidden>Launch</button><button id="bClear">Clear</button></div>
+  <div class="row" id="viewRow" hidden>
+    <div class="seg" role="group" aria-label="Follow"><button id="vwAtt">Attackers</button><button id="vwDef">Defenders</button></div>
+    <button id="bPrev" class="icon" aria-label="Previous ball" title="Previous ball ( [ )">◀</button><button id="bNext" class="icon" aria-label="Next ball" title="Next ball ( ] )">▶</button><button id="bOver">Overview</button></div>
   <label id="distRow">Goal distance <b id="vDist"></b><input id="sDist" type="range" min="0" max="100000" step="1000" value="0"></label>
   <label>Playback speed <b id="vTs"></b><input id="sTs" type="range" min="0.5" max="8" step="0.5" value="2"></label>
-  <div id="log"><div class="sub">Flights are computed by the app and drawn here.</div></div>
+  <div id="log" role="log" aria-label="Results"></div>
+</section>
+</div>
 </div>
 
-<div class="panel" id="dlg" hidden role="dialog" aria-label="Details">
-  <div class="row" style="align-items:center"><h2 style="margin:0;flex:1" id="dlgTitle"></h2><button id="bDlgClose" style="flex:0">Close</button></div>
+<dialog id="dlg" aria-labelledby="dlgTitle">
+  <div class="head"><h2 id="dlgTitle"></h2><button id="bDlgClose">Close</button></div>
   <div id="dlgBody"></div>
-</div>
+</dialog>
 
 <script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/":"/vendor/addons/"}}</script>
 <script type="module">
@@ -201,207 +295,300 @@ import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 const $=id=>document.getElementById(id);
+// commands are POSTs with the X-BR header (the server refuses them otherwise); reads are plain GETs
 const api=async(path,body)=>{ const r=await fetch(path,body===undefined?{}:{method:'POST',headers:{'X-BR':'1'},body:typeof body==='string'?body:JSON.stringify(body)}); if(!r.ok) throw new Error(r.status); return r.json(); };
 const fmt=(v,d=0)=>Number(v).toLocaleString(undefined,{maximumFractionDigits:d,minimumFractionDigits:d});
+const km=v=>fmt(v/1000,v>=20000?0:1)+' km', pc=v=>Math.round(v*100)+'%';
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);   // server text into HTML
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const AC=new AbortController(), on=(t,ev,f)=>t.addEventListener(ev,f,{signal:AC.signal});   // window-wide listeners: removed on Quit
+const press=(el,v)=>{ el.classList.toggle('on',!!v); el.setAttribute('aria-pressed',v?'true':'false'); };
+let stopped=false;
 
-/* ---------------- layout: collapsible sections and panels, help text toggle (remembered in this window) ---------------- */
+/* ---------------- layout: foldable sections and panels, help text toggle (remembered in this window) ---------------- */
 const UI=(()=>{ try{ return JSON.parse(localStorage.getItem('brt-ui')||'{}'); }catch(e){ return {}; } })();
 const saveUI=()=>{ try{ localStorage.setItem('brt-ui',JSON.stringify(UI)); }catch(e){} };
-// Each h2 in `box` folds the elements after it, up to the next h2.
-function sections(box,openByDefault){
-  let body=null;
-  for(const el of [...box.children]){
-    if(el.tagName!=='H2'){ if(body) body.appendChild(el); continue; }
-    const key=box.id+':'+(el.id||el.textContent.trim()), open=UI[key]??openByDefault.includes(el.id||el.textContent.trim());
-    body=document.createElement('div'); body.className='secBody'; body.hidden=!open; el.after(body);
-    el.classList.add('fold'); el.classList.toggle('closed',!open); el.tabIndex=0; el.setAttribute('role','button'); el.setAttribute('aria-expanded',open);
-    const b=body, toggle=()=>{ const o=b.hidden; b.hidden=!o; el.classList.toggle('closed',!o); el.setAttribute('aria-expanded',o); UI[key]=o; saveUI(); };
-    el.onclick=toggle; el.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); toggle(); } };
-  }
-}
-sections($('left'),['Mode']); sections($('swarmOpts'),['Attackers','Defenders']); sections($('tagOpts'),['tagTitle']); sections($('right'),[]);
-for(const b of document.querySelectorAll('[data-min]')){ const p=$(b.dataset.min), set=m=>{ p.classList.toggle('min',m); b.textContent=m?'+':'–'; b.title=m?'Expand panel':'Collapse panel'; };
-  set(!!UI['min:'+p.id]); b.onclick=()=>{ UI['min:'+p.id]=!p.classList.contains('min'); saveUI(); set(UI['min:'+p.id]); }; }
-{ const set=on=>{ document.body.classList.toggle('help',on); $('bHelp').classList.toggle('on',on); };
+// Each section's heading gets a button that folds its body (the heading stays a heading for screen readers).
+document.querySelectorAll('.sec').forEach((sec,i)=>{
+  const h=sec.querySelector(':scope>h2'), body=sec.querySelector(':scope>.secBody'), key=sec.closest('.panel').id+':'+(sec.id||h.textContent.trim());
+  const b=document.createElement('button'); b.type='button'; b.className='fold'; body.id||=('secBody'+i); b.setAttribute('aria-controls',body.id);
+  b.append(...h.childNodes); h.append(b);
+  const set=o=>{ body.hidden=!o; b.setAttribute('aria-expanded',o?'true':'false'); };
+  set(UI[key]??sec.hasAttribute('data-open')); b.onclick=()=>{ const o=body.hidden; set(o); UI[key]=o; saveUI(); }; });
+for(const b of document.querySelectorAll('[data-min]')){ const p=$(b.dataset.min), set=m=>{ p.classList.toggle('min',m); b.textContent=m?'+':'–'; b.title=m?'Expand panel':'Collapse panel'; b.setAttribute('aria-expanded',m?'false':'true'); };
+  set(!!UI['min:'+p.id]); b.onclick=()=>{ const m=UI['min:'+p.id]=!p.classList.contains('min'); saveUI(); set(m);
+    if(!m&&p.contains($('chart'))) drawChart(); }; }   // a hidden chart is not drawn, and while paused no new history redraws it
+{ const set=v=>{ document.body.classList.toggle('help',v); press($('bHelp'),v); $('bHelp').title=v?'Hide help text':'Show help text'; };
   set(!!UI.help); $('bHelp').onclick=()=>{ UI.help=!UI.help; saveUI(); set(UI.help); }; }
 
-/* ---------------- settings (remembered in this window) ---------------- */
+/* ---------------- settings (remembered in this window; adopted from the app when it is already training) ---------------- */
 const S={ backend:'auto', layers:1, width:32, K:0, mem:0, cma:1, pop:256, scen:16, reuse:5, islands:0, nIsl:8, migrate:10,
   decayOn:1, decay:0.995, lrMin:1e-4, imitate:1, autoDiff:0, diffAt:0.8, restarts:1, normIn:1, optKind:0, speedOn:0, speedW:3, altOn:0, dt:0.02, everyStep:0, tw:2.5, wg:64, chunkMs:40,
   mode:0, attN:4, defN:4, attAI:0, defAI:1, attCmd:0, defCmd:0, swK:2, swLayout:0, rangeMax:8500, blast:0, reachMax:7000, range:7000, evade:0, noise:0, delayMs:0, detect:0, twRunner:2.5 };   // mode 0 = reach target, 1 = intercept, 2 = swarm
 try{ Object.assign(S, JSON.parse(localStorage.getItem('brt-settings')||'{}')); }catch(e){}
 const save=()=>{ try{ localStorage.setItem('brt-settings',JSON.stringify(S)); }catch(e){} };
 const cfg=()=>({ ...S, speedW:S.speedOn?S.speedW:0 });
-let running=false, pushTimer=0;
-function changed(){ save(); netNote(); if(running){ clearTimeout(pushTimer); pushTimer=setTimeout(()=>api('/api/start',cfg()).catch(()=>{}),250); } }
-const bind=(id,lab,key,f,map=v=>v,unmap=v=>v)=>{ const el=$(id); el.value=unmap(S[key]);
-  const u=()=>{ S[key]=map(+el.value); $(lab).textContent=f(+el.value); }; el.addEventListener('input',()=>{ u(); changed(); }); u(); };
-const check=(id,key,after)=>{ const el=$(id); el.checked=!!S[key]; el.addEventListener('change',()=>{ S[key]=el.checked?1:0; after&&after(); changed(); }); };
-bind('sLay','vLay','layers',v=>v); bind('sWid','vWid','width',v=>v); bind('sK','vK','K',v=>v?v+' frame'+(v>1?'s':''):'off');
-check('cMem','mem');
-bind('sPop','vPop','pop',v=>v); bind('sScen','vScen','scen',v=>v); bind('sReuse','vReuse','reuse',v=>v===1?'generation':v+' generations');
-check('cIsl','islands',syncDis); bind('sIsl','vIsl','nIsl',v=>v); bind('sMig','vMig','migrate',v=>v+' gens');
-check('cDecay','decayOn',syncDis); bind('sDecay','vDecay','decay',v=>'×'+v.toFixed(3));
-bind('sLrMin','vLrMin','lrMin',v=>{ const x=10**v; return x>=0.01?x.toFixed(2):x.toExponential(0); },v=>10**v,v=>Math.log10(v));
-check('cImitate','imitate'); check('cAutoDiff','autoDiff',syncDis); check('cRestarts','restarts'); check('cNorm','normIn');
-bind('sDiffAt','vDiffAt','diffAt',v=>Math.round(v*100)+'%'); bind('sOptKind','vOptKind','optKind',v=>['automatic','sep-CMA-ES','LM-MA-ES'][v]);
-check('cAlt','altOn'); check('cSpeed','speedOn',syncDis); bind('sSpw','vSpw','speedW',v=>v);
-bind('sDt','vDt','dt',v=>v+' ms',v=>v/1000,v=>Math.round(v*1000)); check('cEvery','everyStep'); bind('sTw','vTw','tw',v=>v.toFixed(1)+'×');
-bind('sReachMax','vReachMax','reachMax',v=>fmt(v/1000,0)+' km'); $('sReachMax').addEventListener('input',()=>syncMode());
-bind('sBlast','vBlast','blast',v=>v>2?v+' m':'off (touch)'); $('sBlast').addEventListener('input',()=>syncMode());
-bind('sRange','vRange','range',v=>fmt(v/1000,v>=20000?0:1)+' km'); bind('sRangeMax','vRangeMax','rangeMax',v=>fmt(v/1000,v>=20000?0:1)+' km');
-// swarm: keep min ≤ max (moving one pushes the other)
-$('sRange').addEventListener('input',()=>{ if(S.mode===2&&S.rangeMax<S.range){ $('sRangeMax').value=S.range; $('sRangeMax').dispatchEvent(new Event('input')); } syncMode(); });
-$('sRangeMax').addEventListener('input',()=>{ if(S.rangeMax<S.range){ $('sRange').value=S.rangeMax; $('sRange').dispatchEvent(new Event('input')); } syncMode(); }); bind('sEvade','vEvade','evade',v=>v?'×'+v.toFixed(1):'off');
-bind('sNoise','vNoise','noise',v=>v?'±'+v+' m':'off'); bind('sDelay','vDelay','delayMs',v=>v?v+' ms':'off');
-bind('sDetect','vDetect','detect',v=>v?fmt(v/1000,v>=10000?0:1)+' km':'off (launch at once)'); bind('sTwR','vTwR','twRunner',v=>v.toFixed(1)+'×');
-bind('sAttN','vAttN','attN',v=>v); bind('sDefN','vDefN','defN',v=>v); bind('sSwK','vSwK','swK',v=>v+' + '+v);
-for(const id of ['sAttN','sDefN','sSwK']) $(id).addEventListener('input',()=>syncMode());
-const swSeg=(a,b,key,vals)=>{ $(a).onclick=()=>{ S[key]=vals[0]; syncMode(); changed(); }; $(b).onclick=()=>{ S[key]=vals[1]; syncMode(); changed(); }; };
-swSeg('aAlgo','aAI','attAI',[0,1]); swSeg('dAlgo','dAI','defAI',[0,1]); swSeg('aNK','aCmd','attCmd',[0,1]); swSeg('dNK','dCmd','defCmd',[0,1]);
-const MODE_TEXT=[()=>`Fly the ball from the pad to a goal 1.5–${fmt(S.reachMax/1000,0)} km away.`,
-  'A red runner ball, flown by the guidance algorithm, launches far out and heads for a defended point. Your ball launches from a nearby site and must catch it first.'];
-function syncMode(){ const m=S.mode, on=m===1, sw=m===2, catchTxt=S.blast>2?`get within ${S.blast} m of`:'touch (2 m)';
-  $('mReach').classList.toggle('on',m===0); $('mInt').classList.toggle('on',on); $('mSwarm').classList.toggle('on',sw);
-  $('modeText').textContent=sw?`${S.attN} attacker${S.attN>1?'s':''} fly at a defended point; ${S.defN} defender${S.defN>1?'s':''} must ${catchTxt} them first. A catch removes both balls.`
-    :on?MODE_TEXT[1].replace('catch it',S.blast>2?`get within ${S.blast} m of it`:'touch it (2 m)'):MODE_TEXT[0]();
-  $('tagOpts').hidden=!(on||sw); $('swarmOpts').hidden=!sw; $('reachOpts').hidden=m!==0; $('distRow').hidden=m!==0; $('delayRow').hidden=sw; $('rangeMaxRow').hidden=!sw; $('rangeLbl').firstChild.textContent=sw?'Attackers launch from ':'Runner launch range ';
-  $('tagTitle').textContent=sw?'Engagement':'Intercept'; $('kRow').hidden=$('memRow').hidden=sw;
-  for(const [a,b,k] of [['aAlgo','aAI','attAI'],['dAlgo','dAI','defAI'],['aNK','aCmd','attCmd'],['dNK','dCmd','defCmd']]){ $(a).classList.toggle('on',!S[k]); $(b).classList.toggle('on',!!S[k]); }
-  $('aBrain').hidden=!S.attAI; $('dBrain').hidden=!S.defAI;
-  $('swKRow').hidden=!((S.attAI&&!S.attCmd)||(S.defAI&&!S.defCmd));
+let running=false, tuning=false, waiting='', pushTimer=0, lastPush=0;   // waiting: 'Pausing…' or 'Resetting…' until the app answers
+// every change: remember it, update what depends on it and, while training, send it (the app applies it next generation)
+function changed(){ save(); sync(); if(running){ clearTimeout(pushTimer); pushTimer=setTimeout(()=>{ pushTimer=0; lastPush=Date.now(); api('/api/start',cfg()).catch(()=>{}); },250); } }
+const REF={};   // per setting: puts S's value back into its control
+// A slider: the label shows the setting's value (not the slider's), so values set elsewhere (auto-tune, a loaded file) show as they are.
+const bind=(id,key,f,map=v=>v,unmap=v=>v)=>{ const el=$(id), lab=$('v'+id.slice(1)), first=el.closest('label').firstChild;
+  if(first.id) el.setAttribute('aria-labelledby',first.id); else el.setAttribute('aria-label',first.textContent.trim());   // the name without the value
+  const show=()=>{ const t=String(f(S[key])); lab.textContent=t; el.setAttribute('aria-valuetext',t); };
+  REF[key]=()=>{ el.value=unmap(S[key]); show(); };
+  el.addEventListener('input',()=>{ S[key]=map(+el.value); show(); changed(); }); REF[key](); };
+const check=(id,key)=>{ const el=$(id); REF[key]=()=>{ el.checked=!!S[key]; }; el.addEventListener('change',()=>{ S[key]=el.checked?1:0; changed(); }); REF[key](); };
+const choose=(ids,key,vals)=>ids.forEach((id,i)=>$(id).onclick=()=>{ if(S[key]===vals[i]) return; S[key]=vals[i]; changed(); });
+const gens=v=>v===1?'generation':v+' generations';
+bind('sReachMax','reachMax',v=>fmt(v/1000,0)+' km');
+bind('sAttN','attN',v=>v); bind('sDefN','defN',v=>v); bind('sSwK','swK',v=>v+' + '+v);
+bind('sBlast','blast',v=>v>2?v+' m':'off (touch)'); bind('sRange','range',km); bind('sRangeMax','rangeMax',km);
+// swarm: attackers launch from range to rangeMax; moving one pushes the other
+$('sRange').addEventListener('input',()=>{ if(S.mode===2&&S.rangeMax<S.range){ S.rangeMax=S.range; REF.rangeMax(); changed(); } });
+$('sRangeMax').addEventListener('input',()=>{ if(S.rangeMax<S.range){ S.range=S.rangeMax; REF.range(); changed(); } });
+bind('sEvade','evade',v=>v?'×'+v.toFixed(1):'off'); bind('sTwR','twRunner',v=>v.toFixed(1)+'×');
+bind('sNoise','noise',v=>v?'σ '+v+' m':'off'); bind('sDelay','delayMs',v=>v?v+' ms':'off'); bind('sDetect','detect',v=>v?km(v):'off (launch at once)');
+bind('sLay','layers',v=>v); bind('sWid','width',v=>v); bind('sK','K',v=>v?v+' frame'+(v>1?'s':''):'off'); check('cMem','mem');
+bind('sPop','pop',v=>fmt(v),v=>Math.max(16,Math.round(2**v/16)*16),v=>Math.log2(Math.max(16,v)));   // log scale: 16 to 16,384
+bind('sScen','scen',v=>v); bind('sReuse','reuse',gens);
+check('cIsl','islands'); bind('sIsl','nIsl',v=>v); bind('sMig','migrate',gens);
+check('cDecay','decayOn'); bind('sDecay','decay',v=>'×'+v.toFixed(3));
+bind('sLrMin','lrMin',v=>v>=0.01?v.toFixed(2):v.toExponential(0),v=>10**v,v=>Math.log10(v));
+check('cAlt','altOn'); check('cSpeed','speedOn'); bind('sSpw','speedW',v=>v);
+check('cImitate','imitate'); check('cAutoDiff','autoDiff'); bind('sDiffAt','diffAt',v=>Math.round(v*100)+'%'); check('cRestarts','restarts'); check('cNorm','normIn');
+bind('sDt','dt',v=>Math.round(v*1000)+' ms',v=>v/1000,v=>Math.round(v*1000)); check('cEvery','everyStep'); bind('sTw','tw',v=>v.toFixed(1)+'×');
+choose(['opCMA','opGA'],'cma',[1,0]); choose(['ok0','ok1','ok2'],'optKind',[0,1,2]);
+choose(['aAlgo','aAI'],'attAI',[0,1]); choose(['dAlgo','dAI'],'defAI',[0,1]); choose(['aNK','aCmd'],'attCmd',[0,1]); choose(['dNK','dCmd'],'defCmd',[0,1]);
+$('selBackend').addEventListener('change',e=>{ S.backend=e.target.value; changed(); });
+function refreshAll(){ for(const k in REF) REF[k](); if(HW) $('selBackend').value=HW.options.some(o=>o.id===S.backend)?S.backend:'auto'; sync(); }
+
+// Everything that depends on the mode and the settings: texts, which controls show, which do anything.
+function sync(){ if(stopped) return; const m=S.mode, reach=m===0, tag=m===1, sw=m===2, catchTxt=S.blast>2?`get within ${S.blast} m of`:'touch';
+  press($('mReach'),reach); press($('mInt'),tag); press($('mSwarm'),sw);
+  if(sw&&S.rangeMax<S.range){ S.rangeMax=S.range; REF.rangeMax(); save(); }   // the app trains with max(range, rangeMax)
+  $('modeText').textContent=reach?`Fly the ball from the pad to a goal 1.5–${fmt(S.reachMax/1000,0)} km away.`
+    :tag?`A red runner ball, flown by the guidance algorithm, heads for a defended point. Your ball launches from a nearby site and must ${catchTxt} it first.`
+    :`${S.attN} attacker${S.attN>1?'s':''} fly at a defended point; ${S.defN} defender${S.defN>1?'s':''} must ${catchTxt} them first. A catch removes both balls.`;
+  $('reachOpts').hidden=!reach; $('swarmOpts').hidden=!sw; $('tagOpts').hidden=reach;
+  $('tagTitle').querySelector('button').textContent=sw?'Engagement':'Intercept';
+  $('rangeTxt').textContent=sw?'Attackers launch from':'Runner launch range'; $('rangeMaxRow').hidden=!sw; $('delayRow').hidden=sw;
+  $('evadeTxt').textContent=sw?'Attacker weaving':'Runner weaving'; $('twRTxt').textContent=sw?'Attacker thrust-to-weight':'Runner thrust-to-weight';
+  $('twTxt').textContent=sw?'Defender thrust-to-weight':'Thrust-to-weight'; $('scenTxt').textContent=sw?'Battles per network':'Scenarios per network';
+  $('detectHint').textContent=sw?'Defenders wait on their pads until the radar sees an attacker within this range, then launch. Off: they launch at once.'
+    :'Your ball waits on its pad until its radar sees the runner within this range, then launches. Off: it launches at once.';
+  for(const [a,b,k] of [['aAlgo','aAI','attAI'],['dAlgo','dAI','defAI'],['aNK','aCmd','attCmd'],['dNK','dCmd','defCmd']]){ press($(a),!S[k]); press($(b),!!S[k]); }
+  $('aBrain').hidden=!S.attAI; $('dBrain').hidden=!S.defAI; $('swKRow').hidden=!((S.attAI&&!S.attCmd)||(S.defAI&&!S.defCmd));
   $('swNote').textContent=!S.attAI&&!S.defAI?'Both sides fly the guidance algorithm: Launch shows a battle; set a side to AI to train it.'
     :(S.attAI&&S.defAI?'AI vs AI: both brains train together, each against the other side\'s recent best. ':'')+'Nearest-K: every ball runs its own copy of one small brain and sees its own target plus its K nearest enemies and K nearest teammates; it works at any swarm size. Commander: one brain sees every ball and steers its whole side; each attacker/defender count trains its own commander.';
-  $('bFly1').hidden=$('bFly5').hidden=sw; $('bLaunch').hidden=!sw; $('viewRow').hidden=!sw;
-  $('lBest').textContent=sw?'Defenders best':'Best fitness'; $('lHit').textContent=sw?'Caught':'Star hits'; $('lVal').textContent=sw?'Validation':'Validation';
-  $('lSps').textContent=sw?'M ball-steps/s':'M steps/s'; $('lFps').textContent=sw?'Battles/s':'Flights/s';
-  $('valNote').textContent=sw?'Validation = each trained side against the guidance algorithm every 10 generations on a fixed set of 64 battles: defenders show their catch rate, attackers their leak rate. Stars are saved per side and matchup.'
-    :'Validation = the star ball flown every 10 generations on a fixed set of 64 scenarios it never trains on: the honest hit rate, comparable over time. The star ball is saved automatically and restored next time.';
-  $('physNote').textContent=sw?`Attackers launch from the ground ${fmt(S.range/1000,1)}–${fmt(S.rangeMax/1000,1)} km from the defended point, from any direction; defenders launch 0.5–3 km from the defended point once their radar sees an attacker. Thrust-to-weight is the defenders\' engine; runner thrust-to-weight is the attackers\'.`
-    :on?'Your ball launches from the ground 0.5–3 km from the defended point, with up to 15 m/s of wind. Each mode keeps its own trained network.'
+  $('kRow').hidden=$('memRow').hidden=sw;
+  // controls that do nothing here: swarm always uses CMA-ES, has no islands, sensor normalisation or flight rewards;
+  // the genetic algorithm has no CMA-ES variant and no restarts; algorithm attackers weave, AI ones steer themselves
+  const ga=!S.cma&&!sw;
+  $('optSeg').hidden=$('islRows').hidden=$('normRow').hidden=$('rewardRows').hidden=sw;
+  press($('opCMA'),!!S.cma); press($('opGA'),!S.cma); [0,1,2].forEach(k=>{ press($('ok'+k),S.optKind===k); $('ok'+k).disabled=ga; }); $('cRestarts').disabled=ga;
+  $('sIsl').disabled=$('sMig').disabled=!S.islands; $('sDecay').disabled=!S.decayOn; $('sSpw').disabled=!S.speedOn; $('sDiffAt').disabled=!S.autoDiff;
+  $('sEvade').disabled=sw&&!!S.attAI;
+  $('tuneHint').textContent=sw?'Auto-tune flies one generation of battles on every compute option and GPU layout, and picks the fastest. Population and battles per network stay as they are.'
+    :'Auto-tune measures every option on this machine (CPU, GPU work-group sizes, dispatch length, batch size), picks the fastest and sets population and scenarios to match.';
+  // Watch and Training panels
+  $('bFly1').hidden=$('bFly5').hidden=sw; $('bLaunch').hidden=!sw; $('viewRow').hidden=!sw; $('distRow').hidden=!reach;
+  if(!running||!lastStatus?.swarm) $('lBest').textContent=sw?(S.defAI||!S.attAI?'Defenders best':'Attackers best'):'Best fitness';
+  $('lHit').textContent=sw?'Caught, leaked':'Star hits'; $('lSps').textContent=sw?'Ball-steps/s':'Steps/s'; $('lFps').textContent=sw?'Battles/s':'Flights/s';
+  $('valNote').textContent=sw?'Validation: each trained side against the guidance algorithm every 10 generations, on a fixed set of 64 battles; defenders show their catch rate, attackers their leak rate.'
+    :'Validation: the star ball flown every 10 generations on a fixed set of 64 scenarios it never trains on, so it is the honest hit rate. The star ball is saved automatically and restored next time.';
+  $('saveRow').hidden=sw; $('swSaveNote').hidden=!sw;
+  $('physNote').textContent=sw?`Attackers launch from the ground ${fmt(S.range/1000,1)}–${fmt(S.rangeMax/1000,1)} km from the defended point, from any direction; defenders launch 0.5–3 km from it.`
+    :tag?'Your ball launches from the ground 0.5–3 km from the defended point, with up to 15 m/s of wind.'
     :`The ball starts 10 m above the pad, pointing straight up. Targets are 1.5–${fmt(S.reachMax/1000,0)} km away with up to 15 m/s of wind.`;
-  netNote(); }
+  netNote(); if($('log').querySelector('.empty')) logEmpty(); syncBusy(); }
+// Buttons that must wait while auto-tune runs or the app is pausing (the app ignores a mode switch while busy).
+function syncBusy(){ if(stopped) return; const busy=tuning||!!waiting;
+  $('bTrain').disabled=busy; $('bTrain').textContent=waiting||(running?'Pause':'Train'); $('bTrain').classList.toggle('on',running&&!waiting);
+  $('bReset').disabled=$('bTune').disabled=busy; for(const id of ['mReach','mInt','mSwarm']) $(id).disabled=busy; }
 async function setMode(m){
   if(m===S.mode) return;
-  S.mode=m; save(); syncMode(); clearFlights(); HIST=[]; since=0; drawChart();
+  S.mode=m; save(); sync(); clearFlights(); HIST=[]; since=0; drawChart();
   if(running) changed(); else await api('/api/mode',{mode:m}).catch(()=>{});   // loads that mode's saved network
 }
 $('mReach').onclick=()=>setMode(0); $('mInt').onclick=()=>setMode(1); $('mSwarm').onclick=()=>setMode(2);
-function syncDis(){ $('sDiffAt').disabled=!S.autoDiff; $('sIsl').disabled=$('sMig').disabled=!S.islands; $('sDecay').disabled=!S.decayOn; $('sSpw').disabled=!S.speedOn; }
-function seg(){ $('opCMA').classList.toggle('on',!!S.cma); $('opGA').classList.toggle('on',!S.cma); }
-$('opCMA').onclick=()=>{ S.cma=1; seg(); changed(); }; $('opGA').onclick=()=>{ S.cma=0; seg(); changed(); };
-seg(); syncDis();
 function arch(){ const ni=29*(S.K+1)+(S.mem?S.width:0); return [ni,...Array(S.layers).fill(S.width),3]; }
 function nWeights(a){ let n=0; for(let l=1;l<a.length;l++) n+=a[l]*a[l-1]+a[l]; return n; }
 function swArch(side){ const own=side?S.defN:S.attN, en=side?S.attN:S.defN, cmd=side?S.defCmd:S.attCmd;
   return [cmd?own*13+en*7:29+14*S.swK,...Array(S.layers).fill(S.width),cmd?3*own:3]; }
-function netNote(){ if(S.mode===2){ const t=[]; for(const side of [0,1]) if(side?S.defAI:S.attAI){ const a=swArch(side); t.push((side?'Defenders: ':'Attackers: ')+a.join(' → ')+' · '+nWeights(a).toLocaleString()+' weights'); }
+const swSides=()=>[0,1].filter(s=>s?S.defAI:S.attAI), sideName=s=>s?'Defenders':'Attackers';
+function netNote(){ if(S.mode===2){ const t=swSides().map(s=>{ const a=swArch(s); return `${sideName(s)}: ${a.join(' → ')} · ${nWeights(a).toLocaleString()} weights`; });
     $('netNote').textContent=t.length?t.join('\n'):'No AI side: nothing to train.'; return; }
   const a=arch(); $('netNote').textContent=a.join(' → ')+' · '+nWeights(a).toLocaleString()+' weights'; }
-netNote();
-$('selBackend').addEventListener('change',e=>{ S.backend=e.target.value; changed(); });
 
 /* ---------------- hardware + auto-tune ---------------- */
 let HW=null, TUNE=null;
 async function loadHardware(){
-  HW=await api('/api/hardware');
-  const sel=$('selBackend'); sel.innerHTML=`<option value="auto">Automatic (${HW.options.find(o=>o.id===HW.default)?.label||HW.default})</option>`+HW.options.map(o=>`<option value="${o.id}">${o.label}</option>`).join('');
-  sel.value=HW.options.some(o=>o.id===S.backend)?S.backend:'auto';
+  HW=await api('/api/hardware'); const sel=$('selBackend'), def=HW.options.find(o=>o.id===HW.default)?.label||HW.default;
+  sel.replaceChildren(new Option(`Automatic (${def})`,'auto'),...HW.options.map(o=>new Option(o.label,o.id)));
+  if(!HW.options.some(o=>o.id===S.backend)&&S.backend!=='auto'){ S.backend='auto'; save(); }   // e.g. a GPU that is gone
+  sel.value=S.backend;
+}
+const tuneLine=t=>{ const d=document.createElement('div'); d.textContent=t; return d; };
+async function watchTune(){   // shows the log until the app's auto-tune ends, then applies its result
+  tuning=true; running=false; syncBusy(); $('tuneLog').hidden=false;   // the app pauses training to tune and does not resume it
+  try{ for(;;){ const st=await api('/api/autotune/status'); if(stopped) return;
+      $('tuneLog').replaceChildren(...st.log.map(tuneLine)); $('tuneLog').scrollTop=1e9;
+      if(!st.running){ applyTune(st.result); break; } await sleep(400); } }
+  catch(e){ $('tuneNote').hidden=false; $('tuneNote').textContent='Auto-tune stopped: the app did not answer.'; }
+  finally{ tuning=false; syncBusy(); if(!running&&!stopped) api('/api/mode',{mode:S.mode}).catch(()=>{}); }
 }
 $('bTune').onclick=async()=>{
-  $('bTune').disabled=true; $('tuneBox').hidden=false; $('tuneLog').innerHTML='<div>Starting…</div>'; setTrainBtn(false);
-  await api('/api/autotune',cfg());
-  const poll=async()=>{ const st=await api('/api/autotune/status');
-    $('tuneLog').innerHTML=st.log.map(l=>`<div>${l}</div>`).join(''); $('tuneLog').scrollTop=1e9;
-    if(st.running){ setTimeout(poll,400); return; }
-    $('bTune').disabled=false; TUNE=st.result;
-    if(TUNE&&TUNE.ok){ const b=TUNE.best;
-      Object.assign(S,{backend:b.backend,wg:b.wg,chunkMs:b.chunkMs,pop:b.pop,scen:b.scen,islands:b.islands,nIsl:b.nIsl}); if(S.mode===2) S.swLayout=b.swLayout||0; save();
-      for(const [id,k] of [['sPop','pop'],['sScen','scen'],['sIsl','nIsl']]){ $(id).value=S[k]; $(id).dispatchEvent(new Event('input')); }
-      $('cIsl').checked=!!S.islands; syncDis(); $('selBackend').value=S.backend;
-      $('tuneNote').textContent=`Best: ${b.label} at ${fmt(1/b.secPerGen,1)} generations/s. Applied: population ${b.pop}${b.islands?` in ${b.nIsl} islands`:''}, ${b.scen} scenarios, work-group ${b.wg}, ${b.chunkMs} ms dispatches. ${TUNE.note}`;
-      openDlg('results'); }
-    else $('tuneNote').textContent='Auto-tune could not measure any compute option.';
-  };
-  poll();
+  if(tuning) return; tuning=true; setTrainBtn(false); $('tuneLog').hidden=false; $('tuneLog').replaceChildren(tuneLine('Starting…'));
+  try{ await api('/api/autotune',cfg()); }catch(e){ tuning=false; syncBusy(); $('tuneNote').hidden=false; $('tuneNote').textContent='Auto-tune could not start.'; return; }
+  watchTune();
 };
+const tunedSwarm=t=>/^Swarm/.test(t?.note||'');
+function applyTune(t){
+  TUNE=t; $('tuneNote').hidden=false;
+  if(!t||!t.ok){ $('tuneNote').textContent='Auto-tune could not measure any compute option.'; return; }
+  const b=t.best, sw=tunedSwarm(t);
+  // compute settings always; a swarm tune leaves population, scenarios and islands alone (it measures neither)
+  Object.assign(S,{backend:b.backend,wg:b.wg,chunkMs:b.chunkMs}); if(sw) S.swLayout=b.swLayout||0; else Object.assign(S,{pop:b.pop,scen:b.scen,islands:b.islands,nIsl:b.nIsl});
+  save(); refreshAll();
+  $('tuneNote').textContent=sw?`Best: ${b.label} at ${fmt(1/b.secPerGen,1)} generations/s (${b.swLayout===2?'work-group per battle':b.swLayout===1?'work-group '+b.wg:'all CPU threads'}).`
+    :`Best: ${b.label} at ${fmt(1/b.secPerGen,1)} generations/s. Applied: population ${fmt(b.pop)}${b.islands?` in ${b.nIsl} islands`:''}, ${b.scen} scenarios, work-group ${b.wg}, ${b.chunkMs} ms dispatches.`;
+  openDlg('results');
+}
 
 /* ---------------- training ---------------- */
-let HIST=[], since=0, starVersion=-1;
-function setTrainBtn(on){ running=on; $('bTrain').classList.toggle('on',on); $('bTrain').textContent=on?'Pause':'Train'; }
-$('bTrain').onclick=async()=>{ if(running){ await api('/api/pause',{}); setTrainBtn(false); } else { await api('/api/start',cfg()); setTrainBtn(true); } };
-let resetArm=0;
-$('bReset').onclick=async()=>{ if(Date.now()-resetArm>3000){ resetArm=Date.now(); $('bReset').textContent='Click again to reset'; setTimeout(()=>$('bReset').textContent='Reset',3000); return; }
-  resetArm=0; $('bReset').textContent='Reset'; await api('/api/reset',{}); setTrainBtn(false); HIST=[]; since=0; drawChart(); };
-let stopped=false;
+let HIST=[], since=0, lastStatus=null, adoptNext=true;
+function setTrainBtn(on){ running=on; syncBusy(); }
+$('bTrain').onclick=async()=>{
+  if(running){ waiting='Pausing…'; syncBusy(); try{ await api('/api/pause',{}); setTrainBtn(false); }catch(e){} finally{ waiting=''; syncBusy(); } }
+  else { try{ await api('/api/start',cfg()); lastPush=Date.now(); setTrainBtn(true); }catch(e){} }
+};
+let resetArm=0, resetTimer=0;
+const disarm=()=>{ if(stopped) return; resetArm=0; clearTimeout(resetTimer); $('bReset').textContent='Reset'; $('resetNote').hidden=true; };
+$('bReset').onclick=async()=>{
+  if(Date.now()-resetArm>5000){ resetArm=Date.now(); $('bReset').textContent='Confirm reset'; $('resetNote').hidden=false;
+    $('resetNote').textContent=S.mode===2?'Reset starts new networks for this matchup. The saved ones are kept as .bak files.':'Reset starts a new network for this mode. The saved one is kept as a .bak file.';
+    clearTimeout(resetTimer); resetTimer=setTimeout(disarm,5000); return; }
+  disarm(); waiting='Resetting…'; syncBusy();
+  try{ await api('/api/reset',cfg()); setTrainBtn(false); HIST=[]; since=0; drawChart(); }catch(e){}   // the settings name the mode and matchup
+  finally{ waiting=''; syncBusy(); }
+};
+const same=(a,b)=>typeof a==='number'&&typeof b==='number'?Math.abs(a-b)<=1e-6*Math.max(1,Math.abs(a),Math.abs(b)):a===b;
+// The app is training with settings this window may not have (another window, another browser, cleared storage):
+// take them over, so the next change does not send stale ones (a different network shape would start a new network).
+function adopt(c){ let diff=false; const m=S.mode;
+  for(const [k,v] of Object.entries(c)) if(k in S&&k!=='speedW'&&k!=='speedOn'&&!same(S[k],v)){ S[k]=v; diff=true; }
+  const sOn='speedOn' in c?+!!c.speedOn:+(c.speedW>0); if(S.speedOn!==sOn){ S.speedOn=sOn; diff=true; }
+  if(c.speedW>0&&!same(S.speedW,c.speedW)){ S.speedW=c.speedW; diff=true; }
+  if(!diff) return; save(); refreshAll(); if(S.mode!==m){ clearFlights(); HIST=[]; since=0; }
+}
+on(window,'focus',()=>{ if(running&&!pushTimer&&Date.now()-lastPush>30000) adoptNext=true; });   // the app has applied this window's last change by then
+let pollTimer=0;
 async function poll(){
   if(stopped) return;
   try{
-    const st=await api('/api/status?since='+since); $('offline').hidden=true;
+    const st=await api('/api/status?since='+since); if(stopped) return; $('offline').hidden=true; lastStatus=st;
     if(st.gen<since){ HIST=[]; since=0; }
-    for(const h of st.hist){ HIST.push(h); since=h[0]; } if(HIST.length>2000) HIST=HIST.slice(-2000);
-    if(running!==st.running && !st.tuning) setTrainBtn(st.running);
-    $('sGen').textContent=st.gen; $('sBest').textContent=st.gen?st.best.toFixed(2):'—';
-    $('sHit').textContent=st.gen?Math.round(st.starHits*100)+'%':'—'; $('sVal').textContent=st.valGen?Math.round(st.valHit*100)+'%':'—';
-    if(st.swarm){ const w=st.swarm, pc=v=>Math.round(v*100)+'%';
-      $('lBest').textContent=S.defAI||!S.attAI?'Defenders best':'Attackers best'; $('sBest').textContent=st.gen?(S.defAI?w.defBest:w.attBest).toFixed(2):'—';
-      $('sHit').textContent=st.gen?pc(w.catchRate)+' · '+pc(w.leakRate)+' leak':'—';
-      $('sVal').textContent=(w.defAI?'catch '+pc(w.valCatch):'')+(w.defAI&&w.attAI?' · ':'')+(w.attAI?'leak '+pc(w.valLeak):''); }
-    $('sSps').textContent=st.stepsPerS?fmt(st.stepsPerS/1e6,1):'—'; $('sFps').textContent=st.flightsPerS?fmt(st.flightsPerS):'—';
-    $('sGt').textContent=st.genTime?fmt(st.genTime,3)+' s':'—'; $('sSig').textContent=st.gen?Number(st.sigma).toPrecision(2):'—';
-    $('status').textContent=(st.tuning?'auto-tuning · ':'')+(st.backend?st.backend+' · ':'')+(st.message||'')+(st.islands>1?` · ${st.islands} islands`:'')+(st.autoDiff&&!/difficulty/.test(st.message||'')?` · difficulty ${st.level}/10`:'')+(st.restarts?` · ${st.restarts} restart${st.restarts>1?'s':''}`:'');
-    drawChart();
-  }catch(e){ $('offline').hidden=false; }
-  setTimeout(poll,350);
+    let fresh=false; for(const h of st.hist){ HIST.push(h); since=h[0]; fresh=true; } if(HIST.length>2000) HIST=HIST.slice(-2000);
+    // not while this window tunes: the app reports running until autotune has paused training, then tuning
+    if(!waiting&&!tuning&&running!==st.running&&!st.tuning) setTrainBtn(st.running);
+    if(adoptNext){ adoptNext=false; if(st.running&&st.cfg) adopt(st.cfg); }
+    if(st.tuning&&!tuning) watchTune();   // started from another window
+    $('sGen').textContent=fmt(st.gen); $('sBest').textContent=st.gen?st.best.toFixed(2):'—';
+    $('sHit').textContent=st.gen?pc(st.starHits):'—'; $('sVal').textContent=st.valGen?pc(st.valHit):'—';
+    if(st.swarm){ const w=st.swarm, ran=w.valGen!==undefined?w.valGen>0:st.gen>=10;   // validation runs every 10 generations
+      $('lBest').textContent=w.defAI||!w.attAI?'Defenders best':'Attackers best'; $('sBest').textContent=st.gen?(w.defAI?w.defBest:w.attBest).toFixed(2):'—';
+      $('sHit').textContent=st.gen?pc(w.catchRate)+' · '+pc(w.leakRate):'—';
+      $('sVal').textContent=ran?[w.defAI&&'catch '+pc(w.valCatch),w.attAI&&'leak '+pc(w.valLeak)].filter(Boolean).join(' · ')||'—':'—'; }
+    $('sSps').textContent=st.stepsPerS?fmt(st.stepsPerS/1e6,1)+' M':'—'; $('sFps').textContent=st.flightsPerS?fmt(st.flightsPerS):'—';
+    $('sGt').textContent=st.genTime?fmt(st.genTime,st.genTime<10?3:1)+' s':'—'; $('sSig').textContent=st.gen?Number(st.sigma).toPrecision(2):'—';
+    $('status').textContent=[st.tuning&&'auto-tuning',st.backend,st.message,st.islands>1&&`${st.islands} islands`,st.autoDiff&&!/difficulty/.test(st.message||'')&&`difficulty ${st.level}/10`,
+      st.restarts&&`${st.restarts} restart${st.restarts>1?'s':''}`].filter(Boolean).join(' · ');
+    if(fresh) drawChart();
+  }catch(e){ if(!stopped) $('offline').hidden=false; }
+  if(!stopped) pollTimer=setTimeout(poll,350);
 }
 function drawChart(){
-  const c=$('chart'), r=devicePixelRatio, W=c.clientWidth, H=c.clientHeight; if(!W) return; c.width=W*r; c.height=H*r;
-  const x=c.getContext('2d'); x.scale(r,r); x.font='10px JetBrains Mono, monospace'; x.fillStyle='#8ea2b4';
-  if(HIST.length<2){ x.fillText('Fitness per generation appears here once training runs.',4,H/2); return; }
-  const all=HIST.flatMap(h=>h.slice(1)), lo=Math.min(...all), hi=Math.max(...all,lo+0.1);
+  const c=$('chart'); if(!c) return; const r=devicePixelRatio, W=c.clientWidth, H=c.clientHeight; if(!W) return; c.width=W*r; c.height=H*r;
+  const x=c.getContext('2d'); x.scale(r,r); x.font='10px JetBrains Mono, monospace'; x.fillStyle='#a3b5c5';
+  if(HIST.length<2){ x.fillText('Fitness per generation appears here.',6,H/2); return; }
+  const sw=S.mode===2, lines=sw?[[3,'#ff6a5e',S.attAI,'attackers'],[4,'#5fd1ff',S.defAI,'defenders']].filter(l=>l[2]):[];
+  // the range covers what is drawn: swarm draws only the AI sides' best (a side without AI reports 0)
+  const all=sw?HIST.flatMap(h=>lines.map(l=>h[l[0]]).filter(v=>v!==undefined)):HIST.flatMap(h=>h.slice(1));
+  if(!all.length) return;
+  const lo=Math.min(...all), hi=Math.max(...all,lo+0.1);
   const px=i=>30+i/(HIST.length-1)*(W-36), py=v=>H-12-(v-lo)/(hi-lo)*(H-20);
   x.strokeStyle='rgba(150,180,205,.15)'; x.beginPath(); x.moveTo(30,py(lo)); x.lineTo(W,py(lo)); x.moveTo(30,py(hi)); x.lineTo(W,py(hi)); x.stroke();
   x.fillText(hi.toFixed(1),0,py(hi)+3); x.fillText(lo.toFixed(1),0,py(lo)+3);
-  if(S.mode===2){   // swarm: attackers' best (red) and defenders' best (blue)
-    x.lineJoin='round'; x.lineWidth=2;
-    for(const [idx,col,on] of [[3,'#ff6a5e',S.attAI],[4,'#5fd1ff',S.defAI]]){ if(!on) continue; x.strokeStyle=col; x.beginPath(); HIST.forEach((h,i)=>{ const v=h[idx]; if(v===undefined) return; i?x.lineTo(px(i),py(v)):x.moveTo(px(i),py(v)); }); x.stroke(); }
-    x.fillStyle='#ff6a5e'; if(S.attAI) x.fillText('attackers',W-64,12); x.fillStyle='#5fd1ff'; if(S.defAI) x.fillText('defenders',W-64,24); return; }
-  const k=HIST.at(-1).length-3;
+  x.lineJoin='round';
+  if(sw){ x.lineWidth=2; lines.forEach(([idx,col,,name],j)=>{ x.strokeStyle=col; x.beginPath(); HIST.forEach((h,i)=>{ const v=h[idx]; if(v===undefined) return; i?x.lineTo(px(i),py(v)):x.moveTo(px(i),py(v)); }); x.stroke();
+      x.fillStyle=col; x.fillText(name,W-64,12+12*j); }); return; }
+  const k=HIST.at(-1).length-3;   // islands' best, faint
   for(let j=0;j<k;j++){ x.strokeStyle=`hsla(${j/k*360},80%,60%,.3)`; x.beginPath(); HIST.forEach((h,i)=>{ const v=h[3+j]; if(v===undefined) return; i?x.lineTo(px(i),py(v)):x.moveTo(px(i),py(v)); }); x.stroke(); }
   { const gr=x.createLinearGradient(0,0,0,H); gr.addColorStop(0,'rgba(95,209,255,.28)'); gr.addColorStop(1,'rgba(95,209,255,0)'); x.fillStyle=gr; x.beginPath();
     HIST.forEach((h,i)=>i?x.lineTo(px(i),py(h[1])):x.moveTo(px(i),py(h[1]))); x.lineTo(px(HIST.length-1),H); x.lineTo(px(0),H); x.closePath(); x.fill(); }
-  x.lineJoin='round';
   for(const [idx,col,lw] of [[2,'rgba(95,209,255,.4)',1],[1,'#5fd1ff',2]]){ x.strokeStyle=col; x.lineWidth=lw; x.beginPath(); HIST.forEach((h,i)=>i?x.lineTo(px(i),py(h[idx])):x.moveTo(px(i),py(h[idx]))); x.stroke(); }
 }
-addEventListener('resize',drawChart);
 
 /* ---------------- save / load / quit ---------------- */
-$('bSave').onclick=async()=>{ const j=await api('/api/star'); if(!j.weights){ $('status').textContent='No trained network to save yet.'; return; }
-  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([JSON.stringify(j)],{type:'application/json'}));
-  a.download=`ball-arena-${j.arch.join('-')}-gen${j.generation}.json`; a.click(); };
+let msgTimer=0;
+function moreMsg(t,bad){ const el=$('moreMsg'); if(!el) return; el.textContent=t; el.style.color=bad?'var(--bad)':''; el.hidden=false; clearTimeout(msgTimer); msgTimer=setTimeout(()=>el.hidden=true,8000); }
+$('bSave').onclick=async()=>{ try{ const j=await api('/api/star'); if(!j.weights){ moreMsg('No trained network to save yet.'); return; }
+  const a=document.createElement('a'), url=URL.createObjectURL(new Blob([JSON.stringify(j)],{type:'application/json'}));
+  a.href=url; a.download=`ball-arena-${j.arch.join('-')}-gen${j.generation}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000); }catch(e){ moreMsg('The app did not answer.',true); } };
 $('bLoad').onclick=()=>$('fLoad').click();
-$('fLoad').onchange=async e=>{ const f=e.target.files[0]; if(!f) return; const r=await api('/api/load',await f.text()); $('status').textContent=r.message; e.target.value=''; };
-$('bQuit').onclick=async()=>{ stopped=true; await api('/api/quit',{}).catch(()=>{}); document.body.innerHTML='<div id="offline">THE TRAINER HAS STOPPED · YOU CAN CLOSE THIS WINDOW</div>'; };
+$('fLoad').onchange=async e=>{ const f=e.target.files[0]; e.target.value=''; if(!f) return;
+  try{ const text=await f.text(), r=await api('/api/load',text); moreMsg(r.message||(r.ok?'Loaded.':'Could not load that file.'),!r.ok); if(r.ok) adoptShape(text); }
+  catch(err){ moreMsg('Could not load that file.',true); } };
+// A loaded network keeps training only if the settings have its shape: take it over (and send it when training).
+function adoptShape(text){ let j; try{ j=JSON.parse(text); }catch(e){ return; }
+  const a=j.arch; if(!Array.isArray(a)||a.length<3) return; const hid=a.slice(1,-1);
+  if(hid.some(n=>n!==hid[0])){ moreMsg('Loaded, but its layers differ in width, which these settings cannot express: training would start a new network.',true); return; }
+  const want={layers:hid.length,width:hid[0],K:j.K|0,mem:j.memory?1:0};
+  if(Object.entries(want).every(([k,v])=>S[k]===v)) return;
+  Object.assign(S,want); refreshAll(); changed(); moreMsg(`Loaded; network settings changed to its shape (${a.join(' → ')}).`);
+}
+$('bQuit').onclick=async()=>{ stopped=true; clearTimeout(pollTimer); clearTimeout(pushTimer); AC.abort();
+  await api('/api/quit',{}).catch(()=>{});
+  if($('dlg').open) $('dlg').close(); teardown3d(); $('ui').remove();
+  const o=$('offline'); o.textContent='The trainer has stopped · you can close this window'; o.hidden=false; };
 
 /* ---------------- dialogs: auto-tune results, network math, training guide ---------------- */
+const table=(head,rows,cls=()=>'')=>`<table><tr>${head.map(h=>`<th>${h}</th>`).join('')}</tr>${rows.map(r=>`<tr class="${cls(r)}">${r.cells.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</table>`;
+const swLayoutTxt=wg=>wg<0?'per battle':wg>0?'work-group '+wg:'—';
+let lastFocus=null;
 function openDlg(which){
-  $('dlg').hidden=false; const b=$('dlgBody');
+  const d=$('dlg'), b=$('dlgBody'), sw=S.mode===2;
   if(which==='results'){ $('dlgTitle').textContent='Auto-tune results';
-    if(!TUNE||!TUNE.ok){ b.innerHTML='<p>Run “Auto-tune for this computer” first.</p>'; return; }
-    const best=TUNE.best;
-    b.innerHTML=`<p>Measured on this machine with your current network (${arch().join(' → ')}). Options are ranked by generations per second at a population the optimizer can use well; peak speed is physics steps per second at the best batch size.</p>
-      <table><tr><th>Compute option</th><th>Generations/s</th><th>Peak speed</th><th>Batch (networks)</th><th>Work-group</th><th>Dispatch</th></tr>
-      ${TUNE.options.map(o=>`<tr class="${o.backend===best.backend?'best':''}"><td>${o.label}</td><td>${fmt(1/o.secPerGen,1)}</td><td>${fmt(o.stepsPerS/1e6,1)} M/s</td><td>${o.batchNetworks}</td><td>${o.backend==='cpu'?'—':o.wg<0?'per battle':o.wg}</td><td>${o.backend==='cpu'?'—':o.chunkMs+' ms'}</td></tr>`).join('')}</table>
-      <p><b style="color:var(--ok)">Applied:</b> ${best.label}, population ${best.pop}${best.islands?` in ${best.nIsl} islands`:''}, ${best.scen} scenarios per network. ${TUNE.note}</p>
-      <p>A bigger population makes each generation only slightly better while making it slower, so the population stays near 512 (CMA-ES) or 256 (GA). Spare capacity that costs at most 25% more time per generation goes into more scenarios per network, or into more islands when islands are on.</p>
-      <details><summary class="note">Every measurement</summary><table><tr><th>Option</th><th>Networks</th><th>Flights</th><th>Work-group</th><th>Dispatch</th><th>Speed</th><th>Batch time</th></tr>
-      ${TUNE.rows.map(r=>`<tr><td>${r.label}</td><td>${r.networks}</td><td>${r.flights}</td><td>${r.backend==='cpu'?'—':r.wg<0?'per battle':r.wg}</td><td>${r.backend==='cpu'?'—':r.chunkMs+' ms'}</td><td>${fmt(r.stepsPerS/1e6,1)} M/s</td><td>${fmt(r.sec,3)} s</td></tr>`).join('')}</table></details>`;
+    if(!TUNE||!TUNE.ok) b.innerHTML='<p>Run “Auto-tune for this computer” first.</p>';
+    else if(tunedSwarm(TUNE)){ const best=TUNE.best;
+      b.innerHTML=`<p>Measured on this machine with your current matchup (${S.attN} vs ${S.defN}${swSides().map(s=>`; ${sideName(s).toLowerCase()} ${swArch(s).join(' → ')}`).join('')}): one generation of battles on every compute option and GPU layout, ranked by generations per second.</p>
+        ${table(['Compute option','Generations/s','Ball-steps/s','Networks per side','Layout'],TUNE.options.map(o=>({o,cells:[esc(o.label),fmt(1/o.secPerGen,1),fmt(o.stepsPerS/1e6,1)+' M',fmt(o.batchNetworks),o.backend==='cpu'?'—':swLayoutTxt(o.wg)]})),r=>r.o.backend===best.backend?'best':'')}
+        <p><b style="color:var(--ok)">Applied:</b> ${esc(best.label)}${best.swLayout===2?', work-group per battle':best.swLayout===1?`, work-group ${best.wg}`:''}. ${esc(TUNE.note)}</p>
+        <details><summary>Every measurement</summary>${table(['Option','Networks','Battles','Layout','Ball-steps/s','Time'],TUNE.rows.map(r=>({cells:[esc(r.label),fmt(r.networks),fmt(r.flights),r.backend==='cpu'?'—':swLayoutTxt(r.wg),fmt(r.stepsPerS/1e6,1)+' M',fmt(r.sec,3)+' s']})))}</details>`; }
+    else { const best=TUNE.best;
+      b.innerHTML=`<p>Measured on this machine with your current network (${arch().join(' → ')}). Options are ranked by generations per second at a population the optimizer can use well; peak speed is physics steps per second at the best batch size.</p>
+        ${table(['Compute option','Generations/s','Peak speed','Batch (networks)','Work-group','Dispatch'],TUNE.options.map(o=>({o,cells:[esc(o.label),fmt(1/o.secPerGen,1),fmt(o.stepsPerS/1e6,1)+' M/s',fmt(o.batchNetworks),o.backend==='cpu'?'—':o.wg,o.backend==='cpu'?'—':o.chunkMs+' ms']})),r=>r.o.backend===best.backend?'best':'')}
+        <p><b style="color:var(--ok)">Applied:</b> ${esc(best.label)}, population ${fmt(best.pop)}${best.islands?` in ${best.nIsl} islands`:''}, ${best.scen} scenarios per network. ${esc(TUNE.note)}</p>
+        <p>A bigger population makes each generation only slightly better while making it slower, so the population stays near 512 (CMA-ES) or 256 (GA). Spare capacity that costs at most 25% more time per generation goes into more scenarios per network, or into more islands when islands are on.</p>
+        <details><summary>Every measurement</summary>${table(['Option','Networks','Flights','Work-group','Dispatch','Speed','Batch time'],TUNE.rows.map(r=>({cells:[esc(r.label),fmt(r.networks),fmt(r.flights),r.backend==='cpu'?'—':r.wg,r.backend==='cpu'?'—':r.chunkMs+' ms',fmt(r.stepsPerS/1e6,1)+' M/s',fmt(r.sec,3)+' s']})))}</details>`; }
   }
-  if(which==='math'){ $('dlgTitle').textContent='Network math'; const a=arch(), H=a.slice(1,-1), mem=S.mem?S.width:0;
-    b.innerHTML=`<table><tr><th>Network input</th><th>Numbers</th></tr><tr><td>Sensors now</td><td>29</td></tr>${S.K?`<tr><td>Past frames (K = ${S.K})</td><td>${29*S.K}</td></tr>`:''}${mem?`<tr><td>Memory from last decision</td><td>${mem}</td></tr>`:''}<tr><td><b>Total</b></td><td><b>${a[0]}</b></td></tr></table>
-      <div class="eq">h¹ = tanh( W·[x<sub>t</sub>${S.K?', past frames':''}]${mem?' + U·h<sub>t−1</sub>':''} + b )<br>${H.slice(1).map((_,i)=>`h${i+2} = tanh( W${i+2}·h${i+1} + b )`).join('<br>')}${H.length>1?'<br>':''}u = tanh( V·h + c ) → throttle, pitch, yaw</div>
-      <table><tr><th>Weights</th><th>Count</th></tr><tr><td>Input layer</td><td>${fmt(a[0]*a[1]+a[1])}</td></tr>${H.length>1?`<tr><td>Deeper hidden layers</td><td>${fmt(H.slice(1).reduce((s,n,i)=>s+n*H[i]+n,0))}</td></tr>`:''}<tr><td>Output layer</td><td>${fmt(H.at(-1)*3+3)}</td></tr><tr><td><b>Total</b></td><td><b>${fmt(nWeights(a))}</b></td></tr></table>
-      <p>The brain decides every ${S.dt*1000*(S.everyStep?1:2)} ms (physics every ${S.dt*1000} ms).</p>`;
+  if(which==='math'){ $('dlgTitle').textContent='Network math';
+    const every=`<p>The brain decides every ${Math.round(S.dt*1000*(S.everyStep?1:2))} ms (physics every ${Math.round(S.dt*1000)} ms).</p>`;
+    const weights=a=>{ const H=a.slice(1,-1); return table(['Weights','Count'],[{cells:['Input layer',fmt(a[0]*a[1]+a[1])]},...(H.length>1?[{cells:['Deeper hidden layers',fmt(H.slice(1).reduce((s,n,i)=>s+n*H[i]+n,0))]}]:[]),
+      {cells:['Output layer',fmt(H.at(-1)*a.at(-1)+a.at(-1))]},{cells:['<b>Total</b>',`<b>${fmt(nWeights(a))}</b>`]}]); };
+    const layers=(H,x,out)=>`<div class="eq">h¹ = tanh( W·${x} + b )<br>${H.slice(1).map((_,i)=>`h${i+2} = tanh( W${i+2}·h${i+1} + b )`).join('<br>')}${H.length>1?'<br>':''}u = tanh( V·h + c ) → ${out}</div>`;
+    if(sw){ const sides=swSides();
+      b.innerHTML=sides.length?sides.map(s=>{ const a=swArch(s), cmd=s?S.defCmd:S.attCmd, own=s?S.defN:S.attN, en=s?S.attN:S.defN, H=a.slice(1,-1);
+        const ins=cmd?[{cells:[`Own balls (${own} × 13)`,own*13]},{cells:[`Enemy balls (${en} × 7)`,en*7]}]
+          :[{cells:['Own sensors',29]},{cells:[`${S.swK} nearest enemies (× 7)`,7*S.swK]},{cells:[`${S.swK} nearest teammates (× 7)`,7*S.swK]}];
+        return `<h3>${sideName(s)}: ${cmd?'commander (one brain steers the whole side)':'nearest-K (every ball runs its own copy)'}</h3>
+          ${table(['Network input','Numbers'],[...ins,{cells:['<b>Total</b>',`<b>${a[0]}</b>`]}])}
+          ${layers(H,'x',cmd?`throttle, pitch, yaw for each of ${own} balls`:'throttle, pitch, yaw')}${weights(a)}`; }).join('')+every
+        :'<p>No AI side: both sides fly the guidance algorithm, so there is no network to train.</p>'; }
+    else { const a=arch(), H=a.slice(1,-1), mem=S.mem?S.width:0;
+      b.innerHTML=table(['Network input','Numbers'],[{cells:['Sensors now',29]},...(S.K?[{cells:[`Past frames (K = ${S.K})`,29*S.K]}]:[]),...(mem?[{cells:['Memory from last decision',mem]}]:[]),{cells:['<b>Total</b>',`<b>${a[0]}</b>`]}])
+        +layers(H,`[x<sub>t</sub>${S.K?', past frames':''}]${mem?' + U·h<sub>t−1</sub>':''}`,'throttle, pitch, yaw')+weights(a)+every; }
   }
   if(which==='guide'){ $('dlgTitle').textContent='Training guide';
     b.innerHTML=`<ul>
@@ -412,17 +599,22 @@ function openDlg(which){
       <li><b>Scenarios per network:</b> 16–32 once it hits; keep scenarios 5–10 generations so networks are compared on the same tests.</li>
       <li><b>Memory neurons and past frames</b> help when the task needs history; start with K = 1–2 before memory neurons.</li>
       <li><b>Intercept:</b> start with no noise, delay or weaving and a 7 km runner range; add difficulty once Validation is high. Each mode keeps its own network.</li>
+      <li><b>Swarm:</b> start small (a few balls a side, Nearest-K) and train one side against the algorithm before AI vs AI. Stars are kept per side and matchup.</li>
       <li><b>Reward staying above 5 m</b> discourages skimming the ground in mid-flight; it is a small bonus, so hitting still matters most.</li>
       <li><b>Pitfalls:</b> decay ×0.9 freezes training within ~60 generations; speed reward too early makes it rush and miss; changing the network shape starts a fresh network.</li></ul>`;
   }
+  if(!d.open){ lastFocus=document.activeElement; d.showModal(); }
 }
 $('bResults').onclick=()=>openDlg('results'); $('bMath').onclick=()=>openDlg('math'); $('bGuide').onclick=()=>openDlg('guide');
-$('bDlgClose').onclick=()=>$('dlg').hidden=true;
-addEventListener('keydown',e=>{ if(e.key==='Escape') $('dlg').hidden=true; });
+$('bDlgClose').onclick=()=>$('dlg').close();
+$('dlg').addEventListener('close',()=>{ if(lastFocus?.isConnected) lastFocus.focus(); lastFocus=null; });   // Escape closes it too
 
 /* ---------------- 3D range: draws flights the app computed (rendering only: the simulation never runs here) ---------------- */
-const canvas=$('c'), renderer=new THREE.WebGLRenderer({canvas,antialias:true,logarithmicDepthBuffer:true,powerPreference:'high-performance'});
-renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.08;
+// Drawn on demand: the loop runs while something moves (a flight, a battle, a burst, the camera gliding or damping) and stops after.
+const canvas=$('c'); let renderer=null;
+try{ renderer=new THREE.WebGLRenderer({canvas,antialias:true,logarithmicDepthBuffer:true,powerPreference:'high-performance'});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.08; }
+catch(e){ renderer=null; }   // no WebGL: the page works without the 3D view
 const scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(0xa7b9c9,0.0000085);
 const camera=new THREE.PerspectiveCamera(55,1,1,600000); camera.position.set(-2500,1800,3500);
 const controls=new OrbitControls(camera,canvas); controls.enableDamping=true; controls.target.set(0,200,0); controls.maxDistance=150000; controls.maxPolarAngle=Math.PI*0.495;
@@ -492,8 +684,15 @@ const clouds=[];
 for(let i=0;i<46;i++){ const a=Math.random()*Math.PI*2, r=6000+Math.random()*110000, s=4000+Math.random()*7000;
   const c=new THREE.Sprite(new THREE.SpriteMaterial({map:cloudTex,transparent:true,opacity:0.55+Math.random()*0.3,depthWrite:false,color:0xf4f7fb}));
   c.position.set(Math.cos(a)*r,2600+Math.random()*2200,Math.sin(a)*r); c.scale.set(s,s*0.45,1); scene.add(c); clouds.push(c); }
-// flights
-const flights=[], fx=[]; const ballGeo=new THREE.SphereGeometry(1,24,16);
+// flights. Geometries every flight or battle uses are shared; the rest is freed when it leaves the scene.
+const flights=[], fx=[]; const ballGeo=new THREE.SphereGeometry(1,24,16), ringGeo=new THREE.RingGeometry(26,30,64), beamGeo=new THREE.CylinderGeometry(3,3,2400,12,1,true);
+const siteGeo=new THREE.CylinderGeometry(6,7,0.6,24), burstGeo=new THREE.RingGeometry(0.85,1,64);
+const swMat={att:new THREE.MeshStandardMaterial({color:0xff5a4e,emissive:0xff5a4e,emissiveIntensity:0.55,roughness:0.25}),def:new THREE.MeshStandardMaterial({color:0x5fd1ff,emissive:0x5fd1ff,emissiveIntensity:0.55,roughness:0.25})};
+const siteMats={}, siteMat=c=>siteMats[c]||=new THREE.MeshStandardMaterial({color:c,roughness:0.7});
+const radarMat=new THREE.MeshBasicMaterial({color:0x58e0a0,transparent:true,opacity:0.22,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending});
+const SHARED=new Set([ballGeo,ringGeo,beamGeo,siteGeo,burstGeo,swMat.att,swMat.def,radarMat]);
+function drop(...objs){ for(const o of objs){ if(!o) continue; scene.remove(o);
+  o.traverse(n=>{ if(n.geometry&&!SHARED.has(n.geometry)) n.geometry.dispose(); if(n.material&&!SHARED.has(n.material)&&!Object.values(siteMats).includes(n.material)) n.material.dispose(); }); } }
 const res=new THREE.Vector2();
 function addFlight(f,i){
   const hue=(0.55+i*0.11)%1, color=new THREE.Color().setHSL(hue,0.8,0.62), hot=new THREE.Color(0xffc070);
@@ -508,27 +707,26 @@ function addFlight(f,i){
   const sg=new THREE.BufferGeometry(); sg.setAttribute('position',new THREE.Float32BufferAttribute(f.points.flatMap(p=>[p[0],1.5,p[2]]),3)); sg.setDrawRange(0,1);
   const shadow=new THREE.Line(sg,new THREE.LineBasicMaterial({color:0x000000,transparent:true,opacity:0.28,depthWrite:false})); shadow.frustumCulled=false; scene.add(shadow);
   const dg=new THREE.BufferGeometry(); dg.setAttribute('position',new THREE.Float32BufferAttribute([0,0,0,0,0,0],3));
-  const drop=new THREE.Line(dg,new THREE.LineBasicMaterial({color,transparent:true,opacity:0.35,depthWrite:false})); drop.frustumCulled=false; scene.add(drop);
-  const ring=new THREE.Mesh(new THREE.RingGeometry(26,30,64),new THREE.MeshBasicMaterial({color:0x6fe39a,side:THREE.DoubleSide,transparent:true,opacity:0.9,depthWrite:false}));
+  const drop_=new THREE.Line(dg,new THREE.LineBasicMaterial({color,transparent:true,opacity:0.35,depthWrite:false})); drop_.frustumCulled=false; scene.add(drop_);
+  const ring=new THREE.Mesh(ringGeo,new THREE.MeshBasicMaterial({color:0x6fe39a,side:THREE.DoubleSide,transparent:true,opacity:0.9,depthWrite:false}));
   ring.rotation.x=-Math.PI/2; ring.position.set(f.target[0],1.2,f.target[2]); scene.add(ring);
-  const beam=new THREE.Mesh(new THREE.CylinderGeometry(3,3,2400,12,1,true),new THREE.MeshBasicMaterial({color:0x6fe39a,transparent:true,opacity:0.16,blending:THREE.AdditiveBlending,depthWrite:false}));
+  const beam=new THREE.Mesh(beamGeo,new THREE.MeshBasicMaterial({color:0x6fe39a,transparent:true,opacity:0.16,blending:THREE.AdditiveBlending,depthWrite:false}));
   beam.position.set(f.target[0],1200,f.target[2]); scene.add(beam);
-  const fl={f,g,glow,trail,shadow,drop,ring,beam,t:0,done:false,color,dt:FLY_DT,phase:Math.random()*6};
-  if(f.runner) addRunner(fl);
+  const fl={f,g,glow,trail,shadow,drop:drop_,ring,beam,t:0,done:false,color,dt:FLY_DT,phase:Math.random()*6};
+  if(f.runner) addRunner(fl); else fl.sites=[addSite(f.points[0],0x2f5d73)];   // reach: each press launches from a new spot
   flights.push(fl);
 }
+const dropFlight=fl=>{ drop(fl.g,fl.trail,fl.shadow,fl.drop,fl.ring,fl.beam,...(fl.sites||[])); if(fl.run) drop(fl.run.g,fl.run.trail); };
+const reachDist=f=>Math.hypot(f.target[0]-f.points[0][0],f.target[2]-f.points[0][2]);   // launch to goal, not from the arena's centre
 // Intercept: the runner (red) and launch sites (red: runner, blue: yours); played in lockstep with your ball.
-const siteMat=c=>new THREE.MeshStandardMaterial({color:c,roughness:0.7});
-function addSite(p,color){ const m=new THREE.Mesh(new THREE.CylinderGeometry(6,7,0.6,24),siteMat(color)); m.position.set(p[0],0.3,p[2]); scene.add(m); return m; }
+function addSite(p,color){ const m=new THREE.Mesh(siteGeo,siteMat(color)); m.position.set(p[0],0.3,p[2]); scene.add(m); return m; }
 // Radar: a ground ring at its range around your pad, a faint dome, and a rotating sweep beam.
-const radarMat=new THREE.MeshBasicMaterial({color:0x58e0a0,transparent:true,opacity:0.22,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending});
 function addRadar(p,R){
   const g=new THREE.Group(); g.position.set(p[0],1,p[2]);
   const ringPts=[]; for(let i=0;i<=128;i++){ const a=i/128*Math.PI*2; ringPts.push(new THREE.Vector3(Math.cos(a)*R,0,Math.sin(a)*R)); }
   g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ringPts),new THREE.LineBasicMaterial({color:0x7dffc0,transparent:true,opacity:0.95})));
-  const dome=new THREE.Mesh(new THREE.SphereGeometry(R,48,16,0,Math.PI*2,0,Math.PI/2),new THREE.MeshBasicMaterial({color:0x58e0a0,wireframe:true,transparent:true,opacity:0.16,depthWrite:false}));
-  g.add(dome);
-  const sweep=new THREE.Mesh(new THREE.CircleGeometry(R,32,0,Math.PI/9),radarMat); sweep.rotation.x=-Math.PI/2; 
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(R,48,16,0,Math.PI*2,0,Math.PI/2),new THREE.MeshBasicMaterial({color:0x58e0a0,wireframe:true,transparent:true,opacity:0.16,depthWrite:false})));
+  const sweep=new THREE.Mesh(new THREE.CircleGeometry(R,32,0,Math.PI/9),radarMat); sweep.rotation.x=-Math.PI/2;
   const spin=new THREE.Group(); spin.add(sweep); g.add(spin);
   scene.add(g); return {g,spin};
 }
@@ -539,52 +737,62 @@ function addRunner(fl){
   const lm=new LineMaterial({linewidth:2.2,color:0xff5a4e,transparent:true,opacity:0.9}); lm.resolution=res;
   const trail=new Line2(lg,lm); trail.frustumCulled=false; scene.add(trail);
   fl.run={g,trail,done:false}; fl.sites=[addSite(f.runnerStart,0x8a3a32),addSite(f.start,0x2f5d73)];
-  if(RADAR>0){ fl.radar=addRadar(f.start,RADAR); fl.radar.g.visible=view3d; fl.sites.push(fl.radar.g); }
+  if(RADAR>0){ fl.radar=addRadar(f.start,RADAR); fl.sites.push(fl.radar.g); }
 }
 function burst(pos,hit){   // hit: green shock ring + white flash; miss: grey dust puff
-  const ring=new THREE.Mesh(new THREE.RingGeometry(0.85,1,64),new THREE.MeshBasicMaterial({color:hit?0x9dffc0:0xc8bca8,side:THREE.DoubleSide,transparent:true,depthWrite:false,blending:hit?THREE.AdditiveBlending:THREE.NormalBlending}));
+  const ring=new THREE.Mesh(burstGeo,new THREE.MeshBasicMaterial({color:hit?0x9dffc0:0xc8bca8,side:THREE.DoubleSide,transparent:true,depthWrite:false,blending:hit?THREE.AdditiveBlending:THREE.NormalBlending}));
   ring.rotation.x=-Math.PI/2; ring.position.set(pos.x,2,pos.z); scene.add(ring);
   const flash=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTex,color:hit?0xeafff0:0xb8ad9a,transparent:true,depthWrite:false,blending:hit?THREE.AdditiveBlending:THREE.NormalBlending}));
   flash.position.copy(pos); scene.add(flash); fx.push({ring,flash,age:0,hit});
 }
-let RADAR=0, FLY_DT=0.05, timeScale=2, easy=true, camGoal=null, view3d=true, follow=null, followDir=new THREE.Vector3(1,0,0), followEnd=0, followAuto=0;
-controls.addEventListener('start',()=>{ camGoal=null; followAuto=0; });   // the user takes the camera: stop gliding; a chase keeps following at the user's angle
+let RADAR=0, FLY_DT=0.05, timeScale=2, camGoal=null, view3d=true, follow=null, followDir=new THREE.Vector3(1,0,0), followEnd=0, followAuto=0;
+controls.addEventListener('start',()=>{ camGoal=null; followAuto=0; wake(); });   // the user takes the camera: stop gliding; a chase keeps following at the user's angle
+controls.addEventListener('change',()=>wake());
+// The log under Watch: newest first, at most 8 lines.
+function logEmpty(text){ if(stopped) return; const p=document.createElement('p'); p.className='empty'; p.textContent=text||(S.mode===2?'Press Launch to watch a battle.':'Press Fly to watch the star ball.'); $('log').replaceChildren(p); }
+function pushLog(cells,ok,chip){ if(stopped) return; const el=document.createElement('div');
+  for(const [t,color] of cells){ const s=document.createElement('span'); s.textContent=t; if(color) s.style.color=color; el.append(s); }
+  const c=document.createElement('span'); c.className='chip'; c.style.color=ok?'var(--ok)':'var(--bad)'; c.textContent=chip; el.append(c);
+  const log=$('log'); log.querySelector('.empty')?.remove(); log.prepend(el); while(log.children.length>8) log.lastChild.remove(); }
 async function fly(n){
   $('bFly1').disabled=$('bFly5').disabled=true;
   try{ const r=await api('/api/fly',{...cfg(),count:n,dist:+$('sDist').value});
-    if(r.error){ $('log').innerHTML=`<div class="sub">${r.error}: press Train first.</div>`; return; }
+    if(r.error){ logEmpty(r.error+': press Train first.'); return; }
+    if(!r.flights?.length) return;
     FLY_DT=r.dt; RADAR=r.radar||0; const base=flights.length; r.flights.forEach((f,i)=>addFlight(f,base+i));
-    if(!view3d){ for(const fl of flights.slice(base)){ fl.done=true; fl.trail.geometry.instanceCount=fl.f.points.length-1; fl.glow.material.opacity=0;
+    for(let i=0;flights.length>24&&i<flights.length;){ const fl=flights[i]; if(fl.done&&fl!==follow){ dropFlight(fl); flights.splice(i,1); } else i++; }   // keep the scene small
+    const mine=flights.slice(-r.flights.length);
+    if(!view3d||!renderer){ for(const fl of mine){ fl.done=true; fl.trail.geometry.instanceCount=fl.f.points.length-1; fl.glow.material.opacity=0;
       if(fl.run){ fl.run.done=true; fl.run.trail.geometry.instanceCount=fl.f.runner.length-1; fl.run.g.visible=false; } logFlight(fl); } return; }
-    if(n===1){ follow=flights[base]; followEnd=0; followAuto=1; camGoal=null; return; }   // a single flight: chase it
+    wake();
+    if(n===1){ follow=mine[0]; followEnd=0; followAuto=1; camGoal=null; return; }   // a single flight: chase it
     follow=null;
-    let mx=0; for(const f of r.flights) mx=Math.max(mx,Math.hypot(f.target[0],f.target[2]));
-    const tgt=r.flights[0].target;
+    let mx=0; for(const f of r.flights) mx=Math.max(mx,reachDist(f));
+    const tgt=r.flights[0].target, s0=r.flights[0].points[0];
     if(r.mode==='tag'){ const rr=7000, t=new THREE.Vector3(tgt[0],500,tgt[2]), side=new THREE.Vector3(1,0,0.6).normalize().multiplyScalar(rr*1.2);
       camGoal={ target:t, pos:t.clone().add(side).setY(rr*0.5) }; }
-    else camGoal={ target:new THREE.Vector3(tgt[0]*0.5,300,tgt[2]*0.5), pos:new THREE.Vector3(tgt[0]*0.5-tgt[2]*0.9,900+mx*0.25,tgt[2]*0.5+tgt[0]*0.9) };
-  } finally { $('bFly1').disabled=$('bFly5').disabled=false; }
+    else { const dx=tgt[0]-s0[0], dz=tgt[2]-s0[2], cx=s0[0]+dx*0.5, cz=s0[2]+dz*0.5;   // beside the middle of launch to goal
+      camGoal={ target:new THREE.Vector3(cx,300,cz), pos:new THREE.Vector3(cx-dz*0.9,900+mx*0.25,cz+dx*0.9) }; }
+  }catch(e){ logEmpty('The app did not answer.'); }
+  finally{ if(!stopped) $('bFly1').disabled=$('bFly5').disabled=false; }
 }
-function logFlight(fl){ const f=fl.f, el=document.createElement('div');
-  if(f.runner) el.innerHTML=`<span style="color:#${fl.color.getHexString()}">● tag</span><span>${f.hit?fmt(f.t,1)+' s':fmt(f.closest)+' m off'+(f.escaped?' · runner got through':'')}</span><span class="chip" style="color:${f.hit?'var(--ok)':'var(--bad)'}">${f.hit?'TAGGED':'MISS'}</span>`;
-  else el.innerHTML=`<span style="color:#${fl.color.getHexString()}">● ${fmt(Math.hypot(f.target[0],f.target[2])/1000,1)} km</span><span>${f.hit?fmt(f.t,1)+' s':fmt(f.closest)+' m off'}</span><span class="chip" style="color:${f.hit?'var(--ok)':'var(--bad)'}">${f.hit?'HIT':'MISS'}</span>`;
-  const log=$('log'); if(log.firstChild&&log.firstChild.classList?.contains('sub')) log.innerHTML=''; log.prepend(el); while(log.children.length>8) log.lastChild.remove(); }
+function logFlight(fl){ const f=fl.f, col='#'+fl.color.getHexString();
+  if(f.runner) pushLog([['● intercept',col],[f.hit?fmt(f.t,1)+' s':fmt(f.closest)+' m off'+(f.escaped?' · runner got through':'')]],f.hit,f.hit?'CAUGHT':'MISS');
+  else pushLog([[`● ${fmt(reachDist(f)/1000,1)} km`,col],[f.hit?fmt(f.t,1)+' s':fmt(f.closest)+' m off']],f.hit,f.hit?'HIT':'MISS'); }
 $('bFly1').onclick=()=>fly(1); $('bFly5').onclick=()=>fly(5);
 // Swarm: one battle, every ball. Balls are shaped like flights ({f:{points}, g, t, dt, done}) so the chase cam can follow them.
 let battle=null, viewSide=1, viewIdx=0;
-const swMat={att:new THREE.MeshStandardMaterial({color:0xff5a4e,emissive:0xff5a4e,emissiveIntensity:0.55,roughness:0.25}),def:new THREE.MeshStandardMaterial({color:0x5fd1ff,emissive:0x5fd1ff,emissiveIntensity:0.55,roughness:0.25})};
-function clearBattle(){ if(!battle) return; for(const b of battle.balls){ scene.remove(b.g,b.trail); b.trail.geometry.dispose(); b.trail.material.dispose(); }
-  scene.remove(...battle.extra); battle=null; if(follow&&follow.battle) follow=null; }
+function clearBattle(){ if(!battle) return; for(const b of battle.balls) drop(b.g,b.trail); drop(...battle.extra); battle=null; if(follow&&follow.battle) follow=null; }
 function addBattle(r){
   clearBattle(); const tgt=r.target, extra=[];
-  const ring=new THREE.Mesh(new THREE.RingGeometry(26,30,64),new THREE.MeshBasicMaterial({color:0xffd166,side:THREE.DoubleSide,transparent:true,opacity:0.9,depthWrite:false}));
+  const ring=new THREE.Mesh(ringGeo,new THREE.MeshBasicMaterial({color:0xffd166,side:THREE.DoubleSide,transparent:true,opacity:0.9,depthWrite:false}));
   ring.rotation.x=-Math.PI/2; ring.position.set(tgt[0],1.2,tgt[2]); scene.add(ring); extra.push(ring);
-  const beam=new THREE.Mesh(new THREE.CylinderGeometry(3,3,2400,12,1,true),new THREE.MeshBasicMaterial({color:0xffd166,transparent:true,opacity:0.16,blending:THREE.AdditiveBlending,depthWrite:false}));
+  const beam=new THREE.Mesh(beamGeo,new THREE.MeshBasicMaterial({color:0xffd166,transparent:true,opacity:0.16,blending:THREE.AdditiveBlending,depthWrite:false}));
   beam.position.set(tgt[0],1200,tgt[2]); scene.add(beam); extra.push(beam);
   let radar=null; if(r.radar>0){ radar=addRadar(tgt,r.radar); extra.push(radar.g); }
   const balls=r.balls.map((b,i)=>{ const side=b.side, col=side==='att'?0xff6a5e:0x5fd1ff;
     const g=new THREE.Group(); g.add(new THREE.Mesh(ballGeo,swMat[side])); scene.add(g);
-    const pad=addSite(b.points[0],side==='att'?0x8a3a32:0x2f5d73); extra.push(pad);
+    extra.push(addSite(b.points[0],side==='att'?0x8a3a32:0x2f5d73));
     const lg=new LineGeometry(); lg.setPositions(b.points.flatMap(p=>[p[0],p[1],p[2]])); lg.instanceCount=0;
     const lm=new LineMaterial({linewidth:2,color:col,transparent:true,opacity:0.85}); lm.resolution=res;
     const trail=new Line2(lg,lm); trail.frustumCulled=false; scene.add(trail);
@@ -593,33 +801,35 @@ function addBattle(r){
 }
 function battleSide(side){ return battle?battle.balls.filter(b=>b.side===(side?'def':'att')):[]; }
 function followBall(step){ const list=battleSide(viewSide).filter(b=>!b.done); if(!list.length){ follow=null; return; }
-  viewIdx=((viewIdx+step)%list.length+list.length)%list.length; follow=list[viewIdx]; followEnd=0; followAuto=1; camGoal=null; }
+  viewIdx=((viewIdx+step)%list.length+list.length)%list.length; follow=list[viewIdx]; followEnd=0; followAuto=1; camGoal=null; wake(); }
 function overview(){ if(!battle) return; follow=null; const t=battle.r.target, a=battle.r.balls.find(b=>b.side==='att').points[0];
   const v=new THREE.Vector3(a[0]-t[0],0,a[2]-t[2]), R=Math.max(3000,v.length()); v.normalize();
   const c=new THREE.Vector3(t[0]+v.x*R*0.45,600,t[2]+v.z*R*0.45), side=new THREE.Vector3(-v.z,0,v.x).multiplyScalar(R*0.9);
-  camGoal={target:c, pos:c.clone().add(side).setY(R*0.55)}; }
-$('vwAtt').onclick=()=>{ viewSide=0; $('vwAtt').classList.add('on'); $('vwDef').classList.remove('on'); viewIdx=0; followBall(0); };
-$('vwDef').onclick=()=>{ viewSide=1; $('vwDef').classList.add('on'); $('vwAtt').classList.remove('on'); viewIdx=0; followBall(0); };
+  camGoal={target:c, pos:c.clone().add(side).setY(R*0.55)}; wake(); }
+const setView=s=>{ viewSide=s; press($('vwAtt'),!s); press($('vwDef'),!!s); viewIdx=0; };
+setView(1); $('vwAtt').onclick=()=>{ setView(0); followBall(0); }; $('vwDef').onclick=()=>{ setView(1); followBall(0); };
 $('bPrev').onclick=()=>followBall(-1); $('bNext').onclick=()=>followBall(1); $('bOver').onclick=overview;
-addEventListener('keydown',e=>{ if(S.mode!==2||e.target.tagName==='INPUT') return; if(e.key==='[') followBall(-1); if(e.key===']') followBall(1); });
-function logBattle(r){ const el=document.createElement('div'), n=r.attN;
-  el.innerHTML=`<span>● ${r.attN} vs ${r.defN}</span><span>${r.catches} caught · ${r.leaks} leaked · ${fmt(r.t,0)} s</span><span class="chip" style="color:${r.leaks?'var(--bad)':'var(--ok)'}">${r.leaks?r.leaks+'/'+n+' THROUGH':'HELD'}</span>`;
-  const log=$('log'); if(log.firstChild&&log.firstChild.classList?.contains('sub')) log.innerHTML=''; log.prepend(el); while(log.children.length>8) log.lastChild.remove(); }
+on(window,'keydown',e=>{ if(S.mode!==2||$('dlg').open||/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return; if(e.key==='[') followBall(-1); if(e.key===']') followBall(1); });
+function logBattle(r){ pushLog([[`● ${r.attN} vs ${r.defN}`],[`${r.catches} caught · ${r.leaks} leaked · ${fmt(r.t,0)} s`]],!r.leaks,r.leaks?r.leaks+'/'+r.attN+' THROUGH':'HELD'); }
 $('bLaunch').onclick=async()=>{ $('bLaunch').disabled=true;
-  try{ const r=await api('/api/battle',cfg()); if(r.error){ $('log').innerHTML=`<div class="sub">${r.error}: press Train first, or set both sides to Algorithm.</div>`; return; }
-    if(!view3d){ logBattle(r); return; }
-    addBattle(r); viewIdx=0; followBall(0);
-  } finally { $('bLaunch').disabled=false; } };
-function clearFlights(){ clearBattle(); for(const fl of flights){ scene.remove(fl.g,fl.trail,fl.shadow,fl.drop,fl.ring,fl.beam); fl.trail.geometry.dispose(); fl.trail.material.dispose(); fl.shadow.geometry.dispose();
-    if(fl.run){ scene.remove(fl.run.g,fl.run.trail,...fl.sites); fl.run.trail.geometry.dispose(); fl.run.trail.material.dispose(); } }
-  for(const e of fx) scene.remove(e.ring,e.flash); fx.length=0; flights.length=0; follow=null; $('log').innerHTML='<div class="sub">Flights are computed by the app and drawn here.</div>'; }
+  try{ const r=await api('/api/battle',cfg()); if(r.error){ logEmpty(r.error+': press Train first, or set both sides to Algorithm.'); return; }
+    if(!view3d||!renderer){ logBattle(r); return; }
+    addBattle(r); viewIdx=0; followBall(0); wake();
+  }catch(e){ logEmpty('The app did not answer.'); }
+  finally{ if(!stopped) $('bLaunch').disabled=false; } };
+function clearFlights(){ clearBattle(); for(const fl of flights) dropFlight(fl);
+  for(const e of fx) drop(e.ring,e.flash); fx.length=0; flights.length=0; follow=null; logEmpty(); wake(); }
 $('bClear').onclick=clearFlights;
-{ const d=$('sDist'), ts=$('sTs'); const u=()=>{ $('vDist').textContent=+d.value?fmt(+d.value/1000,0)+' km':'random'; $('vTs').textContent=ts.value+'×'; timeScale=+ts.value; };
+{ const d=$('sDist'), ts=$('sTs'); const u=()=>{ $('vDist').textContent=+d.value?fmt(+d.value/1000,0)+' km':'random'; $('vTs').textContent=ts.value+'×'; timeScale=+ts.value;
+    d.setAttribute('aria-valuetext',$('vDist').textContent); ts.setAttribute('aria-valuetext',$('vTs').textContent); };
   d.oninput=u; ts.oninput=u; u(); }
-function resize(){ renderer.setSize(innerWidth,innerHeight,false); camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
-  renderer.getDrawingBufferSize(res); drawChart(); }
-addEventListener('resize',resize); resize();
+function resize(){ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  if(renderer){ renderer.setSize(innerWidth,innerHeight,false); renderer.getDrawingBufferSize(res); } drawChart(); wake(); }
+on(window,'resize',resize);
 const clock=new THREE.Clock(), _v=new THREE.Vector3();
+let looping=false, quiet=0;
+function wake(){ if(!renderer||!view3d||stopped||looping) return; looping=true; quiet=0; clock.getDelta(); renderer.setAnimationLoop(frame); }
+function sleep3d(){ looping=false; renderer?.setAnimationLoop(null); }
 function frame(){
   const dt=Math.min(clock.getDelta(),0.05), now=clock.elapsedTime;
   const px=Math.tan(camera.fov*Math.PI/360)*2/innerHeight;
@@ -634,14 +844,15 @@ function frame(){
     if(follow.done){ followEnd+=dt; if(followEnd>2&&!follow.battle) follow=null; } }
   sky.position.copy(camera.position);
   for(const c of clouds){ c.position.x+=dt*6; if(c.position.x>120000) c.position.x-=240000; }
+  let active=false;
   for(const fl of flights){
     const P=fl.f.points, N=P.length;
-    if(fl.run&&!fl.run.done){ const RP=fl.f.runner, RN=RP.length, rk=Math.min(RN-1,(fl.t+(fl.done?dt*timeScale:0))/fl.dt), ri=Math.floor(rk), ra=rk-ri, p=RP[ri], q=RP[Math.min(RN-1,ri+1)];
+    if(fl.run&&!fl.run.done){ active=true; const RP=fl.f.runner, RN=RP.length, rk=Math.min(RN-1,(fl.t+(fl.done?dt*timeScale:0))/fl.dt), ri=Math.floor(rk), ra=rk-ri, p=RP[ri], q=RP[Math.min(RN-1,ri+1)];
       if(fl.done) fl.t+=dt*timeScale;   // your ball has ended; the runner flies on
       fl.run.g.position.set(p[0]+(q[0]-p[0])*ra,p[1]+(q[1]-p[1])*ra,p[2]+(q[2]-p[2])*ra); fl.run.trail.geometry.instanceCount=ri;
-      fl.run.g.scale.setScalar(easy?Math.max(1,camera.position.distanceTo(fl.run.g.position)*px*14/2):1);
+      fl.run.g.scale.setScalar(Math.max(1,camera.position.distanceTo(fl.run.g.position)*px*14/2));
       if(ri>=RN-1){ fl.run.done=true; fl.run.g.visible=false; if(!fl.f.hit) burst(fl.run.g.position.clone(),false); } }
-    if(!fl.done){ fl.t+=dt*timeScale; const k=Math.min(N-1,fl.t/fl.dt), i=Math.floor(k), a=k-i, p=P[i], q=P[Math.min(N-1,i+1)];
+    if(!fl.done){ active=true; fl.t+=dt*timeScale; const k=Math.min(N-1,fl.t/fl.dt), i=Math.floor(k), a=k-i, p=P[i], q=P[Math.min(N-1,i+1)];
       fl.g.position.set(p[0]+(q[0]-p[0])*a,p[1]+(q[1]-p[1])*a,p[2]+(q[2]-p[2])*a);
       const th=p[3]||0; fl.glow.material.opacity=0.1+0.85*th; fl.glow.scale.setScalar(3+5*th*(0.85+0.15*Math.sin(now*40+fl.phase)));
       fl.trail.geometry.instanceCount=i; fl.shadow.geometry.setDrawRange(0,i+1);
@@ -652,36 +863,43 @@ function frame(){
           if(!fl.f.escaped) burst(fl.g.position.clone(),fl.f.hit); }
         else burst(fl.g.position.clone(),fl.f.hit);
         if(fl.f.hit) fl.ring.material.color.set(0xffffff); } }
-    const d=camera.position.distanceTo(fl.g.getWorldPosition(_v)); fl.g.scale.setScalar(easy?Math.max(1,d*px*14/2):1);
+    const d=camera.position.distanceTo(fl.g.getWorldPosition(_v)); fl.g.scale.setScalar(Math.max(1,d*px*14/2));
     const dr=camera.position.distanceTo(fl.ring.position), tk=Math.max(1,dr*px*26/60); fl.ring.scale.setScalar(tk);
     if(!fl.done){ fl.beam.material.opacity=0.12+0.08*Math.sin(now*3+fl.phase); fl.beam.scale.set(tk,1,tk); }
+    if(fl.radar&&!(fl.done&&fl.run.done)) fl.radar.spin.rotation.y-=dt*1.6;   // ~4 s per sweep, while its flight plays
   }
-  for(const fl of flights) if(fl.radar) fl.radar.spin.rotation.y-=dt*1.6;   // ~4 s per sweep
-  if(battle){ const B=battle; B.t+=dt*timeScale; if(B.radar) B.radar.spin.rotation.y-=dt*1.6;
-    for(const b of B.balls){ if(b.done) continue; const P=b.f.points, N=P.length; b.t=B.t;
+  if(battle){ const B=battle; B.t+=dt*timeScale;
+    for(const b of B.balls){ if(b.done) continue; active=true; const P=b.f.points, N=P.length; b.t=B.t;
       const k=Math.min(N-1,B.t/b.dt), i=Math.floor(k), a=k-i, p=P[i], q=P[Math.min(N-1,i+1)];
       b.g.position.set(p[0]+(q[0]-p[0])*a,p[1]+(q[1]-p[1])*a,p[2]+(q[2]-p[2])*a); b.trail.geometry.instanceCount=i;
-      b.g.scale.setScalar(easy?Math.max(1,camera.position.distanceTo(b.g.position)*px*12/2):1);
+      b.g.scale.setScalar(Math.max(1,camera.position.distanceTo(b.g.position)*px*12/2));
       if(i>=N-1){ b.done=true; b.g.visible=false; if(follow===b){ followEnd=0; } } }
+    if(B.radar&&active) B.radar.spin.rotation.y-=dt*1.6;
     const ev=B.r.events; while(B.ev<ev.length&&ev[B.ev].t<=B.t){ const e=ev[B.ev++], pos=new THREE.Vector3(...e.pos);
       if(e.type==='catch') burst(pos,true); else if(e.type==='leak'){ burst(pos,false); B.ring.material.color.set(0xff4e4e); } else burst(pos,false); }
     if(follow&&follow.battle&&follow.done&&followEnd>1.5) followBall(0);   // the followed ball is gone: jump to the next one on that side
     if(!B.logged&&B.balls.every(b=>b.done)){ B.logged=true; logBattle(B.r); }
     const tk=Math.max(1,camera.position.distanceTo(B.ring.position)*px*26/60); B.ring.scale.setScalar(tk); B.beam.scale.set(tk,1,tk); }
   for(let j=fx.length-1;j>=0;j--){ const e=fx[j]; e.age+=dt; const t=e.age/(e.hit?1.6:1.2);
-    if(t>=1){ scene.remove(e.ring,e.flash); e.ring.geometry.dispose(); fx.splice(j,1); continue; }
+    if(t>=1){ drop(e.ring,e.flash); fx.splice(j,1); continue; }
     const dr=camera.position.distanceTo(e.ring.position), sc=Math.max(1,dr*px);
     e.ring.scale.setScalar((20+t*(e.hit?260:90))*sc*0.5); e.ring.material.opacity=(1-t)*(e.hit?0.9:0.5);
     e.flash.scale.setScalar((e.hit?60:30)*sc*(0.4+t)); e.flash.material.opacity=(1-t)*(1-t); }
-  controls.update(); renderer.render(scene,camera);
+  const moved=controls.update();
+  renderer.render(scene,camera);
+  // nothing moving for a few frames (camera damping settles too): stop until the next flight, camera move or resize
+  if(active||moved||camGoal||follow||fx.length) quiet=0; else if(++quiet>3) sleep3d();
 }
 // 3D on/off: off stops all drawing (no GPU work at all); training is unaffected either way
 try{ view3d=localStorage.getItem('brt-3d')!=='0'; }catch(e){}
-function set3d(on){ view3d=on; try{ localStorage.setItem('brt-3d',on?'1':'0'); }catch(e){}
-  $('b3d').classList.toggle('on',on); $('b3d').textContent=on?'3D on':'3D off'; canvas.style.visibility=on?'visible':'hidden';
-  if(on){ clock.getDelta(); renderer.setAnimationLoop(frame); } else renderer.setAnimationLoop(null); }
-$('b3d').onclick=()=>set3d(!view3d); set3d(view3d);
+function set3d(v){ view3d=v&&!!renderer; try{ localStorage.setItem('brt-3d',v?'1':'0'); }catch(e){}
+  press($('b3d'),view3d); canvas.style.visibility=view3d?'visible':'hidden';
+  if(view3d) wake(); else sleep3d(); }
+$('b3d').onclick=()=>set3d(!view3d); if(!renderer){ $('b3d').disabled=true; $('b3d').title='3D drawing (WebGL) is not available in this browser'; }
+function teardown3d(){ sleep3d(); controls.dispose(); clearBattle(); for(const fl of flights) dropFlight(fl); flights.length=0;
+  if(renderer){ renderer.dispose(); renderer.forceContextLoss(); renderer=null; } canvas.style.visibility='hidden'; }
 
-syncMode(); api('/api/mode',{mode:S.mode}).catch(()=>{}).finally(()=>{ loadHardware().catch(()=>{}); poll(); });
+logEmpty(); refreshAll(); resize(); set3d(view3d);
+api('/api/mode',{mode:S.mode}).catch(()=>{}).finally(()=>{ loadHardware().catch(()=>{}); poll(); });
 </script>
 </body></html>
