@@ -23,6 +23,7 @@ typedef struct {
   int attN, defN, attAI, defAI, attCmd, defCmd, swK;
   double rangeMax;   // swarm: attackers launch `range`–`rangeMax` from the defended point, from any direction
   int noEarly;       // swarm: never end a battle early (for checking the early-end shortcut)
+  int autoDiff; double diffAt;   // automatic difficulty: start easy, step up when validation reaches diffAt
   int imitate;    // a new network first copies the guidance algorithm (behaviour cloning)
   int normIn;     // standardise sensors with running statistics (reach and intercept)
   int restarts;   // restart the optimizer around the best network when validation stalls (BIPOP-style)
