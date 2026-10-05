@@ -1,7 +1,8 @@
 #ifndef BR_SW_LOCAL   // (the work-group battle kernel is built separately, with battle state on chip)
-// OpenCL kernel: one work-item = one flight, advanced `chunk` physics steps per dispatch.
+// OpenCL kernel: one work-item = one flight, advanced `chunk` physics steps per dispatch. Scenarios are global, not
+// __constant: each work-item reads a different one, and big sets would pass the 64 KB constant-buffer minimum.
 __kernel void br_kernel(__global float* state, __global const float* weights,
-                        __constant BrScen* scen, __constant BrParams* pp, __global volatile uint* alive,
+                        __global const BrScen* scen, __constant BrParams* pp, __global volatile uint* alive,
                         __global const int* idx, __global int* flags, __global const float* traj) {
   BrParams P = *pp;
   int gid = (int)get_global_id(0);

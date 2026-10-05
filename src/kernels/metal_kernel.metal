@@ -2,7 +2,7 @@
 // Metal compute kernel: one thread = one flight, advanced `chunk` physics steps per dispatch.
 kernel void br_kernel(device float* state [[buffer(0)]],
                       device const float* weights [[buffer(1)]],
-                      constant BrScen* scen [[buffer(2)]],
+                      device const BrScen* scen [[buffer(2)]],   // each thread reads a different one
                       constant BrParams& pp [[buffer(3)]],
                       device atomic_uint* alive [[buffer(4)]],
                       device const int* idx [[buffer(5)]],

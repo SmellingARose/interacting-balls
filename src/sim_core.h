@@ -1,4 +1,4 @@
-// Ball Arena — native simulation core: reach-goal mode and tag mode.
+// Ball Arena — native simulation core: reach-goal mode, intercept (tag) mode and swarm battles.
 // One source, three compilers: plain C (CPU backend), Metal Shading Language and OpenCL C.
 // One physics model, sensor set and network shared by the CPU and both GPU backends.
 // Tag mode: the chaser ball flies against a runner ball whose whole path was recorded beforehand (6 floats per
@@ -20,7 +20,13 @@
   #define FMAX fmax
   #define BR_U32 uint
 #elif defined(BR_OPENCL)
-  #define FN inline
+  // OpenCL C 1.2+ allows `static`: plain C99 `inline` gives no definition, and compilers that do not inline every call
+  // (pocl, Mesa) then leave the functions undefined. OpenCL C 1.1 has no `static`, so it must inline them all.
+  #if defined(__OPENCL_C_VERSION__) && __OPENCL_C_VERSION__ >= 120
+    #define FN static inline
+  #else
+    #define FN inline __attribute__((always_inline))
+  #endif
   #define BR_GP __global
   #define BR_PP
   #define SQRT sqrt
@@ -34,6 +40,7 @@
   #define BR_U32 uint
 #else
   #include <math.h>
+  #include <stdlib.h>
   #define FN static inline
   #define BR_GP
   #define BR_PP
@@ -49,7 +56,7 @@
 #endif
 
 #ifndef MAXW
-#define MAXW 288            // widest layer incl. the input layer (29 × 5 frames + 128 memory = 273)
+#define MAXW 288            // CPU: widest layer incl. the input layer (29 × 5 frames + 128 memory = 273); GPUs compile it to fit
 #endif
 #define BR_NI 29            // sensor features per decision
 #define BR_G 9.81f
@@ -92,9 +99,10 @@ typedef struct {
 } BrParams;
 
 // Goal (reach) or the runner's defended point (tag), wind, start, start tilt; tag: where this scenario's runner path
-// starts in the path buffer (in steps), how many steps it has, and the seed for this scenario's sensor noise.
-// atkHit: the runner reached its defended point; winnable: unused (keeps the struct at 64 bytes).
-typedef struct { float tx, ty, tz, wx, wy, wz, sx, sy, sz, q0, trajOff, trajLen, seed, atkHit, winnable, pad0; } BrScen;   // 64 bytes
+// starts in the path buffer (in steps; swarm: its start positions, in floats), how many steps it has, and the seed for
+// this scenario's sensor noise. The offset is trajHi·2^23 + trajOff, so write it with br_set_traj_off: one float is exact
+// only to 2^24, and big validation sets pack more steps than that. atkHit: the runner reached its defended point.
+typedef struct { float tx, ty, tz, wx, wy, wz, sx, sy, sz, q0, trajOff, trajLen, seed, atkHit, trajHi, pad0; } BrScen;   // 64 bytes
 
 // Per-flight state in a flat float buffer: [scalars | past frames (29·K) | memory (memN)]
 #define S_PX 0
@@ -131,7 +139,9 @@ typedef struct { float px, py, pz, vx, vy, vz, qx, qy, qz, qw, ox, oy, oz, t, mi
 typedef struct { float x, y, z, px, py, pz, vx, vy, vz, sx, sy, sz, svx, svy, svz; } BrTgt;
 
 FN float br_clamp(float x, float a, float b) { return x < a ? a : (x > b ? b : x); }
+FN long br_traj_off(BR_PP const BrScen* sc) { return (long)sc->trajHi * 8388608L + (long)sc->trajOff; }
 #if !defined(BR_METAL) && !defined(BR_OPENCL)
+FN void br_set_traj_off(BrScen* sc, long off) { sc->trajOff = (float)(off & 8388607L); sc->trajHi = (float)(off >> 23); }
 // CPU tanh: Padé (7,6) approximant (max error ~1e-4), about 2× faster than tanhf; GPUs use their hardware tanh.
 FN float br_tanh_fast(float x) { x = br_clamp(x, -4.97f, 4.97f); float x2 = x * x;
   return x * (135135 + x2 * (17325 + x2 * (378 + x2))) / (135135 + x2 * (62370 + x2 * (3150 + 28 * x2))); }
@@ -176,7 +186,7 @@ FN int br_target(BR_PP const BrState* s, BR_PP const BrParams* P, BR_PP const Br
   }
   int j = s->k + 1, L = (int)sc->trajLen;
   if (j >= L) return 0;
-  BR_GP const float* tr = traj + (long)sc->trajOff * 6;
+  BR_GP const float* tr = traj + br_traj_off(sc) * 6;
   BR_GP const float* a = tr + (long)j * 6; BR_GP const float* b = a - 6;
   tg->x = a[0]; tg->y = a[1]; tg->z = a[2]; tg->vx = a[3]; tg->vy = a[4]; tg->vz = a[5];
   tg->px = b[0]; tg->py = b[1]; tg->pz = b[2];
@@ -434,13 +444,13 @@ FN void br_run(BR_GP float* g, BR_PP const BrParams* P, BR_PP const BrScen* sc, 
 // network that sees its own target plus its swK nearest enemies and teammates) or commander (one network sees every
 // ball and steers every ball on its side). The battle state is one float block: a header, then SW_B floats per ball
 // (the per-flight S_* fields, then the SB_* fields). Start positions come from the host (SW_START floats per ball at
-// sc->trajOff in the `start` buffer), so CPU and GPU begin from bit-identical states.
+// br_traj_off(sc) in the `start` buffer), so CPU and GPU begin from bit-identical states.
 #define BR_SW_MAXA 32
 #define BR_SW_MAXD 32
 #define BR_SW_MAXB 64
 #define BR_SW_MAXK 8
 #ifndef SW_MAXW
-#define SW_MAXW 704         // widest swarm layer: commander inputs 13·32 own + 7·32 enemy = 640 (GPUs compile it to fit)
+#define SW_MAXW 704         // CPU: widest swarm layer: commander inputs 13·32 own + 7·32 enemy = 640 (GPUs compile it to fit)
 #endif
 #define SW_H 8              // header floats
 #define SWH_K 0             // physics steps done
@@ -489,7 +499,7 @@ FN int br_sw_nin_cmd(int own, int enemy) { return own * SW_NF_CMD_OWN + enemy * 
 FN void br_sw_init(BR_SG float* g, BR_PP const BrParams* P, BR_PP const BrScen* sc, BR_GP const float* start) {
   int nA = P->attN, nB = nA + P->defN;
   for (int i = 0; i < SW_H + nB * SW_B; i++) g[i] = 0.0f;
-  BR_GP const float* st = start + (long)sc->trajOff;
+  BR_GP const float* st = start + br_traj_off(sc);
   for (int b = 0; b < nB; b++) {
     BR_SG float* q = g + SW_H + b * SW_B; BR_GP const float* p = st + b * SW_START;
     q[S_PX] = p[0]; q[S_PY] = p[1]; q[S_PZ] = p[2]; q[S_QX] = p[3]; q[S_QW] = 1.0f; q[S_MIND] = 1e30f; q[S_ALIVE] = 1.0f;
@@ -767,16 +777,20 @@ FN void br_sw_run(BR_SG float* g, BR_PP const BrParams* P, BR_PP const BrScen* s
   BrParams PA = *P; PA.thrust = P->thrustAtk;   // attackers fly (and the algorithm steers them) with their own engine
   BR_U32 seed = (BR_U32)sc->seed;
   float a[SW_MAXW], b[SW_MAXW];
+#if !defined(BR_METAL) && !defined(BR_OPENCL)
+  // batch rows for the nearest-K sides, one per ball of the larger side: allocated per call, not thread-local (MinGW
+  // builds would then need libwinpthread). Without them every ball decides alone: the same sums in the same order.
+  int nkA = P->attAI && !P->attCmd, nkD = P->defAI && !P->defCmd; size_t rows = (size_t)(P->attN > P->defN ? P->attN : P->defN) * SW_MAXW;
+  float* X = nkA || nkD ? (float*)malloc(sizeof(float) * 2 * rows) : NULL; float* Y = X ? X + rows : NULL;
+#endif
   for (int it = 0; it < steps && g[SWH_DONE] == 0; it++) {
     int k = (int)g[SWH_K];
     if (k % P->ctrl == 0) {
       br_sw_assign(g, P);
       for (int side = 0; side < 2; side++) br_sw_decide_cmd(g, P, sc, wA, wD, side, seed, k, nz, a, b);
 #if !defined(BR_METAL) && !defined(BR_OPENCL)
-      { static _Thread_local float X[BR_SW_MAXA * SW_MAXW], Y[BR_SW_MAXA * SW_MAXW];   // per-thread batch buffers
-        for (int side = 0; side < 2; side++) if ((side ? P->defAI && !P->defCmd : P->attAI && !P->attCmd))
-          br_sw_decide_nk_side(g, P, sc, side ? wD : wA, side, seed, k, nz, X, Y); }
-      for (int bi = 0; bi < nB; bi++) { int att = bi < P->attN; if (att ? P->attAI : P->defAI) continue;   // networks done above
+      if (X) { if (nkA) br_sw_decide_nk_side(g, P, sc, wA, 0, seed, k, nz, X, Y); if (nkD) br_sw_decide_nk_side(g, P, sc, wD, 1, seed, k, nz, X, Y); }
+      for (int bi = 0; bi < nB; bi++) { if (X && (bi < P->attN ? P->attAI : P->defAI)) continue;   // networks decided above
         br_sw_decide_ball(g, P, &PA, sc, wA, wD, bi, seed, k, nz, a, b); }
 #else
       for (int bi = 0; bi < nB; bi++) br_sw_decide_ball(g, P, &PA, sc, wA, wD, bi, seed, k, nz, a, b);
@@ -786,6 +800,9 @@ FN void br_sw_run(BR_SG float* g, BR_PP const BrParams* P, BR_PP const BrScen* s
     for (int d = P->attN; d < nB; d++) br_sw_scan(g, P, d);
     br_sw_resolve(g, P, sc);
   }
+#if !defined(BR_METAL) && !defined(BR_OPENCL)
+  free(X);
+#endif
 }
 
 // Per-battle result: catches, leaks, closeness scores (sum over balls of −ln(closest/30 m), floored at the leak or catch

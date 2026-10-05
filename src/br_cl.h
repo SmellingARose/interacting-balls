@@ -1,5 +1,6 @@
-// Minimal OpenCL 1.2 declarations + a runtime loader. The GPU driver (AMD Adrenalin on Windows, ROCm/Mesa on Linux,
-// the system framework on macOS) provides the OpenCL library; nothing needs to be installed to build or run.
+// Minimal OpenCL 1.2 declarations + a runtime loader. The GPU driver (AMD, NVIDIA or Intel on Windows; ROCm, Mesa,
+// NVIDIA or Intel on Linux; the system framework on macOS) provides the OpenCL library; nothing needs to be installed
+// to build or run.
 #ifndef BR_CL_H
 #define BR_CL_H
 #include <stdint.h>
@@ -26,13 +27,18 @@ typedef struct _cl_event* cl_event;
 #define CL_DEVICE_TYPE_GPU (1 << 2)
 #define CL_DEVICE_TYPE_ALL 0xFFFFFFFF
 #define CL_DEVICE_TYPE 0x1000
+#define CL_DEVICE_VENDOR_ID 0x1001
 #define CL_DEVICE_MAX_COMPUTE_UNITS 0x1002
 #define CL_DEVICE_MAX_WORK_GROUP_SIZE 0x1004
+#define CL_DEVICE_MAX_CLOCK_FREQUENCY 0x100C
+#define CL_DEVICE_MAX_MEM_ALLOC_SIZE 0x1010
 #define CL_DEVICE_GLOBAL_MEM_SIZE 0x101F
+#define CL_DEVICE_LOCAL_MEM_SIZE 0x1023
 #define CL_DEVICE_NAME 0x102B
-#define CL_DEVICE_VENDOR 0x102C
+#define CL_DEVICE_HOST_UNIFIED_MEMORY 0x1035
 #define CL_PROGRAM_BUILD_LOG 0x1183
 #define CL_KERNEL_WORK_GROUP_SIZE 0x11B0
+#define CL_KERNEL_LOCAL_MEM_SIZE 0x11B2
 #define CL_MEM_READ_WRITE (1 << 0)
 #define CL_MEM_READ_ONLY (1 << 2)
 
