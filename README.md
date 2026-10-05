@@ -13,7 +13,7 @@ Native trainer for ball brains that fly thrust-vectored balls. Three modes:
 Training, auto-tune and flight playback run natively; a local window shows settings, live stats and a 3D range.
 
 ## Run
-Open the app (`Ball Arena Trainer.app` on Mac, `BallArenaTrainer.exe` on Windows), press
+Build it (see [Build](#build)) and run `build/brtrain`: it opens the app's window. Press
 **Auto-tune for this computer**, then **Train**. Watch **Validation** (the star on a fixed set of 64 scenarios it never trains on).
 Each mode keeps its own star ball: `~/BallArena-star-reach.json` and `~/BallArena-star-tag.json`; swarm stars are kept per side
 and matchup (`~/BallArena-star-swarm-nk-K2-defend.json`, `~/BallArena-star-swarm-cmd-A10-D3-attack.json`, …).
