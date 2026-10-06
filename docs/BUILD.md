@@ -116,7 +116,7 @@ HOME=$(mktemp -d) build/brtrain --compare --mode swarm --attackers 16 --defender
 
 | Flag | What it does |
 |---|---|
-| `--train [--gens N]` | Trains through the same service the app uses, for N generations (default 100), printing a line per generation. |
+| `--train [--gens N]` | Trains through the same service the app uses, for N generations (default 100), printing a line per generation (with a diversity option on, also its state after each validation). |
 | `--bench` | Times one batch (`--pop` networks × `--scen` scenarios) on the CPU, Metal and OpenCL device 0. Swarm: 1,024 battles on every option and GPU layout. |
 | `--compare` | Like `--bench`, and counts how many results match the CPU's. Here the GPUs fly every flight or battle to the end, without the [CPU tail](ARCHITECTURE.md#gpu-layouts). |
 | `--ceiling` | Intercept: how often the guidance algorithm, with perfect sensors, tags the runner on these settings (400 setups). With `--mode swarm`: 400 algorithm vs algorithm battles. |
@@ -145,6 +145,7 @@ HOME=$(mktemp -d) build/brtrain --compare --mode swarm --attackers 16 --defender
 | `--dt S`, `--tw X`, `--every-step` | Physics step in seconds; thrust-to-weight; decide every physics step. |
 | `--alt-reward` | Reward staying above 5 m. |
 | `--load FILE` | Starts from a saved Reach or Intercept network (it must match `--mode`). |
+| `--seed N` | Training's random seed. With `--backend cpu --no-imitate`, a run repeats exactly. |
 
 **Techniques**
 
@@ -154,6 +155,15 @@ HOME=$(mktemp -d) build/brtrain --compare --mode swarm --attackers 16 --defender
 | `--auto-diff` | Automatic difficulty (steps up at 80%). |
 | `--no-restarts`, `--no-norm` | No restarts; no sensor normalisation. |
 | `--val-every N` | Validate every N generations (default 10). |
+
+**Diversity search** (all off by default; see [diversity search](explainers/diversity.md))
+
+| Flag | What it does |
+|---|---|
+| `--novelty`, `--novelty-w X` | Novelty bonus: rank by score + X × novelty of behaviour (X = 0–5, default 0.5). |
+| `--nsr` | Novelty islands: with `--islands N`, every other island ranks by score and novelty (Reach, Intercept). |
+| `--map-elites` | Behaviour map searched by CMA-ME improvement ranking (Reach, Intercept). |
+| `--exploiters` | Swarm, AI vs AI: each side trains an exploiter of the other side's current star. |
 
 **Reach, Intercept and Swarm settings**
 

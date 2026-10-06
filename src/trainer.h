@@ -29,6 +29,11 @@ typedef struct {
   int restarts;   // restart the optimizer around the best network when validation stalls (BIPOP-style)
   int optKind;    // CMA family: 0 automatic (LM-MA-ES above 2,000 weights), 1 sep-CMA-ES, 2 LM-MA-ES
   int swLayout;   // GPU swarm layout (0 = automatic, 1 = thread per battle, 2 = work-group per battle), from auto-tune
+  // diversity search (all off by default). Behaviour of a network: two numbers averaged over its flights or battles
+  int novelty; double noveltyW;   // novelty bonus: score + noveltyW × novelty (reach, intercept, swarm)
+  int nsr;          // novelty islands (NSR-ES): every other island ranks by reward and novelty (reach, intercept; islands on)
+  int mapElites;    // behaviour map (MAP-Elites) searched by CMA-ME improvement emitters (reach, intercept)
+  int exploiters;   // swarm AI vs AI: each side trains a small exploiter against the other side's current star
 } TrainCfg;
 
 // Small growable string for JSON replies
@@ -48,7 +53,7 @@ void trainer_start(const TrainCfg* c);   // starts, or applies new settings to a
 void trainer_pause(void);
 void trainer_reset(const TrainCfg* c);   // forgets the network of c's mode (swarm: c's matchup); its files are kept as *.bak
 int  trainer_busy(void);                 // training or auto-tuning
-void trainer_status_json(Sb* out, int since);   // includes "cfg": the settings training uses
+void trainer_status_json(Sb* out, int since);   // includes "cfg": the settings training uses, and "diversity"
 void trainer_star_json(Sb* out);   // the kept (best validated) network, else the latest star
 int  trainer_load_json(const char* json, char* msg, int len);   // reach / intercept only; refuses a network saved in another mode
 void trainer_set_mode(int mode);   // saves the current star and loads that mode's own

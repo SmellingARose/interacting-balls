@@ -1,7 +1,8 @@
 # Training techniques
 
 Six helpers sit around the core [evolution strategy](evolution-strategies.md). Each fixes one way training can go
-wrong. The first four are switches in the **Techniques** section of the panel; the last two are always on.
+wrong. The first four are switches in the **Techniques** section of the panel; the last two are always on. Four more,
+off by default, keep the search varied: see [diversity search](diversity.md).
 
 ## Head start by imitation
 

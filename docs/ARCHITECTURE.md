@@ -48,7 +48,8 @@ One generation in Reach or Intercept:
 4. Each island's optimizer proposes networks (`cma_ask`, or the genetic algorithm).
 5. **Sensor normalisation** is folded into each network's first layer (`norm_fold`).
 6. The backend flies every network on every scenario (`eval`) and returns 5 numbers per flight.
-7. Scores (`fitness`) go back to the optimizers. The best network of the generation is the **star**.
+7. Scores (`fitness`) go back to the optimizers. The best network of the generation is the **star**. With a
+   [diversity option](#training-techniques) on, the optimizers rank by a value that also rewards new behaviour.
 8. Every 10 generations: validation, the kept network, the difficulty check, the restart check, then the save.
 
 In short: settings → `curriculum` → scenarios → `cma_ask` → `norm_fold` → backend `eval` → `fitness` → `cma_tell` →
@@ -58,7 +59,7 @@ The page polls `GET /api/status` about three times a second. All routes:
 
 | Route | Method | What it does |
 |---|---|---|
-| `/api/status` | GET | Generation, scores, speed, messages, the settings in use, and chart points since a given generation. |
+| `/api/status` | GET | Generation, scores, speed, messages, the settings in use, the diversity search (`diversity`: archive size, behaviour map, exploiters), and chart points since a given generation. |
 | `/api/hardware` | GET | The compute options on this computer and what Automatic picks. |
 | `/api/star` | GET | The kept network as JSON (Save network…). |
 | `/api/autotune/status` | GET | Auto-tune progress and result. |
@@ -221,6 +222,19 @@ every generation. At each validation it is offered to the hall of fame (`hof_off
 It replaces the kept network unless that one, of the same shape, validates better on the same settings; after a settings
 change the kept one is validated again first. The kept network is what is saved, what restarts start from and what Save
 network… downloads.
+
+**[Diversity search](explainers/diversity.md)** (all off by default). A network's **behaviour** is two numbers from 0
+to 1, averaged on the host from the results the backends already return (`bd_flights`, `bd_battles`): flight time ÷ time
+limit and the share of mid-flight below 5 m; in Swarm, the share of attackers caught (or leaked) and battle time ÷ time
+limit. The **novelty bonus** ranks by score + weight × novelty: the mean distance to the 10 nearest behaviours in an
+archive plus the population, scaled by its running mean (`novelty`). **Novelty islands** (NSR-ES) make every other
+island rank by the average of its reward and novelty ranks (`nsr_rank`). The **behaviour map** (MAP-Elites) keeps the
+best network of each cell of a 10 × 10 grid, in memory only; islands then rank by improvement to the map, as CMA-ME
+does, and restart from a random elite after 10 generations without one (`map_rank`, `isl_from_elite`). **Exploiters**
+(Swarm, AI vs AI) give each side a CMA-ES population a quarter its size that plays only the other side's current star;
+its best joins the side's pool every 5 generations (`ex_generation`, `sw_pool_add`). The plain score still picks the
+star, the island bests and migration. The options use their own random generator, so they never change the scenarios;
+`dv_clear` forgets their state on a reset or a mode switch.
 
 ## Validation and saving
 Validation flies the star on a fixed set of 64 scenarios or battles (seed 4242) every 10 generations. In Swarm each AI

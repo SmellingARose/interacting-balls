@@ -20,7 +20,7 @@ p{margin:0}
 #rcol{position:fixed;right:var(--gap);top:var(--gap);bottom:var(--gap);width:var(--rw);display:flex;flex-direction:column;justify-content:space-between;gap:var(--gap);pointer-events:none}
 #rcol>.panel{pointer-events:auto;flex:0 1 auto;min-height:0}
 #rcol>#right:not(.min){min-height:150px} #rcol>#flyp:not(.min){min-height:96px}
-#secMore{border-top:1px solid var(--line);padding-top:10px}
+#secMore,#secMap{border-top:1px solid var(--line);padding-top:10px}
 h1{font:700 20px/1 var(--display);letter-spacing:.05em;margin:0;white-space:nowrap}
 h2{font:500 13px/1.2 var(--display);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0}
 h3{font:600 11px var(--mono);color:var(--fg);margin:2px 0 0}
@@ -48,6 +48,8 @@ label.chk{display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--fg)
 label.chk input{accent-color:var(--ai);margin:0;width:14px;height:14px}
 label:has(input:disabled){opacity:.5;cursor:default}
 label.stack{display:flex;flex-direction:column;gap:4px}
+.why{margin-left:auto;font-size:10px;white-space:nowrap}   /* why an option is off or has no effect here */
+.why:empty{display:none}
 .field{display:flex;flex-direction:column;gap:4px;color:var(--dim);font-size:11px}
 select{font:12px var(--mono);background:var(--fill);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px}
 .row{display:flex;gap:6px;flex-wrap:wrap}
@@ -75,6 +77,7 @@ button.on:focus-visible{outline-color:#fff}   /* visible on the filled cyan too 
 @container (max-width:414px){ .stats{grid-template-columns:repeat(4,minmax(0,1fr))} .stats small{font-size:9px} .stats b{font-size:13px} }
 @container (max-width:360px){ .stats{grid-template-columns:repeat(2,minmax(0,1fr))} .stats small{font-size:10px} }
 #chart{width:100%;height:110px;display:block;background:rgba(0,0,0,.2);border-radius:6px}
+#map{width:100%;height:168px;display:block;background:rgba(0,0,0,.2);border-radius:6px}
 .status{color:var(--dim);font-size:11px;min-height:1.5em;overflow-wrap:anywhere}
 #resetNote{color:var(--bad)}
 #tuneLog{max-height:120px;overflow:auto;font-size:10px;color:var(--dim);display:flex;flex-direction:column;gap:2px;border-left:2px solid var(--line);padding-left:8px}
@@ -222,6 +225,25 @@ dialog h3{margin-top:12px}
       <div class="field"><span id="lOptKind">CMA-ES variant</span>
         <div class="seg" role="group" aria-labelledby="lOptKind"><button id="ok0">Automatic</button><button id="ok1">sep-CMA-ES</button><button id="ok2">LM-MA-ES</button></div></div>
       <p class="hint">Automatic uses sep-CMA-ES up to 2,000 weights and LM-MA-ES above. Both draw mirrored pairs of candidates.</p>
+      <div id="divRows" class="secBody">
+        <h3>Diversity</h3>
+        <p class="hint" id="divHint"></p>
+        <label class="chk" id="novLab"><input type="checkbox" id="cNov"> Novelty bonus <span class="why" id="novWhy"></span></label>
+        <label>Novelty weight <b id="vNovW"></b><input id="sNovW" type="range" min="0.1" max="2" step="0.1"></label>
+        <p class="hint">Ranks each network by score + weight × novelty: how far its behaviour is from the 10 nearest seen so far, about 1 for a typical network. The star is still the best plain score.</p>
+        <div id="nsrRow" class="secBody">
+          <label class="chk" id="nsrLab"><input type="checkbox" id="cNsr"> Novelty islands <span class="why" id="nsrWhy"></span></label>
+          <p class="hint">Every other island ranks by the average of its score rank and its novelty rank; the rest rank by score, and migration shares their best as usual. Needs islands.</p>
+        </div>
+        <div id="mapRow" class="secBody">
+          <label class="chk"><input type="checkbox" id="cMap"> Behaviour map</label>
+          <p class="hint">Keeps the best network for each of 100 kinds of flight and ranks by what improves this map (MAP-Elites searched by CMA-ME); an island that stops improving it restarts from a random elite. While on, it decides the ranking, and the map shows under Training.</p>
+        </div>
+        <div id="exRow" class="secBody">
+          <label class="chk" id="exLab"><input type="checkbox" id="cEx"> Exploiters <span class="why" id="exWhy"></span></label>
+          <p class="hint">Each side also trains a small population only against the other side's current star; every 5 generations its best joins the opponents the other side must beat. It starts again from its side's star once it wins 70% or after 100 generations.</p>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -253,7 +275,15 @@ dialog h3{margin-top:12px}
     <div><small>Step size</small><b id="sSig">—</b></div>
   </div>
   <p class="status keep" id="status" role="status">Connecting…</p>
+  <p class="status" id="divStatus" hidden></p>
   <canvas id="chart" role="img" aria-label="Fitness per generation"></canvas>
+  <section class="sec" id="secMap" data-open hidden>
+    <h2 id="hMap">Behaviour map</h2>
+    <div class="secBody">
+      <canvas id="map" role="img" aria-label="Behaviour map"></canvas>
+      <p class="hint" id="mapHint"></p>
+    </div>
+  </section>
   <section class="sec" id="secMore">
     <h2>More</h2>
     <div class="secBody">
@@ -314,16 +344,17 @@ document.querySelectorAll('.sec').forEach((sec,i)=>{
   const b=document.createElement('button'); b.type='button'; b.className='fold'; body.id||=('secBody'+i); b.setAttribute('aria-controls',body.id);
   b.append(...h.childNodes); h.append(b);
   const set=o=>{ body.hidden=!o; b.setAttribute('aria-expanded',o?'true':'false'); };
-  set(UI[key]??sec.hasAttribute('data-open')); b.onclick=()=>{ const o=body.hidden; set(o); UI[key]=o; saveUI(); }; });
+  set(UI[key]??sec.hasAttribute('data-open')); b.onclick=()=>{ const o=body.hidden; set(o); UI[key]=o; saveUI(); if(sec.id==='secMap') drawMap(true); }; });
 for(const b of document.querySelectorAll('[data-min]')){ const p=$(b.dataset.min), set=m=>{ p.classList.toggle('min',m); b.textContent=m?'+':'–'; b.title=m?'Expand panel':'Collapse panel'; b.setAttribute('aria-expanded',m?'false':'true'); };
   set(!!UI['min:'+p.id]); b.onclick=()=>{ const m=UI['min:'+p.id]=!p.classList.contains('min'); saveUI(); set(m);
-    if(!m&&p.contains($('chart'))) drawChart(); }; }   // a hidden chart is not drawn, and while paused no new history redraws it
+    if(!m&&p.contains($('chart'))){ drawChart(); drawMap(true); } }; }   // hidden canvases are not drawn, and while paused no new status redraws them
 { const set=v=>{ document.body.classList.toggle('help',v); press($('bHelp'),v); $('bHelp').title=v?'Hide help text':'Show help text'; };
   set(!!UI.help); $('bHelp').onclick=()=>{ UI.help=!UI.help; saveUI(); set(UI.help); }; }
 
 /* ---------------- settings (remembered in this window; adopted from the app when it is already training) ---------------- */
 const S={ backend:'auto', layers:1, width:32, K:0, mem:0, cma:1, pop:256, scen:16, reuse:5, islands:0, nIsl:8, migrate:10,
   decayOn:1, decay:0.995, lrMin:1e-4, imitate:1, autoDiff:0, diffAt:0.8, restarts:1, normIn:1, optKind:0, speedOn:0, speedW:3, altOn:0, dt:0.02, everyStep:0, tw:2.5, wg:64, chunkMs:40,
+  novelty:0, noveltyW:0.5, nsr:0, mapElites:0, exploiters:0,   // diversity search, all off by default
   mode:0, attN:4, defN:4, attAI:0, defAI:1, attCmd:0, defCmd:0, swK:2, swLayout:0, rangeMax:8500, blast:0, reachMax:7000, range:7000, evade:0, noise:0, delayMs:0, detect:0, twRunner:2.5 };   // mode 0 = reach target, 1 = intercept, 2 = swarm
 try{ Object.assign(S, JSON.parse(localStorage.getItem('brt-settings')||'{}')); }catch(e){}
 const save=()=>{ try{ localStorage.setItem('brt-settings',JSON.stringify(S)); }catch(e){} };
@@ -357,6 +388,7 @@ check('cDecay','decayOn'); bind('sDecay','decay',v=>'×'+v.toFixed(3));
 bind('sLrMin','lrMin',v=>v>=0.01?v.toFixed(2):v.toExponential(0),v=>10**v,v=>Math.log10(v));
 check('cAlt','altOn'); check('cSpeed','speedOn'); bind('sSpw','speedW',v=>v);
 check('cImitate','imitate'); check('cAutoDiff','autoDiff'); bind('sDiffAt','diffAt',v=>Math.round(v*100)+'%'); check('cRestarts','restarts'); check('cNorm','normIn');
+check('cNov','novelty'); bind('sNovW','noveltyW',v=>'×'+v.toFixed(1)); check('cNsr','nsr'); check('cMap','mapElites'); check('cEx','exploiters');
 bind('sDt','dt',v=>Math.round(v*1000)+' ms',v=>v/1000,v=>Math.round(v*1000)); check('cEvery','everyStep'); bind('sTw','tw',v=>v.toFixed(1)+'×');
 choose(['opCMA','opGA'],'cma',[1,0]); choose(['ok0','ok1','ok2'],'optKind',[0,1,2]);
 choose(['aAlgo','aAI'],'attAI',[0,1]); choose(['dAlgo','dAI'],'defAI',[0,1]); choose(['aNK','aCmd'],'attCmd',[0,1]); choose(['dNK','dCmd'],'defCmd',[0,1]);
@@ -389,6 +421,22 @@ function sync(){ if(stopped) return; const m=S.mode, reach=m===0, tag=m===1, sw=
   press($('opCMA'),!!S.cma); press($('opGA'),!S.cma); [0,1,2].forEach(k=>{ press($('ok'+k),S.optKind===k); $('ok'+k).disabled=ga; }); $('cRestarts').disabled=ga;
   $('sIsl').disabled=$('sMig').disabled=!S.islands; $('sDecay').disabled=!S.decayOn; $('sSpw').disabled=!S.speedOn; $('sDiffAt').disabled=!S.autoDiff;
   $('sEvade').disabled=sw&&!!S.attAI;
+  // diversity search: novelty islands and the behaviour map are for reach and intercept, exploiters for swarm AI vs AI.
+  // Novelty islands need islands; while the map is on it decides the ranking, so the novelty options only keep the archive.
+  { const mapOn=!sw&&!!S.mapElites, mapTxt='While the behaviour map is on it decides the ranking: novelty only keeps its archive.';
+    const why=(id,short,long)=>{ $(id+'Why').textContent=short; $(id+'Lab').title=long; };
+    $('nsrRow').hidden=$('mapRow').hidden=sw; $('exRow').hidden=!sw;
+    $('sNovW').disabled=!S.novelty; $('cNsr').disabled=!S.islands; $('cEx').disabled=!(S.attAI&&S.defAI);
+    why('nov',mapOn&&S.novelty?'map ranks instead':'',mapOn&&S.novelty?mapTxt:'');
+    why('nsr',!S.islands?'needs islands':mapOn&&S.nsr?'map ranks instead':'',!S.islands?'Turn on “Use islands” under Training to use novelty islands.':mapOn&&S.nsr?mapTxt:'');
+    why('ex',S.attAI&&S.defAI?'':'needs AI vs AI',S.attAI&&S.defAI?'':'Set both attackers and defenders to AI to train exploiters.');
+    $('divHint').textContent=sw?'These also reward playing differently, so training keeps exploring instead of settling on one way to play. A network\'s behaviour is the share of attackers its side catches (defenders) or gets through (attackers), and the battle time. Novelty islands and the behaviour map are for reach and intercept.'
+      :'These also reward flying differently, so training keeps exploring instead of settling on one way to fly. A network\'s behaviour is its flight time and how much of mid-flight it spends below 5 m. Exploiters are for swarm, AI vs AI.';
+    const show=mapOn||!!S.novelty||(!sw&&!!S.nsr&&!!S.islands), side=S.defAI||!S.attAI?'defenders':'attackers';
+    $('secMap').hidden=!show;   // its heading and drawing: drawMap
+    $('mapHint').textContent=sw?`This generation's ${side} by behaviour, the star in amber: across, the share of attackers ${side==='defenders'?'caught':'through'}; up, the battle time as a share of the time limit. A spread-out cloud means the population is trying different ways.`
+      :(mapOn?'Each cell is a kind of flight. A filled cell holds the best network that flew that way, brighter for a higher score; dots are this generation\'s networks, the star in amber. '
+        :'This generation\'s networks by behaviour, the star in amber; a spread-out cloud means the population is trying different ways. ')+'Across: flight time as a share of the time limit; up: share of mid-flight below 5 m.'; }
   $('tuneHint').textContent=sw?'Auto-tune flies one generation of battles on every compute option and GPU layout, and picks the fastest. Population and battles per network stay as they are.'
     :'Auto-tune measures every option on this machine (CPU, GPU work-group sizes, dispatch length, batch size), picks the fastest and sets population and scenarios to match.';
   // Watch and Training panels
@@ -401,7 +449,7 @@ function sync(){ if(stopped) return; const m=S.mode, reach=m===0, tag=m===1, sw=
   $('physNote').textContent=sw?`Attackers launch from the ground ${fmt(S.range/1000,1)}–${fmt(S.rangeMax/1000,1)} km from the defended point, from any direction; defenders launch 0.5–3 km from it.`
     :tag?'Your ball launches from the ground 0.5–3 km from the defended point, with up to 15 m/s of wind.'
     :`The ball starts 10 m above the pad, pointing straight up. Targets are 1.5–${fmt(S.reachMax/1000,0)} km away with up to 15 m/s of wind.`;
-  netNote(); if($('log').querySelector('.empty')) logEmpty(); syncBusy(); }
+  netNote(); if($('log').querySelector('.empty')) logEmpty(); syncBusy(); drawMap(); }
 // Buttons that must wait while auto-tune runs or the app is pausing (the app ignores a mode switch while busy).
 function syncBusy(){ if(stopped) return; const busy=tuning||!!waiting;
   $('bTrain').disabled=busy; $('bTrain').textContent=waiting||(running?'Pause':'Train'); $('bTrain').classList.toggle('on',running&&!waiting);
@@ -500,10 +548,12 @@ async function poll(){
       $('lBest').textContent=w.defAI||!w.attAI?'Defenders best':'Attackers best'; $('sBest').textContent=st.gen?(w.defAI?w.defBest:w.attBest).toFixed(2):'—';
       $('sHit').textContent=st.gen?pc(w.catchRate)+' · '+pc(w.leakRate):'—';
       $('sVal').textContent=ran?[w.defAI&&'catch '+pc(w.valCatch),w.attAI&&'leak '+pc(w.valLeak)].filter(Boolean).join(' · ')||'—':'—'; }
+    else if(st.running) $('lBest').textContent='Best fitness';   // left from swarm when the run switched mode
     $('sSps').textContent=st.stepsPerS?fmt(st.stepsPerS/1e6,1)+' M':'—'; $('sFps').textContent=st.flightsPerS?fmt(st.flightsPerS):'—';
     $('sGt').textContent=st.genTime?fmt(st.genTime,st.genTime<10?3:1)+' s':'—'; $('sSig').textContent=st.gen?Number(st.sigma).toPrecision(2):'—';
     $('status').textContent=[st.tuning&&'auto-tuning',st.backend,st.message,st.islands>1&&`${st.islands} islands`,st.autoDiff&&!/difficulty/.test(st.message||'')&&`difficulty ${st.level}/10`,
       st.restarts&&`${st.restarts} restart${st.restarts>1?'s':''}`].filter(Boolean).join(' · ');
+    divLine(st); drawMap();   // the map redraws only when its data changed
     if(fresh) drawChart();
   }catch(e){ if(!stopped) $('offline').hidden=false; }
   if(!stopped) pollTimer=setTimeout(poll,350);
@@ -529,6 +579,64 @@ function drawChart(){
     HIST.forEach((h,i)=>i?x.lineTo(px(i),py(h[1])):x.moveTo(px(i),py(h[1]))); x.lineTo(px(HIST.length-1),H); x.lineTo(px(0),H); x.closePath(); x.fill(); }
   for(const [idx,col,lw] of [[2,'rgba(95,209,255,.4)',1],[1,'#5fd1ff',2]]){ x.strokeStyle=col; x.lineWidth=lw; x.beginPath(); HIST.forEach((h,i)=>i?x.lineTo(px(i),py(h[idx])):x.moveTo(px(i),py(h[idx]))); x.stroke(); }
 }
+// Diversity figures of the run (the settings it uses): the novelty archive's size, the exploiters against the other star.
+function divLine(st){ const d=st.diversity, c=st.cfg||S, el=$('divStatus'), t=[]; let tip='';
+  if(d){ if(c.novelty||(c.mode!==2&&c.nsr&&st.islands>1)) t.push(`novelty archive ${fmt(d.archive)}`);
+    const e=d.exploiters, r=v=>v==null?'—':pc(v);
+    if(e?.on){ t.push(`exploiters vs the other star: attackers ${r(e.att)} through, defenders ${r(e.def)} caught${e.resets?` · ${e.resets} reset${e.resets>1?'s':''}`:''}`);
+      tip='Each side\'s exploiter against the other side\'s current star: the share of attackers it gets through, or catches (smoothed). At 70% it has won and starts again from its own side\'s star.'; } }
+  const s=t.join(' · '); el.hidden=!s; if(el.textContent!==s) el.textContent=s; el.title=tip; }
+// Behaviour map: a 10 × 10 grid over the two behaviour numbers (0–1 each). A filled cell is coloured by its elite's score on
+// one blue ramp (dark low, light high) scaled to the scores on the map; this generation's behaviours are dots on top, the
+// star in amber. With only the novelty options on: just the dots. Drawn only when its data changed (or forced: resized, opened).
+const RAMP=['#184f95','#1c5cab','#256abf','#2a78d6','#3987e5','#5598e7','#6da7ec','#86b6ef','#9ec5f4','#b7d3f6','#cde2fb'].map(h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16)));
+const ramp=t=>{ const k=Math.max(0,Math.min(1,t))*(RAMP.length-1), i=Math.min(RAMP.length-2,Math.floor(k)), a=RAMP[i], b=RAMP[i+1];
+  return `rgb(${a.map((v,j)=>Math.round(v+(b[j]-v)*(k-i))).join()})`; };
+const MONO=' JetBrains Mono, monospace', EMPTY='rgba(150,180,205,.07)';
+let mapKey='', mapGeo=null;
+function drawMap(force){
+  if(stopped) return; if($('secMap').hidden){ mapGeo=null; mapKey=''; return; }
+  const sw=S.mode===2, mapOn=!sw&&!!S.mapElites, d=lastStatus?.diversity, m=mapOn&&d?.map?.on?d.map:null;
+  const names=d?.bdNames?.length===2?d.bdNames:sw?['catch share','battle time']:['flight time','time below 5 m'];
+  const grid=m?.grid||[], pop=d?.map?.pop||[], cells=m?.cells||0, side=S.defAI||!S.attAI?'defenders':'attackers';
+  const c=$('map'), hb=$('hMap').querySelector('button'), ht=mapOn?'Behaviour map'+(c.parentNode.hidden?` · ${cells}/${m?.total||100}`:''):'Behaviours';   // folded: the count in the heading
+  if(hb.textContent!==ht) hb.textContent=ht;
+  const key=JSON.stringify([mapOn,sw&&side,names,grid,pop]); if(!force&&key===mapKey) return;
+  const r=devicePixelRatio, W=c.clientWidth, H=c.clientHeight; if(!W) return;   // folded or collapsed: drawn when opened
+  mapKey=key; c.width=W*r; c.height=H*r; const x=c.getContext('2d'); x.scale(r,r); x.textBaseline='middle';
+  const L=16, T=5, G=Math.max(60,Math.min(H-T-18,W-L-130)), cs=G/10, gap=cs>=12?2:1, gx=L, gy=T;
+  const vals=grid.filter(v=>v!=null), lo=vals.length?Math.min(...vals):0, hi=vals.length?Math.max(...vals):1;
+  for(let q=0;q<100;q++){ const v=grid[q], i=q%10, j=(q-i)/10;   // grid[d2 cell × 10 + d1 cell]; d2 grows upward
+    x.fillStyle=v==null?EMPTY:ramp(hi-lo>1e-9?(v-lo)/(hi-lo):1); x.fillRect(gx+i*cs+gap/2,gy+(9-j)*cs+gap/2,cs-gap,cs-gap); }
+  const ring=(px,py,rad,fill,lw)=>{ x.beginPath(); x.arc(px,py,rad,0,7); x.fillStyle=fill; x.fill(); x.lineWidth=lw; x.strokeStyle='#0b1118'; x.stroke(); };
+  const at=v=>Math.max(0,Math.min(1,v))*G;
+  for(let k=pop.length-1;k>0;k--) ring(gx+at(pop[k][0]),gy+G-at(pop[k][1]),2.2,'#e3ebf2',1);
+  if(pop.length) ring(gx+at(pop[0][0]),gy+G-at(pop[0][1]),3.8,'#ffd166',1.5);   // the star, on top
+  // axes: 0% and 100% at the ends when they fit beside the name (the y axis is the same, turned)
+  const axis=(len,name)=>{ x.fillStyle='#a3b5c5'; x.font='10px'+MONO; const w=x.measureText(name).width; x.textAlign='center'; x.fillText(name,len/2,0);
+    x.font='9px'+MONO; if(x.measureText('100%').width+w/2+4<len/2){ x.textAlign='left'; x.fillText('0%',0,0); x.textAlign='right'; x.fillText('100%',len,0); } };
+  x.save(); x.translate(gx,gy+G+10); axis(G,names[0]); x.restore();
+  x.save(); x.translate(7,gy+G); x.rotate(-Math.PI/2); axis(G,names[1]); x.restore();
+  // legend
+  const lx=gx+G+14, lw=Math.max(40,Math.min(140,W-lx-6)); let y=gy+6; x.textAlign='left';
+  const text=(t,bold)=>{ x.font=(bold?'600 11px':'10px')+MONO; x.fillStyle=bold?'#e3ebf2':'#a3b5c5'; x.fillText(t,lx,y); };
+  if(mapOn){ text(`${cells} / 100 cells`,1); y+=16;
+    if(vals.length){ text('elite score'); y+=12; const gr=x.createLinearGradient(lx,0,lx+lw,0); RAMP.forEach((c,i)=>gr.addColorStop(i/(RAMP.length-1),`rgb(${c})`));
+      x.fillStyle=gr; x.fillRect(lx,y-4,lw,8); y+=13; x.font='9px'+MONO; x.fillStyle='#a3b5c5'; x.fillText(lo.toFixed(2),lx,y); x.textAlign='right'; x.fillText(hi.toFixed(2),lx+lw,y); x.textAlign='left'; y+=19; }
+    else { text('no elites yet'); y+=20; } }
+  else { text(sw?side:'this generation',1); y+=16; if(!pop.length){ text('none yet'); y+=16; } y+=4; }
+  const item=(draw,t)=>{ draw(lx+4,y); x.font='10px'+MONO; x.fillStyle='#a3b5c5'; x.fillText(t,lx+14,y); y+=15; };
+  item((px,py)=>ring(px,py,3.8,'#ffd166',1.5),'star');
+  item((px,py)=>ring(px,py,2.2,'#e3ebf2',1),mapOn?'this generation':'networks');
+  if(mapOn) item((px,py)=>{ x.fillStyle=EMPTY; x.fillRect(px-4,py-4,8,8); },'empty cell');
+  c.setAttribute('aria-label',(mapOn?`Behaviour map: ${cells} of 100 cells filled${vals.length?`, elite scores ${lo.toFixed(2)} to ${hi.toFixed(2)}`:''}; `:'Behaviours: ')
+    +`${pop.length} networks of this generation by ${names[0]} and ${names[1]}`);
+  mapGeo={gx,gy,cs,grid,names,mapOn};
+}
+$('map').addEventListener('mousemove',e=>{ const g=mapGeo, c=e.currentTarget; if(!g) return;   // the cell under the pointer, as a tooltip
+  const i=Math.floor((e.offsetX-g.gx)/g.cs), j=9-Math.floor((e.offsetY-g.gy)/g.cs), band=k=>`${k*10}–${k*10+10}%`;
+  const v=g.grid[j*10+i], t=i<0||i>9||j<0||j>9?'':`${g.names[0]} ${band(i)}, ${g.names[1]} ${band(j)}`+(g.mapOn?v==null?': empty':`: elite score ${v.toFixed(2)}`:'');
+  if(c.title!==t) c.title=t; });
 
 /* ---------------- save / load / quit ---------------- */
 let msgTimer=0;
@@ -601,6 +709,7 @@ function openDlg(which){
       <li><b>Intercept:</b> start with no noise, delay or weaving and a 7 km runner range; add difficulty once Validation is high. Each mode keeps its own network.</li>
       <li><b>Swarm:</b> start small (a few balls a side, Nearest-K) and train one side against the algorithm before AI vs AI. Stars are kept per side and matchup.</li>
       <li><b>Reward staying above 5 m</b> discourages skimming the ground in mid-flight; it is a small bonus, so hitting still matters most.</li>
+      <li><b>Diversity</b> (Techniques) helps when training settles on one way of flying too early: the novelty bonus, novelty islands and the behaviour map also reward networks that fly differently, and exploiters give AI vs AI swarms a sparring partner that hunts the other side's weak spots. All are off by default; try one at a time and watch Validation.</li>
       <li><b>Pitfalls:</b> decay ×0.9 freezes training within ~60 generations; speed reward too early makes it rush and miss; changing the network shape starts a fresh network.</li></ul>`;
   }
   if(!d.open){ lastFocus=document.activeElement; d.showModal(); }
@@ -824,7 +933,7 @@ $('bClear').onclick=clearFlights;
     d.setAttribute('aria-valuetext',$('vDist').textContent); ts.setAttribute('aria-valuetext',$('vTs').textContent); };
   d.oninput=u; ts.oninput=u; u(); }
 function resize(){ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
-  if(renderer){ renderer.setSize(innerWidth,innerHeight,false); renderer.getDrawingBufferSize(res); } drawChart(); wake(); }
+  if(renderer){ renderer.setSize(innerWidth,innerHeight,false); renderer.getDrawingBufferSize(res); } drawChart(); drawMap(true); wake(); }
 on(window,'resize',resize);
 const clock=new THREE.Clock(), _v=new THREE.Vector3();
 let looping=false, quiet=0;

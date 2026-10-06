@@ -14,7 +14,7 @@ flowchart TD
   subgraph G["Every generation, again and again"]
     direction LR
     A["Try many networks:<br>small random nudges<br>around the current best"] --> B["Fly them all on<br>the same test scenarios<br>(CPU or GPU)"]
-    B --> C["Score<br>every flight"]
+    B --> C["Score every flight<br>(optional: and how new<br>its behaviour is)"]
     C --> D["Keep the best ideas:<br>move the centre<br>toward the winners"]
   end
   G -- "every 10th generation" --> E["Check the best network<br>on 64 fixed validation scenarios"]
@@ -33,8 +33,10 @@ stay the same for 5 generations, so networks are compared on the same tests.
 | [Step size](step-size.md) | How far each new try strays from the current best, and how the decay setting and its floor shrink it. |
 | [Training techniques](training-techniques.md) | Head start by imitation, automatic difficulty, restarts, sensor normalisation, self-play and keeping the best network. |
 | [Scoring](scoring.md) | How a flight or a battle earns points, and why Validation is the number to watch. |
+| [Diversity search](diversity.md) | Four optional ways to reward new behaviour, not only a better score: a novelty bonus, novelty islands, a behaviour map and exploiters. |
 
-Read them in this order if you are new: each one leans a little on the one before.
+Read them in this order if you are new: each one leans a little on the one before. Diversity search is the most
+advanced; it builds on all the others.
 
 ## Words used on every page
 

@@ -79,6 +79,7 @@ void cfg_defaults(TrainCfg* c) {
   c->dt = 0.02; c->tw = 2.5; c->valEvery = 10; c->valScen = 64;
   c->mode = 0; c->range = 7000; c->twRunner = 2.5; c->reachMax = 7000; c->blast = 0;
   c->rangeMax = 8500; c->attN = 4; c->defN = 4; c->attAI = 0; c->defAI = 1; c->attCmd = 0; c->defCmd = 0; c->swK = 2;
+  c->noveltyW = 0.5;
 }
 static int clampi(int v, int a, int b) { return v < a ? a : v > b ? b : v; }
 // Every setting in range, whether it came from the interface or the command line.
@@ -101,6 +102,7 @@ static void cfg_clamp(TrainCfg* c) {
   c->attN = clampi(c->attN, 1, BR_SW_MAXA); c->defN = clampi(c->defN, 1, BR_SW_MAXD);
   c->attAI = c->attAI != 0; c->defAI = c->defAI != 0; c->attCmd = c->attCmd != 0; c->defCmd = c->defCmd != 0;
   c->swK = clampi(c->swK, 1, BR_SW_MAXK); c->swLayout = clampi(c->swLayout, 0, 2);
+  c->novelty = c->novelty != 0; c->noveltyW = fmin(5, fmax(0, c->noveltyW)); c->nsr = c->nsr != 0; c->mapElites = c->mapElites != 0; c->exploiters = c->exploiters != 0;
 }
 void cfg_from_json(TrainCfg* c, const char* j) {
   jstr(j, "backend", c->backend, sizeof c->backend);
@@ -119,6 +121,8 @@ void cfg_from_json(TrainCfg* c, const char* j) {
   c->attN = (int)jnum(j, "attN", c->attN); c->defN = (int)jnum(j, "defN", c->defN); c->attAI = jnum(j, "attAI", c->attAI) != 0; c->defAI = jnum(j, "defAI", c->defAI) != 0;
   c->attCmd = jnum(j, "attCmd", c->attCmd) != 0; c->defCmd = jnum(j, "defCmd", c->defCmd) != 0; c->swK = (int)jnum(j, "swK", c->swK);
   c->swLayout = (int)jnum(j, "swLayout", c->swLayout); c->noEarly = jnum(j, "noEarly", c->noEarly) != 0;
+  c->novelty = jnum(j, "novelty", c->novelty) != 0; c->noveltyW = jnum(j, "noveltyW", c->noveltyW); c->nsr = jnum(j, "nsr", c->nsr) != 0;
+  c->mapElites = jnum(j, "mapElites", c->mapElites) != 0; c->exploiters = jnum(j, "exploiters", c->exploiters) != 0;
   cfg_clamp(c);
 }
 // The settings as JSON, with the same keys cfg_from_json reads (the status reports the settings training uses).
@@ -128,11 +132,13 @@ void cfg_to_json(const TrainCfg* c, Sb* o) {
     "\"islands\":%d,\"nIsl\":%d,\"migrate\":%d,\"cma\":%d,\"optKind\":%d,\"restarts\":%d,\"normIn\":%d,\"imitate\":%d,\"autoDiff\":%d,\"diffAt\":%g,"
     "\"decayOn\":%d,\"decay\":%g,\"lrMin\":%g,\"dt\":%g,\"tw\":%g,\"speedW\":%g,\"everyStep\":%d,\"altOn\":%d,\"valEvery\":%d,\"valScen\":%d,"
     "\"mode\":%d,\"blast\":%g,\"reachMax\":%g,\"range\":%g,\"evade\":%g,\"noise\":%g,\"delayMs\":%g,\"detect\":%g,\"twRunner\":%g,"
-    "\"rangeMax\":%g,\"attN\":%d,\"defN\":%d,\"attAI\":%d,\"defAI\":%d,\"attCmd\":%d,\"defCmd\":%d,\"swK\":%d,\"swLayout\":%d,\"noEarly\":%d}",
+    "\"rangeMax\":%g,\"attN\":%d,\"defN\":%d,\"attAI\":%d,\"defAI\":%d,\"attCmd\":%d,\"defCmd\":%d,\"swK\":%d,\"swLayout\":%d,\"noEarly\":%d,"
+    "\"novelty\":%d,\"noveltyW\":%g,\"nsr\":%d,\"mapElites\":%d,\"exploiters\":%d}",
     c->threads, c->wg, c->chunkMs, c->layers, c->width, c->K, c->mem, c->pop, c->scen, c->reuse, c->islands, c->nIsl, c->migrate,
     c->cma, c->optKind, c->restarts, c->normIn, c->imitate, c->autoDiff, c->diffAt, c->decayOn, c->decay, c->lrMin, c->dt, c->tw, c->speedW,
     c->everyStep, c->altOn, c->valEvery, c->valScen, c->mode, c->blast, c->reachMax, c->range, c->evade, c->noise, c->delayMs, c->detect, c->twRunner,
-    c->rangeMax, c->attN, c->defN, c->attAI, c->defAI, c->attCmd, c->defCmd, c->swK, c->swLayout, c->noEarly);
+    c->rangeMax, c->attN, c->defN, c->attAI, c->defAI, c->attCmd, c->defCmd, c->swK, c->swLayout, c->noEarly,
+    c->novelty, c->noveltyW, c->nsr, c->mapElites, c->exploiters);
 }
 
 // Weights of a network with `nin` inputs, `nout` outputs and P's hidden layers.
@@ -615,6 +621,7 @@ static int load_json_mode(const char* json, char* msg, int len, int wantMode, in
 }
 
 static void free_islands(void);
+static void dv_clear(void);
 // Loading a network from the interface or --load (reach and intercept: it must belong to the mode selected). It becomes
 // the star and the kept network; training (now or at the next start) rebuilds its search from it.
 int trainer_load_json(const char* json, char* msg, int len) {
@@ -627,6 +634,7 @@ static void load_mode_star(int mode) {
   br_lock(&T.mx); net_free(&T.star); net_free(&T.hof); T.hofOk = 0; T.hofNew = 0; T.reseedReq = 0; T.starMode = mode; T.gen = 0; T.histN = 0;
   T.best = T.starHits = T.valHit = 0; T.valGen = 0; run_reset(); T.level = 10; T.levelHits = 0;
   br_unlock(&T.mx);
+  dv_clear();   // behaviours, elites and exploiters belong to the mode they were found in
   if (mode == BR_MODE_SWARM) { set_msg("swarm: each side's star is kept per matchup and loaded when training starts"); return; }
   char pb[1024]; const char* p = save_path_mode(mode, pb, sizeof pb); FILE* f = fopen(p, "rb");
   for (int old = -1; !f && mode == BR_MODE_REACH && old >= -2; old--) { p = save_path_mode(old, pb, sizeof pb); f = fopen(p, "rb"); }
@@ -717,6 +725,140 @@ static void norm_update(const float* star) {
   }
   memcpy(T.normMu, nm, sizeof nm); memcpy(T.normSd, ns, sizeof ns); T.normOn = 1;
   free(e); free(g);
+}
+
+// ---------------- diversity search (every option off by default)
+// A network's behaviour is two numbers in 0..1 averaged over this generation's flights or battles. Reach and intercept:
+// flight time / time limit, and the share of mid-flight below 5 m. Swarm: the share of attackers caught (defenders) or
+// through (attackers), and battle time / time limit. These options draw from their own generator, never from T.rng.
+#define NOV_K 10          // novelty: mean distance to the 10 nearest behaviours
+#define ARC_MAX 2000      // archive size (when full, a random entry is replaced)
+#define ARC_ADD 3         // the most novel networks of each generation join the archive
+#define NOV_REF 1024      // a larger population is compared with an evenly spaced sample this big: caps the k-NN work
+#define MAP_N 10          // behaviour map: MAP_N × MAP_N cells over the two behaviour numbers
+#define ME_PATIENCE 10    // generations an island may go without improving the map before it restarts from an elite
+#define ME_SIGMA 0.05     // step size of an island restarted from an elite (GA: 0.03, as for a seeded start)
+#define EX_SIGMA 0.05     // step size of an exploiter started from its side's star
+#define POP_SHOW 64       // behaviours in the status: the star's, then an evenly spaced sample
+typedef struct { float* bd; int n; double scale; } Archive;   // 2 floats per entry; scale: running mean novelty
+typedef struct { int live, gens, nw, key[9]; CMA cma; float* best; double succ; } Expl;   // succ: smoothed success vs the star
+static struct {
+  Rng rng;
+  Archive arc[2];   // reach and intercept: arc[0]; swarm: one per side (their behaviours mean different things)
+  float* bd; double *nov, *rk; int cap;   // this generation, per network: behaviour, novelty, what the optimizer ranks by
+  float maxT;       // the time limit the archives and the map were measured against
+  float* eliteW; double eliteF[MAP_N * MAP_N]; unsigned char has[MAP_N * MAP_N]; int cells, nw;   // the map (elites as flown)
+  int* still; int stillN, meRestarts;   // per island: generations without improving the map; islands restarted from elites
+  Expl ex[2]; int exResets;
+  // what the status shows (written under T.mx)
+  struct { int arc, popN, cells, meRestarts, exResets, exLive[2]; float pop[POP_SHOW][2]; double grid[MAP_N * MAP_N], exSucc[2]; unsigned char has[MAP_N * MAP_N]; } show;
+} DV;
+
+static void dv_grow(int n) {
+  if (n <= DV.cap) return;
+  DV.bd = (float*)realloc(DV.bd, sizeof(float) * 2 * n); DV.nov = (double*)realloc(DV.nov, sizeof(double) * n); DV.rk = (double*)realloc(DV.rk, sizeof(double) * n); DV.cap = n;
+}
+static void arc_clear(Archive* a) { free(a->bd); memset(a, 0, sizeof *a); }
+static void map_clear(void) { free(DV.eliteW); DV.eliteW = NULL; DV.nw = 0; DV.cells = 0; memset(DV.has, 0, sizeof DV.has); }
+static void ex_free(int side) { Expl* E = &DV.ex[side]; if (E->live) cma_free(&E->cma); free(E->best); memset(E, 0, sizeof *E); }
+// Forgets the whole search history (a reset, another mode): archives, map, exploiters and what the status shows.
+static void dv_clear(void) {
+  for (int s = 0; s < 2; s++) { arc_clear(&DV.arc[s]); ex_free(s); }
+  map_clear(); free(DV.still); DV.still = NULL; DV.stillN = 0; DV.meRestarts = DV.exResets = 0; rng_seed(&DV.rng, 5151);
+  br_lock(&T.mx); memset(&DV.show, 0, sizeof DV.show); br_unlock(&T.mx);
+}
+
+// Times are shares of the time limit, which a difficulty level or a setting can change: behaviours measured against
+// another limit mean something else, so the archives and the map start over.
+static void dv_limit(float maxT) { if (DV.maxT != maxT) { arc_clear(&DV.arc[0]); arc_clear(&DV.arc[1]); map_clear(); DV.maxT = maxT; } }
+static void bd_flights(const float* out, int n, int S, float maxT, float* bd) {
+  for (int i = 0; i < n; i++) { double t = 0, lo = 0;
+    for (int j = 0; j < S; j++) { const float* o = out + ((size_t)i * S + j) * BR_OUT; t += fmin(1, o[2] / maxT); lo += o[4]; }
+    bd[i * 2] = (float)(t / S); bd[i * 2 + 1] = (float)(lo / S); }
+}
+static void bd_battles(const float* out, int n, int S, int side, int attN, float maxT, float* bd) {
+  for (int i = 0; i < n; i++) { double s = 0, t = 0;
+    for (int j = 0; j < S; j++) { const float* o = out + ((size_t)i * S + j) * BR_SWOUT; s += side ? o[0] : o[1]; t += fmin(1, o[5] / maxT); }
+    bd[i * 2] = (float)(s / ((double)S * attN)); bd[i * 2 + 1] = (float)(t / S); }
+}
+
+// Raw novelty: mean distance to the NOV_K nearest among the archive and the population (itself excluded), on squared
+// distances until the end. Spread over the CPU cores when the population is large.
+typedef struct { const float* bd; int n; const Archive* a; const int* ref; int nref; double* nov; br_atomic_int next; } NovJob;
+static void nov_worker(void* arg) {
+  NovJob* j = (NovJob*)arg;
+  for (;;) { int i0 = br_atomic_fetch_add(&j->next, 128); if (i0 >= j->n) break;
+    for (int i = i0; i < i0 + 128 && i < j->n; i++) {
+      float x = j->bd[i * 2], y = j->bd[i * 2 + 1], nd[NOV_K]; int m = 0;   // the NOV_K smallest so far, ascending (not "near": a macro in windows.h)
+      for (int r = 0; r < j->a->n + j->nref; r++) {
+        const float* q; if (r < j->a->n) q = j->a->bd + r * 2; else { int p = j->ref[r - j->a->n]; if (p == i) continue; q = j->bd + p * 2; }
+        float dx = q[0] - x, dy = q[1] - y, d = dx * dx + dy * dy;
+        if (m == NOV_K && d >= nd[NOV_K - 1]) continue;
+        int k = m < NOV_K ? m++ : NOV_K - 1; while (k > 0 && nd[k - 1] > d) { nd[k] = nd[k - 1]; k--; } nd[k] = d;
+      }
+      double s = 0; for (int k = 0; k < m; k++) s += sqrt(nd[k]); j->nov[i] = m ? s / m : 0;
+    } }
+}
+// Novelty of n behaviours, divided by the archive's running mean so typical values are about 1 (at most 3: one odd
+// network must not swamp the reward). Then the ARC_ADD most novel join the archive.
+static void novelty(const float* bd, int n, Archive* a, double* nov) {
+  int nref = n < NOV_REF ? n : NOV_REF; int* ref = (int*)malloc(sizeof(int) * nref);
+  for (int r = 0; r < nref; r++) ref[r] = (int)((long long)r * n / nref);
+  NovJob job = { bd, n, a, ref, nref, nov, 0 };
+  int nt = (double)n * (a->n + nref) > 4e6 ? br_cpu_count() : 1; br_run_threads(nt, nov_worker, &job); free(ref);
+  double mean = 0; for (int i = 0; i < n; i++) mean += nov[i]; mean /= n;
+  a->scale = a->scale > 0 ? 0.9 * a->scale + 0.1 * mean : mean;
+  double div = fmax(0.01, a->scale);
+  int top[ARC_ADD], m = 0;   // indices of the most novel, descending
+  for (int i = 0; i < n; i++) { if (m == ARC_ADD && nov[i] <= nov[top[ARC_ADD - 1]]) continue;
+    int k = m < ARC_ADD ? m++ : ARC_ADD - 1; while (k > 0 && nov[top[k - 1]] < nov[i]) { top[k] = top[k - 1]; k--; } top[k] = i; }
+  if (!a->bd) a->bd = (float*)malloc(sizeof(float) * 2 * ARC_MAX);
+  for (int k = 0; k < m; k++) { int s = a->n < ARC_MAX ? a->n++ : (int)(urand(&DV.rng) * ARC_MAX); a->bd[s * 2] = bd[top[k] * 2]; a->bd[s * 2 + 1] = bd[top[k] * 2 + 1]; }
+  for (int i = 0; i < n; i++) nov[i] = fmin(3, nov[i] / div);
+}
+// NSR-ES: one island's k networks ranked by the average of their reward rank and novelty rank (in place, best highest).
+static void nsr_rank(double* r, const double* nov, int k) {
+  int* a = rank(r, k); int* b = rank(nov, k); double* v = (double*)calloc(k, sizeof(double));
+  for (int q = 0; q < k; q++) { v[a[q]] += q; v[b[q]] += q; }
+  for (int i = 0; i < k; i++) r[i] = -0.5 * v[i];
+  free(a); free(b); free(v);
+}
+
+// Behaviour map (MAP-Elites): each cell keeps the best scoring network whose behaviour falls in it. CMA-ME improvement
+// ranking against the map as it was before this generation: a network that fills an empty cell ranks first (by score),
+// then one that beats its cell's elite (by how much), then the rest (by how far short). Then each cell keeps the best of
+// its elite and this generation's networks `w` (as flown).
+static int map_cell(const float* b) { return clampi((int)(b[1] * MAP_N), 0, MAP_N - 1) * MAP_N + clampi((int)(b[0] * MAP_N), 0, MAP_N - 1); }
+static void map_rank(const float* bd, const double* fit, int n, const float* w, int nw, double* rk) {
+  if (DV.nw != nw) { map_clear(); DV.eliteW = (float*)malloc(sizeof(float) * MAP_N * MAP_N * nw); DV.nw = nw; }
+  int win[MAP_N * MAP_N]; for (int c = 0; c < MAP_N * MAP_N; c++) win[c] = -1;
+  for (int i = 0; i < n; i++) { int c = map_cell(bd + i * 2); double e = DV.eliteF[c];
+    rk[i] = !DV.has[c] ? 2e6 + fit[i] : fit[i] > e ? 1e6 + fit[i] - e : fit[i] - e;   // scores are far below 1e5: tiers never mix
+    if (win[c] < 0 || fit[i] > fit[win[c]]) win[c] = i; }
+  for (int c = 0; c < MAP_N * MAP_N; c++) { int i = win[c]; if (i < 0 || (DV.has[c] && fit[i] <= DV.eliteF[c])) continue;
+    DV.cells += !DV.has[c]; DV.has[c] = 1; DV.eliteF[c] = fit[i]; memcpy(DV.eliteW + (size_t)c * nw, w + (size_t)i * nw, sizeof(float) * nw); }
+}
+// An island that stopped improving the map starts again from a random elite, with its own population size.
+static void isl_from_elite(Island* I) {
+  int nw = T.P.nw, pick = (int)(urand(&DV.rng) * DV.cells), c = 0;
+  for (; c < MAP_N * MAP_N; c++) if (DV.has[c] && pick-- == 0) break;
+  float* g = (float*)malloc(sizeof(float) * nw);
+  if (T.normOn) norm_fold(DV.eliteW + (size_t)c * nw, g, &T.P, 1); else memcpy(g, DV.eliteW + (size_t)c * nw, sizeof(float) * nw);   // into the optimizer's terms
+  if (I->cma) { int lam = I->c.lam; cma_free(&I->c); g_optKind = T.cfg.optKind; cma_init(&I->c, nw, lam, g, ME_SIGMA); }
+  else { int lam = I->ga.lam; ga_free(&I->ga); ga_init(&I->ga, nw, lam, g, 0.03, &DV.rng); }
+  free(g);
+}
+// The status's view of this generation (called under T.mx): the archive size, the star's behaviour then an evenly
+// spaced sample of the population's, the map and the exploiters.
+static void dv_show(int arcN, const float* bd, int n, int star) {
+  DV.show.arc = arcN; int m = 0;
+  if (bd && n > 0) { DV.show.pop[m][0] = bd[star * 2]; DV.show.pop[m][1] = bd[star * 2 + 1]; m++;
+    int want = n - 1 < POP_SHOW - 1 ? n - 1 : POP_SHOW - 1;
+    for (int k = 0; k < want; k++) { int i = (int)((long long)k * n / want); if (i == star) i = (i + 1) % n;
+      DV.show.pop[m][0] = bd[i * 2]; DV.show.pop[m][1] = bd[i * 2 + 1]; m++; } }
+  DV.show.popN = m; DV.show.cells = DV.cells; memcpy(DV.show.has, DV.has, sizeof DV.has); memcpy(DV.show.grid, DV.eliteF, sizeof DV.eliteF);
+  for (int s = 0; s < 2; s++) { DV.show.exLive[s] = DV.ex[s].live && DV.ex[s].gens > 0; DV.show.exSucc[s] = DV.ex[s].succ; }
+  DV.show.exResets = DV.exResets; DV.show.meRestarts = DV.meRestarts;
 }
 
 // ---------------- automatic difficulty (curriculum)
@@ -941,7 +1083,8 @@ static int build_islands(int why) {
   const Net* src = star_ok(&T.hof, &Q) ? &T.hof : star_ok(&T.star, &Q) ? &T.star : NULL;
   if (src) { memcpy(seed, src->w, sizeof(float) * Q.nw); seeded = 1; }
   int loadedLevel = T.hof.level; br_unlock(&T.mx);
-  if (why != BUILD_RESTART) run_reset();
+  if (why != BUILD_RESTART) { run_reset(); arc_clear(&DV.arc[0]); map_clear(); }   // a restart keeps the archive and the map
+  free(DV.still); DV.still = NULL; DV.stillN = 0;
   if (why == BUILD_RESEED) { T.level = loadedLevel; T.levelHits = 0; }
   if (!seeded) { T.level = T.cfg.autoDiff ? 0 : 10; T.levelHits = 0; br_lock(&T.mx); T.histN = 0; T.gen = 0; T.valGen = 0; T.valHit = 0; br_unlock(&T.mx); }
   T.run = curriculum(&T.cfg, T.level); TrainCfg* c = &T.run; setup_params(&T.P, c, c->scen);
@@ -1017,6 +1160,7 @@ static void curriculum_check(double val) {
   if (++T.levelHits < 2) return;
   T.level++; T.levelHits = 0; T.stall = 0; T.bestVal = 0; T.bestFitAvg = -1e30;
   for (int side = 0; side < 2; side++) { SW.side[side].stall = 0; SW.side[side].bestVal = 0; SW.side[side].bestFitAvg = -1e30; }
+  map_clear();   // the elites' scores were earned on easier settings
   set_msg("difficulty: level %d of 10%s", T.level, T.level == 10 ? " (your settings)" : "");
 }
 static const char* sw_side_name(int side) { return side ? "defend" : "attack"; }
@@ -1080,6 +1224,7 @@ static int sw_stale(int side, const int* key) { const SwSide* S = &SW.side[side]
 static int sw_build(const TrainCfg* c, const BrParams* P, int side, const int* key, float* seed, double sv, int sl) {
   SwSide* S = &SW.side[side]; int ai = key[0], nw = side ? P->defNw : P->attNw, seeded = seed != NULL, copied = 0;
   br_lock(&T.mx); sw_side_free(S); memcpy(S->key, key, sizeof S->key); S->ai = ai; br_unlock(&T.mx);
+  arc_clear(&DV.arc[side]); ex_free(side);   // a new network: its behaviours and its exploiter start over
   if (!ai) return 0;
   if (!seed) { seed = (float*)malloc(sizeof(float) * nw); for (int i = 0; i < nw; i++) seed[i] = (float)((urand(&T.rng) * 2 - 1) * 0.1);
     if (c->imitate) { set_msg("%s head start: recording the guidance algorithm…", side ? "defenders" : "attackers"); copied = !bc_battles(c, P, side, seed);
@@ -1146,6 +1291,45 @@ static int sw_validate(const TrainCfg* c, int track) {
   if (!fail && scored) { br_lock(&T.mx); T.valGen = T.gen; br_unlock(&T.mx); }
   free(bat); free(out); return fail ? -1 : 0;
 }
+// A network joins side S's pool (the other side's opponents) in place of the oldest; its success rate starts at 50%.
+static void sw_pool_add(SwSide* S, const float* w) {
+  memcpy(S->pool + (size_t)S->poolNext * S->nw, w, sizeof(float) * S->nw); S->poolWin[S->poolNext] = 0.5;
+  S->poolNext = (S->poolNext + 1) % SW_POOL; if (S->poolN < SW_POOL) S->poolN++;
+}
+// Exploiters (AI vs AI; AlphaStar's main exploiters): each side also trains a small CMA-ES population, a quarter of the
+// side's, against only the other side's current star. Every 5 generations its best joins its own side's pool, so the
+// other side's main population must learn to beat it too. It starts again from its side's star once it wins (success
+// at least 70% against the star) or after 100 generations.
+#define EX_WIN 0.7
+#define EX_GENS 100
+static void ex_reset(const TrainCfg* c, int side, int count) {
+  SwSide* S = &SW.side[side]; Expl* E = &DV.ex[side]; int lam = S->key[7] / 4; lam += lam & 1; if (lam < 8) lam = 8;
+  if (E->live) cma_free(&E->cma);
+  if (E->nw != S->nw) { free(E->best); E->best = (float*)malloc(sizeof(float) * S->nw); E->nw = S->nw; }
+  g_optKind = c->optKind; cma_init(&E->cma, S->nw, lam, S->star, EX_SIGMA); memcpy(E->best, S->star, sizeof(float) * S->nw);
+  memcpy(E->key, S->key, sizeof E->key); E->live = 1; E->gens = 0; E->succ = 0; DV.exResets += count;
+}
+// One generation of side's exploiter on this generation's scenarios. Returns 0, or what a failed backend call means:
+// 1 go on (the CPU takes over), -1 stop. (Flying it in its side's call measured no faster: its battles, close fights
+// against the star, last longer than the side's own, and that is where the time goes.)
+static int ex_generation(const TrainCfg* c, BrParams* P, int side, int* battles, double* bsteps) {
+  SwSide* S = &SW.side[side]; SwSide* O = &SW.side[side ^ 1]; Expl* E = &DV.ex[side];
+  if (!S->live || !O->live || !S->star || !O->star) return 0;
+  if (!E->live || E->nw != S->nw || memcmp(E->key, S->key, sizeof E->key)) ex_reset(c, side, 0);   // new or rebuilt side
+  cma_ask(&E->cma, &DV.rng);
+  int L = E->cma.lam, nb = L * c->scen; int* bat = (int*)malloc(sizeof(int) * 3 * nb); float* out = (float*)malloc(sizeof(float) * BR_SWOUT * nb);
+  for (int i = 0; i < L; i++) for (int j = 0; j < c->scen; j++) { int b = i * c->scen + j; bat[b * 3] = side ? 0 : i; bat[b * 3 + 1] = side ? i : 0; bat[b * 3 + 2] = j; }
+  if (T.be->evalBattles(T.be, side ? O->star : E->cma.X, side ? E->cma.X : O->star, bat, nb, SW.scen.sc, SW.scen.traj, SW.scen.trajFloats, P, out)) {
+    free(bat); free(out); return backend_failed("battle evaluation") ? 1 : -1; }
+  double* fit = (double*)malloc(sizeof(double) * L); double won = 0; int best = 0;
+  for (int i = 0; i < L; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + (size_t)(i * c->scen + j) * BR_SWOUT;
+      f += sw_fit(o, side, c); won += side ? o[0] : o[1]; *bsteps += o[4]; }
+    fit[i] = f / c->scen; if (fit[i] > fit[best]) best = i; }
+  won /= (double)nb * c->attN;   // the population's success against the star: smoothed, it decides when the exploiter has won
+  memcpy(E->best, E->cma.X + (size_t)best * S->nw, sizeof(float) * S->nw); E->succ = E->gens ? 0.7 * E->succ + 0.3 * won : won; E->gens++;
+  cma_tell(&E->cma, fit); if (c->decayOn) E->cma.sigma *= c->decay; if (E->cma.sigma < c->lrMin) E->cma.sigma = c->lrMin;
+  *battles += nb; free(fit); free(bat); free(out); return 0;
+}
 // One swarm generation. Returns 0 to go on, -1 to stop training.
 static int sw_generation(void) {
   T.run = curriculum(&T.cfg, T.level); TrainCfg* c = &T.run;
@@ -1168,6 +1352,8 @@ static int sw_generation(void) {
   if (SW.scen.n != c->scen || SW.scenAge >= c->reuse || !scen_same(&SW.scenCfg, c)) { scen_make(&SW.scen, c->scen, &T.rng, c, &P); SW.scenCfg = *c; SW.scenAge = 0; }
   SW.scenAge++;
   double t0 = br_now(), bsteps = 0, catches = 0, leaks = 0; int battles = 0;
+  int showL = 0, showBest = 0;   // the status shows the side the chart shows (defenders when AI): it is flown last
+  dv_limit(P.maxT);
   for (int side = 0; side < 2; side++) {
     SwSide* S = &SW.side[side]; if (!S->ai) continue;
     SwSide* O = &SW.side[side ^ 1];
@@ -1189,6 +1375,11 @@ static int sw_generation(void) {
     for (int i = 0; i < L; i++) { double f = 0; for (int j = 0; j < c->scen; j++) { const float* o = out + (size_t)(i * c->scen + j) * BR_SWOUT; f += sw_fit(o, side, c); bsteps += o[4]; }
       fit[i] = f / c->scen; mean += fit[i]; if (fit[i] > fit[best]) best = i; }
     for (int j = 0; j < c->scen; j++) { const float* o = out + (size_t)(best * c->scen + j) * BR_SWOUT; catches += o[0]; leaks += o[1]; }
+    // behaviours; with the novelty bonus the optimizer ranks by score + noveltyW × novelty (the star stays the best score)
+    dv_grow(L); bd_battles(out, L, c->scen, side, c->attN, P.maxT, DV.bd); const double* tellF = fit;
+    if (c->novelty) { novelty(DV.bd, L, &DV.arc[side], DV.nov); for (int i = 0; i < L; i++) DV.rk[i] = fit[i] + c->noveltyW * DV.nov[i]; tellF = DV.rk; }
+    else if (DV.arc[side].n) arc_clear(&DV.arc[side]);
+    showL = L; showBest = best;
     if (O->ai) {   // update this side's success rate against each opponent it met (all candidates' battles)
       double sum[SW_POOL] = {0}; int cnt[SW_POOL] = {0};
       for (int b = 0; b < nb; b++) { const float* o = out + (size_t)b * BR_SWOUT; int k = oppOf[b % c->scen];
@@ -1199,9 +1390,12 @@ static int sw_generation(void) {
     br_lock(&T.mx);
     memcpy(S->star, mine + (size_t)best * S->nw, sizeof(float) * S->nw); S->starFit = fit[best]; S->best = fit[best]; S->fitSum += fit[best]; S->fitN++; S->mean = mean / L;
     br_unlock(&T.mx);
-    cma_tell(&S->cma, fit); if (c->decayOn) S->cma.sigma *= c->decay; if (S->cma.sigma < c->lrMin) S->cma.sigma = c->lrMin;
+    cma_tell(&S->cma, tellF); if (c->decayOn) S->cma.sigma *= c->decay; if (S->cma.sigma < c->lrMin) S->cma.sigma = c->lrMin;
     free(fit); free(bat); free(out);
   }
+  int exOn = c->exploiters && c->attAI && c->defAI;
+  if (!exOn) { ex_free(0); ex_free(1); }
+  else for (int side = 0; side < 2; side++) { int r = ex_generation(c, &P, side, &battles, &bsteps); if (r) return r > 0 ? 0 : -1; }
   double dt = br_now() - t0; int gen;
   br_lock(&T.mx);
   gen = ++T.gen; T.genTime = dt; T.flightsPerS = battles / dt; T.stepsPerS = bsteps / dt;
@@ -1210,11 +1404,14 @@ static int sw_generation(void) {
   if (T.histN == HIST_MAX) { memmove(T.hist, T.hist + 1, sizeof(Hist) * (HIST_MAX - 1)); T.histN--; }
   Hist* h = &T.hist[T.histN++]; memset(h, 0, sizeof *h); h->gen = gen; h->best = (float)T.best; h->mean = (float)shown->mean;
   h->isl[0] = (float)SW.side[0].best; h->isl[1] = (float)SW.side[1].best;
+  dv_show(DV.arc[c->defAI ? 1 : 0].n, DV.bd, showL, showBest);
   br_unlock(&T.mx);
   T.unval++; if (T.maxGen && gen >= T.maxGen) T.stopReq = 1;
-  // self-play: every few generations each side's star joins its pool (the other side's opponents)
-  if (gen % 5 == 0) for (int side = 0; side < 2; side++) { SwSide* S = &SW.side[side]; if (!S->ai) continue;
-    memcpy(S->pool + (size_t)S->poolNext * S->nw, S->star, sizeof(float) * S->nw); S->poolWin[S->poolNext] = 0.5; S->poolNext = (S->poolNext + 1) % SW_POOL; if (S->poolN < SW_POOL) S->poolN++; }
+  // self-play: every few generations each side's star joins its pool (the other side's opponents), and so does its
+  // exploiter's best; an exploiter that has won or run its course starts again from its side's star
+  if (gen % 5 == 0) for (int side = 0; side < 2; side++) { SwSide* S = &SW.side[side]; Expl* E = &DV.ex[side]; if (!S->ai) continue;
+    sw_pool_add(S, S->star);
+    if (exOn && E->live && E->gens) { sw_pool_add(S, E->best); if ((E->gens >= 5 && E->succ >= EX_WIN) || E->gens >= EX_GENS) ex_reset(c, side, 1); } }
   if (gen % c->valEvery == 0) {
     if (sw_validate(c, 1)) return backend_failed("validation") ? 0 : -1;
     T.unval = 0; for (int side = 0; side < 2; side++) if (SW.side[side].ai) sw_save(&P, side);
@@ -1265,6 +1462,15 @@ static void train_thread(void* arg) {
       fit[i] = f / c->scen; mean += fit[i]; if (fit[i] > fit[star]) star = i; }
     mean /= n;
     int hits = 0; for (int j = 0; j < c->scen; j++) hits += out[((size_t)star * c->scen + j) * BR_OUT + 1] > 0.5f;
+    // diversity search changes only what the optimizers rank by: the plain score still picks the star, the island bests
+    // and the chart. The map, when on, decides the ranking; novelty islands need islands.
+    int nsrOn = c->nsr && T.nIsl > 1, novOn = c->novelty || nsrOn, mapOn = c->mapElites; const double* rankF = fit;
+    dv_limit(T.P.maxT); dv_grow(n); bd_flights(out, n, c->scen, T.P.maxT, DV.bd);
+    if (novOn) { novelty(DV.bd, n, &DV.arc[0], DV.nov); for (int i = 0; i < n; i++) DV.rk[i] = fit[i] + (c->novelty ? c->noveltyW * DV.nov[i] : 0); }
+    else if (DV.arc[0].n) arc_clear(&DV.arc[0]);
+    if (mapOn) map_rank(DV.bd, fit, n, evalW, T.P.nw, DV.rk); else if (DV.nw) map_clear();
+    if (novOn || mapOn) rankF = DV.rk;
+    if (mapOn && DV.stillN != T.nIsl) { free(DV.still); DV.still = (int*)calloc(T.nIsl, sizeof(int)); DV.stillN = T.nIsl; }
     // tell each island its slice; decay + floor; island bests for the chart
     float islBest[ISL_SHOW] = {0}; double sig = 0; int off = 0;
     for (int i = 0; i < T.nIsl; i++) {
@@ -1272,9 +1478,13 @@ static void train_thread(void* arg) {
       for (int q = 1; q < k; q++) if (fit[off + q] > fit[off + bi]) bi = q;
       I->bestF = fit[off + bi]; memcpy(I->bestG, flat + (size_t)(off + bi) * T.P.nw, sizeof(float) * T.P.nw);
       if (i < ISL_SHOW) islBest[i] = (float)I->bestF;
-      if (I->cma) cma_tell(&I->c, fit + off); else ga_tell(&I->ga, fit + off, &T.rng);
-      double* s = isl_sigma(I); if (c->decayOn) *s *= c->decay; if (*s < c->lrMin) *s = c->lrMin; sig += *s;
-      off += k;
+      if (nsrOn && !mapOn && (i & 1)) nsr_rank(DV.rk + off, DV.nov + off, k);   // every other island also ranks by novelty
+      if (I->cma) cma_tell(&I->c, rankF + off); else ga_tell(&I->ga, rankF + off, &T.rng);
+      double* s = isl_sigma(I); if (c->decayOn) *s *= c->decay; if (*s < c->lrMin) *s = c->lrMin;
+      if (mapOn) { int imp = 0; for (int q = 0; q < k && !imp; q++) imp = rankF[off + q] > 5e5;   // filled or improved a cell
+        DV.still[i] = imp ? 0 : DV.still[i] + 1;
+        if (DV.still[i] >= ME_PATIENCE && DV.cells) { isl_from_elite(I); DV.still[i] = 0; DV.meRestarts++; } }
+      sig += *s; off += k;
     }
     int gen;
     br_lock(&T.mx);
@@ -1285,6 +1495,7 @@ static void train_thread(void* arg) {
     T.starHits = (double)hits / c->scen;
     if (T.histN == HIST_MAX) { memmove(T.hist, T.hist + 1, sizeof(Hist) * (HIST_MAX - 1)); T.histN--; }
     Hist* h = &T.hist[T.histN++]; h->gen = gen; h->best = (float)T.best; h->mean = (float)mean; memcpy(h->isl, islBest, sizeof islBest);
+    dv_show(DV.arc[0].n, DV.bd, n, star);
     br_unlock(&T.mx);
     T.unval++; if (T.maxGen && gen >= T.maxGen) T.stopReq = 1;
     // islands: pass each island's best to the next one in a ring (before any new sensor statistics below, which
@@ -1357,6 +1568,7 @@ void trainer_reset(const TrainCfg* c) {
   snprintf(T.msg, sizeof T.msg, "reset · training stopped (the saved network is kept as a .bak file)");
   for (int side = 0; c->mode == BR_MODE_SWARM && side < 2; side++) sw_side_free(&SW.side[side]);
   br_unlock(&T.mx);
+  dv_clear();
   char p[1024];
   if (c->mode == BR_MODE_SWARM) { for (int side = 0; side < 2; side++) if (side ? c->defAI : c->attAI) backup(sw_save_path(c, side, p, sizeof p)); }
   else { backup(save_path_mode(c->mode, p, sizeof p));   // reach: older saves too, which would be restored otherwise
@@ -1375,6 +1587,19 @@ void trainer_status_json(Sb* o, int since) {
   if (sw)
     sb_printf(o, ",\"swarm\":{\"attAI\":%d,\"defAI\":%d,\"attBest\":%.4f,\"defBest\":%.4f,\"catchRate\":%.4f,\"leakRate\":%.4f,\"valLeak\":%.4f,\"valCatch\":%.4f,\"valGen\":%d}",
       SW.side[0].ai, SW.side[1].ai, SW.side[0].best, SW.side[1].best, SW.catchRate, SW.leakRate, SW.side[0].val, SW.side[1].val, T.valGen);
+  // diversity search: archive size, what the two behaviour numbers are, the map (grid[d2 cell × 10 + d1 cell]: the elite's
+  // score, null when empty) with this generation's behaviours (the star first), and the exploiters. Swarm: the side the
+  // chart shows (defenders when AI).
+  { const TrainCfg* c = T.hasPending ? &T.pending : &T.cfg; int csw = c->mode == BR_MODE_SWARM, ex = csw && c->exploiters && c->attAI && c->defAI;
+    sb_printf(o, ",\"diversity\":{\"archive\":%d,\"bdNames\":[%s],\"map\":{\"on\":%s,\"cells\":%d,\"total\":%d,\"grid\":[", DV.show.arc,
+      !csw ? "\"flight time\",\"time below 5 m\"" : c->defAI ? "\"catch share\",\"battle time\"" : "\"leak share\",\"battle time\"",
+      !csw && c->mapElites ? "true" : "false", DV.show.cells, MAP_N * MAP_N);
+    for (int q = 0; q < MAP_N * MAP_N; q++) { if (DV.show.has[q]) sb_printf(o, "%s%.3f", q ? "," : "", DV.show.grid[q]); else sb_printf(o, "%snull", q ? "," : ""); }
+    sb_printf(o, "],\"pop\":[");
+    for (int q = 0; q < DV.show.popN; q++) sb_printf(o, "%s[%.4f,%.4f]", q ? "," : "", DV.show.pop[q][0], DV.show.pop[q][1]);
+    sb_printf(o, "]},\"exploiters\":{\"on\":%s", ex ? "true" : "false");
+    for (int s = 0; s < 2; s++) { if (ex && DV.show.exLive[s]) sb_printf(o, ",\"%s\":%.4f", s ? "def" : "att", DV.show.exSucc[s]); else sb_printf(o, ",\"%s\":null", s ? "def" : "att"); }
+    sb_printf(o, ",\"resets\":%d}}", DV.show.exResets); }
   sb_printf(o, ",\"hist\":[");
   int first = 1;
   for (int i = 0; i < T.histN; i++) { Hist* h = &T.hist[i]; if (h->gen <= since) continue;
@@ -1786,8 +2011,24 @@ static void cli_cfg(TrainCfg* c, int argc, char** argv, int* mode, int* gens, ch
     else if (!strcmp(a, "--delay")) { c->delayMs = fmax(0, atof(v)); i++; }
     else if (!strcmp(a, "--detect")) { c->detect = fmin(100000, fmax(0, atof(v))); i++; }
     else if (!strcmp(a, "--tw-runner")) { c->twRunner = fmin(5, fmax(1.2, atof(v))); i++; }
+    // diversity search
+    else if (!strcmp(a, "--novelty")) c->novelty = 1; else if (!strcmp(a, "--novelty-w")) { c->noveltyW = atof(v); i++; }
+    else if (!strcmp(a, "--nsr")) c->nsr = 1; else if (!strcmp(a, "--map-elites")) c->mapElites = 1; else if (!strcmp(a, "--exploiters")) c->exploiters = 1;
   }
   cfg_clamp(c);   // the same limits as the interface (fixed-size buffers depend on them)
+}
+// The diversity search's state, when an option is on: archive, map and exploiters (success against the other star).
+static void cli_diversity(const TrainCfg* c, const char* when) {
+  if (!(c->novelty || c->nsr || c->mapElites || c->exploiters)) return;
+  int sw = c->mode == BR_MODE_SWARM, n = 0; char b[256] = "";
+  br_lock(&T.mx);
+  if (c->novelty || c->nsr) n += snprintf(b + n, sizeof b - n, "  archive %d", DV.show.arc);
+  if (!sw && c->mapElites) n += snprintf(b + n, sizeof b - n, "  map %d/%d cells, %d island restarts from elites", DV.show.cells, MAP_N * MAP_N, DV.show.meRestarts);
+  if (sw && c->exploiters) n += c->attAI && c->defAI   // they only run AI vs AI
+    ? snprintf(b + n, sizeof b - n, "  exploiters vs the other star: attackers %.0f%%  defenders %.0f%%  resets %d", DV.show.exSucc[0] * 100, DV.show.exSucc[1] * 100, DV.show.exResets)
+    : snprintf(b + n, sizeof b - n, "  exploiters off (they need AI on both sides)");
+  br_unlock(&T.mx);
+  if (n) { printf("  diversity%s: %s\n", when, b + 2); fflush(stdout); }
 }
 static char* read_file(const char* p) { FILE* f = fopen(p, "rb"); if (!f) return NULL; fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
   char* b = (char*)malloc(n + 1); n = (long)fread(b, 1, n, f); b[n] = 0; fclose(f); return b; }
@@ -1797,11 +2038,15 @@ int cli_main(int argc, char** argv) {
   cli_cfg(&c, argc, argv, &mode, &gens, &load);
   if (mode == 5) { printf("Double-click the app to open the interface (--no-window: start it without opening a window).\n"
                           "Developer options: --bench, --compare (CPU vs GPU on one batch), --train [--gens N], --list-devices, --ceiling, --help\n"
+                          "  --seed N (training's random seed: with --backend cpu --no-imitate a run repeats exactly)\n"
                           "Compute: --backend auto|cpu|metal|opencl:N  --threads N (CPU threads, 0 = all)  --wg N (GPU work-group size)\n"
                           "Network and training: --mode reach|tag|intercept|swarm  --pop N  --scen N (1-256)  --layers N (1-8)  --width N (4-128)  --K N (past frames, 0-4)\n"
                           "  --mem 0|1 (memory neurons)  --opt cma|sep|lm|ga (CMA-ES automatic, sep-CMA-ES, LM-MA-ES or the genetic algorithm)  --islands N\n"
                           "  --dt S (physics step)  --tw X (thrust-to-weight)  --every-step (decide every physics step)  --alt-reward  --load FILE\n"
                           "Techniques: --no-imitate (no head start)  --auto-diff (automatic difficulty)  --no-restarts  --no-norm  --val-every N\n"
+                          "Diversity search (off by default): --novelty (score + weight x novelty of behaviour)  --novelty-w X (0-5, default 0.5)\n"
+                          "  --nsr (with --islands: every other island ranks by reward and novelty)  --map-elites (reach, intercept: behaviour map\n"
+                          "  searched by CMA-ME)  --exploiters (swarm AI vs AI: each side trains an exploiter of the other side's star)\n"
                           "Reach mode: --reach-max M (goals 1.5 km to M m, 2000-100000)\n"
                           "Intercept (tag) mode: --atk-range M (runner launch distance, 4000-100000 m)  --evade 0-1 (runner weave)\n"
                           "  --noise M (sensor noise sigma)  --delay MS (sensor delay)  --detect M (radar range: launch when the runner comes this close, 0 = launch at once)\n"
@@ -1816,6 +2061,7 @@ int cli_main(int argc, char** argv) {
 #endif
     Sb h = {0}; hardware_json(&h); printf("%s\n", h.s); free(h.s); return 0; }
   trainer_init();
+  for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "--seed")) rng_seed(&T.rng, (unsigned)atoi(argv[i + 1]));   // repeatable runs
   trainer_set_mode(c.mode);   // that mode's saved star (each mode keeps its own)
   if (load) { char* j = read_file(load); char m[200]; if (!j || trainer_load_json(j, m, sizeof m)) { fprintf(stderr, "cannot load %s\n", load); return 1; } free(j); }
   if (mode == 3) {   // headless training through the same service the interface uses
@@ -1823,6 +2069,7 @@ int cli_main(int argc, char** argv) {
     for (int done = 0; !done; ) {
       br_sleep_ms(200); done = !T.running && !T.hasPending;
       br_lock(&T.mx); int g = T.gen; double best = T.best, hits = T.starHits, val = T.valHit, sps = T.stepsPerS, gt = T.genTime; int vg = T.valGen; br_unlock(&T.mx);
+      int newVal = vg != lastV;
       char lv[24] = ""; if (c.autoDiff) snprintf(lv, sizeof lv, "level %d  ", T.level);   // automatic difficulty
       if ((g != last || vg != lastV) && c.mode == BR_MODE_SWARM) { br_lock(&T.mx);
         printf("gen %5d  attackers %7.3f  defenders %7.3f  caught %3.0f%%  leaked %3.0f%%  validation vs algorithm: leak %3.0f%% catch %3.0f%%  %6.0f battles/s  %.3f s/gen  %s[%s]\n",
@@ -1830,9 +2077,10 @@ int cli_main(int argc, char** argv) {
         br_unlock(&T.mx); last = g; lastV = vg; fflush(stdout); }
       { static char lastMsg[256] = ""; br_lock(&T.mx); if (strcmp(lastMsg, T.msg) && strncmp(T.msg, "training", 8)) { snprintf(lastMsg, sizeof lastMsg, "%s", T.msg); printf("  [%s]\n", T.msg); } br_unlock(&T.mx); }
       if (g != last || vg != lastV) { printf("gen %5d  best %7.3f  star hits %3.0f%%  validation %3.0f%% (gen %d)  %6.1f M steps/s  %.3f s/gen  %s[%s]\n", g, best, hits * 100, val * 100, vg, sps / 1e6, gt, lv, T.beInfo); last = g; lastV = vg; fflush(stdout); }
+      if (newVal && vg) cli_diversity(&c, "");   // after each validation
       if (g >= gens) break;
     }
-    trainer_pause(); return 0;
+    trainer_pause(); cli_diversity(&c, " at the end"); return 0;
   }
   if (mode == 6 && c.mode == BR_MODE_SWARM) {   // --ceiling --mode swarm: algorithm vs algorithm battles (a baseline)
     c.attAI = c.defAI = 0; int N = 400;

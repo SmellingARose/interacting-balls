@@ -95,6 +95,23 @@ in brackets; see [BUILD.md](BUILD.md#developer-command-line).
 | [Normalise sensors](explainers/training-techniques.md#sensor-normalisation) | on | Reach, Intercept | Rescales each sensor by its running mean and spread. Folded into the first layer, so saved networks are ordinary ones (`--no-norm`). |
 | [CMA-ES variant](explainers/evolution-strategies.md) | Automatic | every CMA-ES run, Swarm too | sep-CMA-ES learns one step size per weight. LM-MA-ES, for big networks, learns a few main search directions. Automatic: sep-CMA-ES up to 2,000 weights, LM-MA-ES above. Both try candidates in mirrored pairs (`--opt sep`, `--opt lm`). |
 
+**Techniques → Diversity** (all off by default; explained in plain words in [diversity search](explainers/diversity.md))
+
+A network's **behaviour** is two numbers from 0 to 1, averaged over its flights: flight time as a share of the time
+limit, and the share of mid-flight spent below 5 m. In Swarm: the share of attackers caught (defenders) or let through
+(attackers), and battle time as a share of the time limit.
+
+| Setting | Default | Modes | What it does |
+|---|---|---|---|
+| [Novelty bonus](explainers/diversity.md#novelty-bonus) | off, weight 0.5 | all | Novelty: the average distance from a network's behaviour to the 10 nearest in an archive of past behaviours and this generation, scaled so a typical network scores about 1 (at most 3). The optimizer ranks by score + weight × novelty (weight 0.1–2; command line: 0–5). The 3 most novel join the archive each generation, up to 2,000 (`--novelty`, `--novelty-w X`). |
+| [Novelty islands](explainers/diversity.md#novelty-islands) | off | Reach, Intercept, with islands on | Every other island ranks by the average of its score rank and its novelty rank (NSR-ES). Migration is unchanged (`--nsr`). |
+| [Behaviour map](explainers/diversity.md#behaviour-map) | off | Reach, Intercept | A 10 × 10 grid of behaviours keeps the best network of each cell (MAP-Elites). Each island ranks its networks by how much they improve the map (CMA-ME): new cells first, then gains over a cell's best. An island that improves nothing for 10 generations restarts from a random cell's best. While on, the map decides the ranking (`--map-elites`). |
+| [Exploiters](explainers/diversity.md#exploiters) | off | Swarm, AI vs AI | Each side also trains a population a quarter its size against only the other side's current star. Every 5 generations its best joins the side's opponent pool; it starts again from its side's star once it succeeds 70% of the time, or after 100 generations. About a quarter more battles, and they are close, long fights, so a generation takes roughly 1.3 to 1.6 times as long (`--exploiters`). |
+
+None of these changes the star or the kept network: they change what the optimizers rank by (exploiters: the
+opponents). They can be switched while training and apply from the next generation; switching one off forgets what it
+collected.
+
 **Physics**
 
 | Setting | Default | Modes | What it does |
@@ -114,6 +131,9 @@ a new network; the saved one is kept as a `.bak` file.
   show their catch rate, attackers their leak rate.
 - **Step size**: how far the optimizer is searching. It shrinks as training settles.
 - The status line shows the compute option, messages, the number of islands, the difficulty level and restarts.
+- **Behaviours** (below the chart, with a novelty option or the behaviour map on): this generation's networks as dots
+  by behaviour, the star in amber. With the behaviour map on, the filled cells are coloured by their best score. A
+  second status line shows the novelty archive's size and, with exploiters, their success against the other star.
 
 ## Tips
 - Watch Validation, not Star hits.
@@ -133,6 +153,8 @@ a new network; the saved one is kept as a `.bak` file.
   to them (prioritised fictitious self-play). Watch the validation rates, not the training scores, which move as the
   opponents change.
 - Commander networks have many more weights and learn much more slowly.
+- Stuck on one way of flying: try the novelty bonus, or novelty islands with islands on. For a broad look at the kinds
+  of flight that work, turn on the behaviour map. Swarm AI vs AI: exploiters find the weak spots of each side's star.
 
 <details><summary>The maths</summary>
 
@@ -168,5 +190,12 @@ $$
 
 **Self-play opponents.** Each opponent in the pool is drawn with weight $(1 - x)^2 + 0.02$, where $x$ is this side's
 running success rate against it.
+
+**Novelty bonus.** With $\nu$ the average distance from a network's behaviour to its 10 nearest neighbours and
+$\bar\nu$ the running mean of $\nu$, the optimizer ranks by
+
+$$
+f + w \min\left(3, \frac{\nu}{\max(0.01, \bar\nu)}\right)
+$$
 
 </details>
